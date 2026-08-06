@@ -8,6 +8,137 @@
 
 ---
 
+## 0. 처음 실행하기 — 외장 SSD·Isaac Sim 없이
+
+### 준비물
+
+- Windows 10/11
+- Python 3.11 이상
+- Git
+- PowerShell
+
+저장소를 내려받고 프로젝트 폴더로 이동합니다.
+
+```powershell
+git clone https://github.com/ysj20030825-lab/SITEGIT.git
+cd SITEGIT
+```
+
+PowerShell 실행 정책을 현재 창에서만 허용하고 최초 설정을 실행합니다.
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\ops\scripts\setup_windows.ps1
+```
+
+이 스크립트는 다음 작업을 자동으로 수행합니다.
+
+- `.env`가 없으면 예시 설정을 복사해 생성
+- `.venv` Python 가상환경 생성
+- Backend 패키지 설치
+
+생성된 `.env`를 엽니다.
+
+```powershell
+notepad .env
+```
+
+로컬 확인용으로 다음처럼 설정할 수 있습니다.
+
+```env
+APP_NAME=SiteGit
+APP_ENV=development
+
+PUBLIC_URL=http://localhost:8000
+PUBLIC_HOSTNAME=localhost
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8000
+
+# 외장 SSD가 없으면 프로젝트 내부 runtime 폴더 사용
+SITEGIT_DATA_ROOT=./runtime
+DATABASE_URL=
+
+# Isaac Sim 없이 실행
+ISAAC_ADAPTER_ENABLED=false
+ISAAC_ADAPTER_URL=http://localhost:8100
+
+# 로컬 개발용 긴 임의 문자열. 운영 서버에서는 새 값 사용
+JWT_SECRET=local-development-secret-change-me-2026-123456789
+ACCESS_TOKEN_EXPIRE_MINUTES=480
+AUTH_COOKIE_NAME=sitegit_access_token
+COOKIE_SECURE=false
+
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_ADMIN_PASSWORD=admin-password-change-me
+INITIAL_ADMIN_NAME=로컬 관리자
+
+SEED_DEMO_USERS=true
+INITIAL_MANAGER_USERNAME=manager
+INITIAL_MANAGER_PASSWORD=manager-password-change-me
+INITIAL_MANAGER_NAME=현장 관리자
+
+INITIAL_VIEWER_USERNAME=viewer
+INITIAL_VIEWER_PASSWORD=viewer-password-change-me
+INITIAL_VIEWER_NAME=현장 조회자
+
+# Cloudflare를 사용하지 않으면 비워 둠
+CLOUDFLARE_TUNNEL_TOKEN=
+```
+
+`JWT_SECRET`은 로그인 토큰에 서명하는 서버 전용 비밀 키입니다. 로컬 테스트에서는 위와 같은 긴 임의 문자열로 충분하지만 `.env`는 Git에 올리지 않습니다. 더 강한 값을 만들려면 PowerShell에서 실행합니다.
+
+```powershell
+$bytes = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+[Convert]::ToBase64String($bytes)
+```
+
+서버를 실행합니다.
+
+```powershell
+.\ops\scripts\start_sitegit.ps1
+```
+
+또는 탐색기에서 `start_sitegit.bat`을 실행할 수 있습니다. PowerShell 창을 닫으면 서버도 종료됩니다.
+
+브라우저 접속 주소:
+
+- 웹 화면: <http://localhost:8000>
+- 서버 상태: <http://localhost:8000/api/v1/health>
+- 개발 API 문서: <http://localhost:8000/api/v1/docs>
+
+로그인 아이디와 비밀번호는 `.env`의 `INITIAL_*_USERNAME`, `INITIAL_*_PASSWORD` 값입니다. 마지막으로 성공한 로그인 아이디만 브라우저에 기억되며 비밀번호는 항상 빈 상태로 시작합니다.
+
+`.env`에서 초기 계정의 아이디·비밀번호·표시 이름을 바꾼 뒤 서버를 재시작하면 DB의 해당 초기 계정에도 동기화됩니다.
+
+### `.env`가 GitHub에 없는 이유
+
+`.env`에는 비밀번호, JWT 서명 키, 서버 경로가 포함되므로 `.gitignore`로 제외합니다. Git에는 변수 형식만 담은 `.env.example`이 올라갑니다. 저장소를 처음 받은 사람은 `setup_windows.ps1`을 실행하거나 다음 명령으로 자기 PC의 `.env`를 만듭니다.
+
+```powershell
+Copy-Item .env.example .env
+```
+
+확인 방법:
+
+```powershell
+git check-ignore .env
+```
+
+출력에 `.env`가 나오면 정상적으로 Git에서 제외된 상태입니다.
+
+### 로컬 데이터 위치
+
+위 설정에서는 사용자, 프로젝트와 작업 데이터가 다음 경로에 저장됩니다.
+
+```text
+runtime/database/sitegit.db
+```
+
+코드를 `git pull`해도 `.env`와 `runtime` 데이터는 덮어쓰지 않습니다.
+
+---
+
 ## 1. 전체 연결
 
 ```text
@@ -104,7 +235,15 @@ sitegit/
 
 ---
 
-## 5. 외장 SSD 준비
+## 5. 외장 SSD 준비 — 선택 사항
+
+로컬 기능 확인에는 외장 SSD가 필요하지 않습니다. `.env`에서 다음처럼 프로젝트 내부 저장소를 사용할 수 있습니다.
+
+```env
+SITEGIT_DATA_ROOT=./runtime
+```
+
+운영용 대표 PC에서 외장 SSD를 사용하려면 다음 구조를 권장합니다.
 
 ```text
 E:/SiteGitData/
@@ -119,11 +258,12 @@ E:/SiteGitData/
 
 ---
 
-## 6. Windows 첫 실행
+## 6. Windows 운영 PC 첫 실행
 
-PowerShell에서 프로젝트 폴더로 이동합니다.
+PowerShell에서 프로젝트 폴더로 이동한 뒤 실행합니다.
 
 ```powershell
+Set-ExecutionPolicy -Scope Process Bypass
 .\ops\scripts\setup_windows.ps1
 notepad .env
 ```
@@ -136,8 +276,13 @@ PUBLIC_HOSTNAME=sitegit.example.com
 SITEGIT_DATA_ROOT=E:/SiteGitData
 JWT_SECRET=<충분히 긴 임의 문자열>
 INITIAL_ADMIN_PASSWORD=<관리자 비밀번호>
+INITIAL_ADMIN_NAME=<관리자 표시 이름>
+INITIAL_MANAGER_USERNAME=<팀원 아이디>
 INITIAL_MANAGER_PASSWORD=<팀원 비밀번호>
+INITIAL_MANAGER_NAME=<팀원 표시 이름>
+INITIAL_VIEWER_USERNAME=<조회자 아이디>
 INITIAL_VIEWER_PASSWORD=<조회자 비밀번호>
+INITIAL_VIEWER_NAME=<조회자 표시 이름>
 COOKIE_SECURE=false
 ```
 

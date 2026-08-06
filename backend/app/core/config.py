@@ -44,8 +44,12 @@ class Settings(BaseSettings):
     initial_admin_password: str = "sitegit-demo-2026"
     initial_admin_name: str = "SiteGit 관리자"
     seed_demo_users: bool = True
+    initial_manager_username: str = "manager"
     initial_manager_password: str = "sitegit-manager-2026"
+    initial_manager_name: str = "김현장"
+    initial_viewer_username: str = "viewer"
     initial_viewer_password: str = "sitegit-viewer-2026"
+    initial_viewer_name: str = "현장 조회자"
 
     state_save_debounce_ms: int = 800
 

@@ -22,18 +22,18 @@
     </section>
 
     <section class="form-panel">
-      <form id="loginForm" class="login-card">
+      <form id="loginForm" class="login-card" autocomplete="off">
         <div class="eyebrow">SECURE ACCESS</div>
         <h2>SiteGit에 로그인</h2>
         <p class="intro">계정별 역할에 따라 작업 편집·검토·조회 권한이 분리됩니다.</p>
 
         <label>
           <span>사용자 ID</span>
-          <input id="username" name="username" autocomplete="username" required value="admin" />
+          <input id="username" name="username" autocomplete="username" required />
         </label>
         <label>
           <span>비밀번호</span>
-          <input id="password" name="password" type="password" autocomplete="current-password" required value="sitegit-demo-2026" />
+          <input id="password" name="password" type="password" autocomplete="new-password" required />
         </label>
 
         <div class="error hidden" id="loginError"></div>

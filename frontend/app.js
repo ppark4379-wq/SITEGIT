@@ -9,6 +9,13 @@ const STORAGE_KEY = 'sitegit-concept-prototype-v2';
 const ONBOARD_KEY = 'sitegit-concept-onboarded-v2';
 const PROJECT_ID = 'SASANG-001';
 const API_BASE = '/api/v1';
+const EQUIPMENT_PHOTOS = {
+  HX210AL:'/static/assets/equipment/hx210al.jpg',
+  HX48AZ:'/static/assets/equipment/hx48az.jpg',
+  'HL930A TM':'/static/assets/equipment/hl930a-tm.jpg',
+  'Generic Dump 4.5t':'/static/assets/equipment/generic-dump-4-5t.png',
+  'Generic Dump 24t':'/static/assets/equipment/generic-dump-24t.png',
+};
 let remoteRevision = null;
 let remoteReady = false;
 let remoteApplying = false;
@@ -16,6 +23,7 @@ let remoteSaveInFlight = false;
 let remoteSaveTimer = null;
 let remoteSocket = null;
 let remoteCanEdit = true;
+let currentUser = null;
 
 const DEFAULT_STATE = {
   selectedPage: 'dashboard',
@@ -252,8 +260,11 @@ async function bootstrapSharedState(){
   try{
     const meResponse=await apiFetch('/auth/me');
     const me=await meResponse.json();
+    currentUser=me;
     remoteCanEdit=['admin','manager','reviewer'].includes(me.role);
     const roleLabel={admin:'관리자',manager:'현장관리자',reviewer:'검토자',viewer:'조회자'}[me.role]||me.role;
+    const profileName=$('#topManagerName');if(profileName)profileName.textContent=me.full_name;
+    const avatar=$('#profileBtn .avatar');if(avatar)avatar.textContent=(me.full_name||me.username).trim().slice(0,1).toUpperCase();
     const profile=$('#profileBtn small');if(profile)profile.textContent=roleLabel;
     await pullRemoteState();
     remoteReady=true;
@@ -402,6 +413,7 @@ function renderAll(){
   renderReadiness();
   renderWorkPackages();
   renderEquipment();
+  applyOfficialEquipmentPhotos();
   renderEvidence();
   renderVersions();
   renderSettings();
@@ -412,7 +424,9 @@ function renderHeader(){
   const meta=PAGE_META[state.selectedPage]||PAGE_META.dashboard;
   $('#pageEyebrow').textContent=meta[0];
   $('#pageTitle').textContent=meta[1];
-  $('#topManagerName').textContent=state.manager.name;
+  $('#topManagerName').textContent=currentUser?.full_name||state.manager.name;
+  const notificationBadge=$('#notificationsBtn .tiny-badge');
+  if(notificationBadge){const count=Math.min(alertCount(),99);notificationBadge.textContent=count;notificationBadge.classList.toggle('hidden',count===0)}
   $('#navAlertBadge').textContent=alertCount();
   $('#projectMini').innerHTML=`<span class="pulse-dot"></span><div><strong>${esc(state.project.shortName)}</strong><small>Plan v1.0 · Shared Local DB</small></div>`;
   $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.page===state.selectedPage));
@@ -599,6 +613,25 @@ function equipmentCard(e){
   const status=qty>0?'working':e.status;
   return `<article class="card equipment-card"><div class="equipment-visual">${machineSvg(e.icon,e.color)}<div style="position:absolute;z-index:3;left:14px;top:13px">${sourceBadge(e.specSource)}</div></div><div class="equipment-card-body"><div class="equipment-name-row"><div><h3>${esc(e.model)}</h3><div class="type">${esc(e.manufacturer)} · ${esc(e.type)}</div></div><span class="badge ${status==='working'?'progress':status==='available'||status==='standby'?'ready':'neutral'}">${status==='working'?`계획 ${qty}대`:status==='available'?'가용':status==='standby'?'대기':'오프라인'}</span></div><div class="equipment-spec-grid"><div class="equipment-spec"><span>운전중량</span><b>${e.operatingWeight}t</b></div><div class="equipment-spec"><span>표준 버킷</span><b>${e.bucketCapacity||'-'}㎥</b></div><div class="equipment-spec"><span>정격출력</span><b>${e.power||'-'}kW</b></div><div class="equipment-spec"><span>작업 버킷</span><b>${e.workBucket||'-'}㎥</b></div><div class="equipment-spec"><span>최대 굴착깊이</span><b>${e.maxDepth||'-'}m</b></div><div class="equipment-spec"><span>연결 Zone</span><b>${linked.map(w=>w.zone).join(', ')||'-'}</b></div></div><div class="capability-row">${e.supports.map(s=>`<span class="cap-chip">${s}</span>`).join('')}</div><div class="equipment-card-actions"><div>${e.sourceUrl?`<a class="source-link" href="${e.sourceUrl}" target="_blank" rel="noopener">공식 제원 ↗</a>`:sourceBadge(e.specSource)}</div><button class="ghost-button button-sm" data-edit-equipment="${e.id}">제원·연동 수정</button></div></div></article>`;
 }
+function applyOfficialEquipmentPhotos(){
+  $$('.equipment-card').forEach(card=>{
+    const model=card.querySelector('h3')?.textContent?.trim();
+    const equipment=state.equipment.find(item=>item.model===model);
+    if(equipment){card.querySelector('button[data-edit-equipment]')?.remove();card.dataset.editEquipment=equipment.id;card.tabIndex=0;card.setAttribute('role','button');card.setAttribute('aria-label',`${model} 제원 보기 및 수정`)}
+    const imageUrl=EQUIPMENT_PHOTOS[model];
+    const visual=card.querySelector('.equipment-visual');
+    const illustration=visual?.querySelector('.machine-svg');
+    if(!imageUrl||!visual||!illustration||visual.querySelector('.equipment-photo'))return;
+    const photo=document.createElement('img');
+    photo.className='equipment-photo';
+    photo.src=imageUrl;
+    photo.alt=`${model} 장비 참고 사진`;
+    photo.addEventListener('error',()=>{photo.remove();illustration.hidden=false});
+    illustration.hidden=true;
+    visual.classList.add('has-photo');
+    visual.insertBefore(photo,illustration);
+  });
+}
 function capabilityMatrix(){
   const tasks=[['대형 굴착','EXCAVATION'],['소구경 굴착','SMALL_EXCAVATION'],['상차·적치','LOADING'],['운반','HAUL'],['Tool Pose 반환','Tool Pose'],['원격 중지','원격 중지']];
   return `<table class="data-table"><thead><tr><th>장비</th>${tasks.map(t=>`<th>${t[0]}</th>`).join('')}</tr></thead><tbody>${state.equipment.map(e=>`<tr><td><div class="table-primary">${e.model}</div><div class="table-sub">${e.id}</div></td>${tasks.map(([label,key])=>{const ok=e.supports.includes(key)||e.evidence.includes(key)||e.autonomy.includes(key);const partial=!ok && ((key==='EXCAVATION'&&e.supports.includes('SMALL_EXCAVATION'))||(key==='HAUL'&&e.supports.includes('HAUL_SUPPORT')));return `<td><span class="${ok?'matrix-check':partial?'matrix-partial':'matrix-none'}">${ok?'✓':partial?'△':'—'}</span></td>`}).join('')}</tr>`).join('')}</tbody></table>`;
@@ -669,9 +702,16 @@ document.addEventListener('click',e=>{
   const zone=e.target.closest('[data-wp-id]');
   if(zone){ state.selectedWpId=zone.dataset.wpId; renderAll(); return; }
   const editR=e.target.closest('[data-edit-readiness]'); if(editR){openReadinessModal(editR.dataset.editReadiness);return}
+  if(e.target.closest('.equipment-card .source-link'))return;
   const editE=e.target.closest('[data-edit-equipment]'); if(editE){openEquipmentModal(editE.dataset.editEquipment);return}
   const editW=e.target.closest('[data-edit-wp]'); if(editW){openWpModal(editW.dataset.editWp);return}
   const action=e.target.closest('[data-action]'); if(action){handleAction(action.dataset.action);return}
+});
+document.addEventListener('keydown',event=>{
+  const card=event.target.closest?.('.equipment-card[data-edit-equipment]');
+  if(!card||!['Enter',' '].includes(event.key))return;
+  event.preventDefault();
+  openEquipmentModal(card.dataset.editEquipment);
 });
 $('#navList').addEventListener('click',e=>{const b=e.target.closest('.nav-item');if(b)navigate(b.dataset.page)});
 $('#mobileMenuBtn').addEventListener('click',()=>$('.sidebar').classList.toggle('open'));
@@ -771,6 +811,41 @@ function openModal({eyebrow='EDIT',title,body,footer}){
   $$('[data-modal-close]',$('#modalFooter')).forEach(b=>b.addEventListener('click',closeModal));
 }
 function closeModal(){$('#modalBackdrop').classList.add('hidden');$('#modalBackdrop').setAttribute('aria-hidden','true')}
+function openNotificationsModal(){
+  const recentEvents=state.events.slice(0,10);
+  openModal({
+    eyebrow:'NOTIFICATIONS',
+    title:'최근 알림',
+    body:recentEvents.length
+      ?`<div class="notification-list">${renderEvents(recentEvents)}</div>`
+      :'<div class="empty-state">새로운 알림이 없습니다.</div>',
+    footer:'<button class="primary-button" data-modal-close>확인</button>',
+  });
+}
+function openProfileModal(){
+  if(!currentUser){
+    toast('사용자 정보 확인 중','로그인 정보를 불러온 뒤 다시 시도해 주세요.','warning');
+    return;
+  }
+  const roleLabel={admin:'관리자',manager:'현장관리자',reviewer:'검토자',viewer:'조회자'}[currentUser.role]||currentUser.role;
+  const statusLabel=currentUser.is_active?'활성':'비활성';
+  openModal({
+    eyebrow:'MY PROFILE',
+    title:'내 계정 정보',
+    body:`<div class="profile-summary">
+      <div class="profile-summary-avatar">${esc((currentUser.full_name||currentUser.username).trim().slice(0,1).toUpperCase())}</div>
+      <div><strong>${esc(currentUser.full_name)}</strong><span>${esc(roleLabel)}</span></div>
+    </div>
+    <div class="profile-detail-list">
+      <div><span>로그인 아이디</span><strong>${esc(currentUser.username)}</strong></div>
+      <div><span>표시 이름</span><strong>${esc(currentUser.full_name)}</strong></div>
+      <div><span>권한</span><strong>${esc(roleLabel)}</strong></div>
+      <div><span>계정 상태</span><strong class="profile-status ${currentUser.is_active?'active':'inactive'}">${statusLabel}</strong></div>
+    </div>
+    <p class="profile-security-note">비밀번호와 로그인 보안 키는 화면에 표시하지 않습니다.</p>`,
+    footer:'<button class="primary-button" data-modal-close>확인</button>',
+  });
+}
 function openProjectModal(){
   const p=state.project;
   openModal({eyebrow:'PROJECT CONFIGURATION',title:'현장·건설사 기본정보',body:`<div class="form-grid"><div class="form-group full"><label>프로젝트명</label><input class="form-control" id="fProjectName" value="${esc(p.name)}"></div><div class="form-group"><label>건설사 / 시공사</label><input class="form-control" id="fContractor" value="${esc(state.company.contractor)}"></div><div class="form-group"><label>현장관리자</label><input class="form-control" id="fManager" value="${esc(state.manager.name)}"></div><div class="form-group"><label>현장 위치</label><input class="form-control" id="fLocation" value="${esc(p.location)}"></div><div class="form-group"><label>좌표계</label><input class="form-control" id="fCoord" value="${esc(p.coordinateSystem)}"></div><div class="form-group"><label>착공일</label><input type="date" class="form-control" id="fStart" value="${p.startDate}"></div><div class="form-group"><label>준공일</label><input type="date" class="form-control" id="fEnd" value="${p.endDate}"></div><div class="form-group"><label>터파기 물량 (㎥)</label><input type="number" class="form-control" id="fVolume" value="${p.excavationVolume}"></div><div class="form-group"><label>도급 총공사비 (원)</label><input type="number" class="form-control" id="fCost" value="${p.contractCost}"></div></div>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="saveProjectBtn">변경 저장</button>`});
@@ -781,8 +856,16 @@ function openReadinessModal(id){
   openModal({eyebrow:'DATA READINESS',title:id?'데이터 항목 수정':'데이터 항목 추가',body:`<div class="form-grid"><div class="form-group"><label>항목명</label><input class="form-control" id="rName" value="${esc(item.name)}"></div><div class="form-group"><label>카테고리</label><input class="form-control" id="rCategory" value="${esc(item.category)}"></div><div class="form-group"><label>등급</label><select class="form-control" id="rGrade">${['A','B','C','D'].map(x=>`<option ${x===item.grade?'selected':''}>${x}</option>`).join('')}</select></div><div class="form-group"><label>상태</label><select class="form-control" id="rStatus">${[['ready','확보'],['simulated','가상 적용'],['needs-confirmation','확인 필요'],['missing','미제공']].map(([v,l])=>`<option value="${v}" ${v===item.status?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group"><label>데이터 출처</label><select class="form-control" id="rSource">${['PUBLIC PROJECT','MANUFACTURER SPEC','STANDARD-BASED','USER INPUT','ASSUMED','SIMULATED'].map(x=>`<option ${x===item.source?'selected':''}>${x}</option>`).join('')}</select></div><div class="form-group"><label>현재 값</label><input class="form-control" id="rValue" value="${esc(item.value)}"></div><div class="form-group full"><label>설명</label><textarea class="form-control" id="rDesc">${esc(item.desc)}</textarea></div><div class="form-group full"><label>누락·확인 시 시스템 행동</label><input class="form-control" id="rAction" value="${esc(item.action)}"></div><div class="form-group full"><label>관련 파일 (로컬 파일명만 표시)</label><input type="file" class="form-control" id="rFile"><span class="form-hint">컨셉 버전에서는 파일 내용을 자동 분석하지 않고 등록 여부와 파일명만 관리합니다.</span></div></div>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="saveReadinessBtn">저장</button>`});
   $('[data-modal-close]').addEventListener('click',closeModal);$('#saveReadinessBtn').addEventListener('click',()=>{item.name=$('#rName').value;item.category=$('#rCategory').value;item.grade=$('#rGrade').value;item.status=$('#rStatus').value;item.source=$('#rSource').value;item.value=$('#rValue').value;item.desc=$('#rDesc').value;item.action=$('#rAction').value;const f=$('#rFile').files[0];if(f){item.value=`${item.value} · ${f.name}`;item.status='ready';item.source='USER INPUT'}if(!id)state.readiness.push(item);closeModal();toast('데이터 준비도 갱신',`${item.name} 항목이 저장됐습니다.`,'success');renderAll()});
 }
+function equipmentEditorPreview(e){
+  const imageUrl=EQUIPMENT_PHOTOS[e.model];
+  const visual=imageUrl
+    ?`<img src="${imageUrl}" alt="${esc(e.model)} 장비 전체 사진">`
+    :machineSvg(e.icon,e.color);
+  return `<div class="equipment-editor-preview">${visual}<div><strong>${esc(e.model)}</strong><span>${esc(e.manufacturer)} · ${esc(e.type)}</span></div></div>`;
+}
 function openEquipmentModal(id){
   const e=id?state.equipment.find(x=>x.id===id):{id:`EQ-${Date.now()}`,model:'',manufacturer:'HD Hyundai',type:'건설기계',icon:'excavator',status:'available',operatingWeight:0,bucketCapacity:0,workBucket:0,power:0,maxDepth:0,travelSpeed:0,supports:[],evidence:[],autonomy:[],autonomySource:'ASSUMED',specSource:'USER INPUT',sourceUrl:'',color:'#f0ad2e',assigned:''};
+  queueMicrotask(()=>$('#modalBody')?.insertAdjacentHTML('afterbegin',equipmentEditorPreview(e)));
   openModal({eyebrow:'EQUIPMENT REGISTRY',title:id?`${e.model} 제원·연동 수정`:'장비 등록',body:`<div class="form-grid"><div class="form-group"><label>장비 ID</label><input class="form-control" id="eId" value="${esc(e.id)}" ${id?'readonly':''}></div><div class="form-group"><label>모델명</label><input class="form-control" id="eModel" value="${esc(e.model)}"></div><div class="form-group"><label>제조사</label><input class="form-control" id="eManufacturer" value="${esc(e.manufacturer)}"></div><div class="form-group"><label>장비 종류</label><input class="form-control" id="eType" value="${esc(e.type)}"></div><div class="form-group"><label>운전중량 (t)</label><input type="number" step="0.01" class="form-control" id="eWeight" value="${e.operatingWeight}"></div><div class="form-group"><label>표준 버킷 (㎥)</label><input type="number" step="0.01" class="form-control" id="eBucket" value="${e.bucketCapacity}"></div><div class="form-group"><label>프로젝트 작업 버킷 (㎥)</label><input type="number" step="0.01" class="form-control" id="eWorkBucket" value="${e.workBucket}"></div><div class="form-group"><label>정격출력 (kW)</label><input type="number" step="0.1" class="form-control" id="ePower" value="${e.power}"></div><div class="form-group"><label>최대 굴착깊이 (m)</label><input type="number" step="0.01" class="form-control" id="eDepth" value="${e.maxDepth}"></div><div class="form-group"><label>제원 출처</label><select class="form-control" id="eSource">${['MANUFACTURER SPEC','PROJECT REQUIREMENT','USER INPUT','ASSUMED'].map(x=>`<option ${x===e.specSource?'selected':''}>${x}</option>`).join('')}</select></div><div class="form-group full"><label>지원 작업 (쉼표 구분)</label><input class="form-control" id="eSupports" value="${esc(e.supports.join(', '))}"></div><div class="form-group full"><label>반환 Evidence (쉼표 구분)</label><input class="form-control" id="eEvidence" value="${esc(e.evidence.join(', '))}"></div><div class="form-group full"><label>가정한 자율화 인터페이스 (쉼표 구분)</label><input class="form-control" id="eAutonomy" value="${esc(e.autonomy.join(', '))}"><span class="form-hint">실제 HD 장비 API가 아니라 컨셉 검증용 ASSUMED 항목입니다.</span></div><div class="form-group full"><label>공식 제원 URL</label><input class="form-control" id="eUrl" value="${esc(e.sourceUrl)}"></div></div>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="saveEquipmentBtn">장비 저장</button>`});
   $('[data-modal-close]').addEventListener('click',closeModal);$('#saveEquipmentBtn').addEventListener('click',()=>{e.id=$('#eId').value;e.model=$('#eModel').value;e.manufacturer=$('#eManufacturer').value;e.type=$('#eType').value;e.operatingWeight=Number($('#eWeight').value)||0;e.bucketCapacity=Number($('#eBucket').value)||0;e.workBucket=Number($('#eWorkBucket').value)||0;e.power=Number($('#ePower').value)||0;e.maxDepth=Number($('#eDepth').value)||0;e.specSource=$('#eSource').value;e.supports=$('#eSupports').value.split(',').map(s=>s.trim()).filter(Boolean);e.evidence=$('#eEvidence').value.split(',').map(s=>s.trim()).filter(Boolean);e.autonomy=$('#eAutonomy').value.split(',').map(s=>s.trim()).filter(Boolean);e.sourceUrl=$('#eUrl').value;if(!id)state.equipment.push(e);closeModal();toast('장비 Registry 저장',`${e.model}의 제원과 Capability가 반영됐습니다.`,'success');renderAll()});
 }
@@ -838,6 +921,8 @@ prepareState();
 renderAll();
 if(!safeGetItem(ONBOARD_KEY)) openOnboarding();
 bootstrapSharedState();
+$('#notificationsBtn')?.addEventListener('click',openNotificationsModal);
+$('#profileBtn')?.addEventListener('click',openProfileModal);
 $('#logoutBtn')?.addEventListener('click',async()=>{
   try{await apiFetch('/auth/logout',{method:'POST',body:'{}'})}catch(e){}
   location.href='/login';
