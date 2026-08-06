@@ -1,0 +1,665 @@
+{
+  "selectedPage": "dashboard",
+  "selectedWpId": "WP-SASANG-C01",
+  "manager": {
+    "name": "김현장",
+    "role": "현장관리자"
+  },
+  "company": {
+    "name": "HDMI 스마트건설 실증팀",
+    "contractor": "한빛건설(데모)",
+    "manufacturer": "HD현대 건설기계"
+  },
+  "project": {
+    "name": "사상구 감전처리분구 하수관로 정비사업",
+    "shortName": "사상구 감전처리분구",
+    "location": "부산광역시 사상구 감전동",
+    "scope": "D80–200 mm · L=537.1 m · 배수설비 70가구",
+    "startDate": "2024-12-05",
+    "endDate": "2025-10-30",
+    "totalCost": 1742700000,
+    "contractCost": 1593790000,
+    "netCost": 557351145,
+    "earthworkCost": 248343950,
+    "earthworkShare": 44.6,
+    "excavationVolume": 2279,
+    "coordinateSystem": "현장 로컬 좌표계 — 관리자 확인 필요",
+    "sourceType": "PUBLIC PROJECT DATA"
+  },
+  "readiness": [
+    {
+      "id": "coord",
+      "name": "현장 좌표계",
+      "category": "현장 기준",
+      "grade": "A",
+      "status": "needs-confirmation",
+      "source": "USER INPUT",
+      "value": "현장 로컬 좌표계",
+      "action": "배포 전 관리자 확인",
+      "desc": "모든 작업영역과 장비 위치를 동일 기준으로 연결합니다."
+    },
+    {
+      "id": "zone",
+      "name": "작업구역 Geometry",
+      "category": "작업지시",
+      "grade": "A",
+      "status": "simulated",
+      "source": "SIMULATED",
+      "value": "Zone A–D · 537.1m 데모 분할",
+      "action": "컨셉 배포 가능",
+      "desc": "실제 GIS 좌표가 없어 공개 연장을 4개 Zone으로 가상 분할했습니다."
+    },
+    {
+      "id": "quantity",
+      "name": "목표 작업량",
+      "category": "작업지시",
+      "grade": "A",
+      "status": "ready",
+      "source": "PUBLIC PROJECT",
+      "value": "터파기 2,279㎥",
+      "action": "정상",
+      "desc": "사상구 설계·도급 내역에서 확인한 전체 터파기 물량입니다."
+    },
+    {
+      "id": "restricted",
+      "name": "금지·보호구역",
+      "category": "안전 제약",
+      "grade": "A",
+      "status": "needs-confirmation",
+      "source": "USER INPUT",
+      "value": "도로 점유구역 1개 · 매설물 미확인",
+      "action": "조건부 배포",
+      "desc": "자율화 장비가 반드시 회피해야 할 공간 제약입니다."
+    },
+    {
+      "id": "baseline",
+      "name": "작업 전 기준 형상",
+      "category": "결과 검토",
+      "grade": "B",
+      "status": "simulated",
+      "source": "SIMULATED",
+      "value": "Synthetic baseline surface v1",
+      "action": "자동 비교 활성",
+      "desc": "실제 PCD 대신 가상 기준면을 사용합니다."
+    },
+    {
+      "id": "tolerance",
+      "name": "허용오차·완료기준",
+      "category": "결과 검토",
+      "grade": "B",
+      "status": "needs-confirmation",
+      "source": "ASSUMED",
+      "value": "깊이 ±50mm · 관측률 90%",
+      "action": "관리자 승인 필요",
+      "desc": "공식 현장 기준이 아니라 컨셉 검증용 가정값입니다."
+    },
+    {
+      "id": "evidence",
+      "name": "필수 Evidence",
+      "category": "결과 검토",
+      "grade": "B",
+      "status": "ready",
+      "source": "STANDARD-BASED",
+      "value": "Pose · Tool path · Before/After · Events",
+      "action": "정상",
+      "desc": "장비의 완료 선언을 검토하기 위한 반환 데이터 항목입니다."
+    },
+    {
+      "id": "spec",
+      "name": "장비 Capability",
+      "category": "장비 연동",
+      "grade": "C",
+      "status": "ready",
+      "source": "MANUFACTURER SPEC",
+      "value": "HD 공식 공개 제원 3종",
+      "action": "적합성 판정 가능",
+      "desc": "공개 제원과 자율화 인터페이스 가정을 구분해 관리합니다."
+    },
+    {
+      "id": "route",
+      "name": "권장 이동경로",
+      "category": "운영 효율",
+      "grade": "C",
+      "status": "missing",
+      "source": "USER INPUT",
+      "value": "미제공",
+      "action": "경고 후 진행 가능",
+      "desc": "장비 자율화 시스템이 자체 경로를 생성할 수 있다고 가정합니다."
+    },
+    {
+      "id": "utilities",
+      "name": "지중 매설물 정보",
+      "category": "현장 변화",
+      "grade": "D",
+      "status": "missing",
+      "source": "USER INPUT",
+      "value": "미등록",
+      "action": "현장 확인으로 대체",
+      "desc": "실제 투입 전에는 별도 확인이 필요한 데이터입니다."
+    },
+    {
+      "id": "remote",
+      "name": "원격개입 정책",
+      "category": "현장 변화",
+      "grade": "D",
+      "status": "simulated",
+      "source": "ASSUMED",
+      "value": "중대 예외 발생 시 원격 중지",
+      "action": "컨셉 적용",
+      "desc": "실제 제조사 원격제어 정책이 아닌 데모 가정입니다."
+    }
+  ],
+  "equipment": [
+    {
+      "id": "HX210AL-01",
+      "model": "HX210AL",
+      "manufacturer": "HD Hyundai",
+      "type": "중형 굴착기",
+      "icon": "excavator",
+      "status": "available",
+      "operatingWeight": 22.15,
+      "bucketCapacity": 0.92,
+      "workBucket": 0.6,
+      "power": 128,
+      "maxDepth": 6.64,
+      "travelSpeed": 5.8,
+      "supports": [
+        "EXCAVATION",
+        "GRADING"
+      ],
+      "evidence": [
+        "Equipment Pose",
+        "Tool Pose",
+        "Work Events",
+        "Engine Status"
+      ],
+      "autonomy": [
+        "Work Package 수신",
+        "작업 상태 반환",
+        "원격 중지"
+      ],
+      "autonomySource": "ASSUMED",
+      "specSource": "MANUFACTURER SPEC",
+      "sourceUrl": "https://www.hyundai-ce.com/en/products/view?productsSeq=374",
+      "color": "#f3b331",
+      "assigned": "WP-SASANG-C01"
+    },
+    {
+      "id": "HX48AZ-02",
+      "model": "HX48AZ",
+      "manufacturer": "HD Hyundai",
+      "type": "소형 굴착기",
+      "icon": "excavator",
+      "status": "available",
+      "operatingWeight": 5.03,
+      "bucketCapacity": 0.15,
+      "workBucket": 0.15,
+      "power": 29.1,
+      "maxDepth": 3.5,
+      "travelSpeed": 4.4,
+      "supports": [
+        "SMALL_EXCAVATION",
+        "UTILITY"
+      ],
+      "evidence": [
+        "Equipment Pose",
+        "Tool Pose",
+        "Work Events"
+      ],
+      "autonomy": [
+        "Work Package 수신",
+        "작업 상태 반환"
+      ],
+      "autonomySource": "ASSUMED",
+      "specSource": "MANUFACTURER SPEC",
+      "sourceUrl": "https://www.hyundai-ce.com/en/products/view?productsSeq=573",
+      "color": "#f0aa2c",
+      "assigned": "WP-SASANG-B01"
+    },
+    {
+      "id": "HL930ATM-01",
+      "model": "HL930A TM",
+      "manufacturer": "HD Hyundai",
+      "type": "휠 로더",
+      "icon": "loader",
+      "status": "standby",
+      "operatingWeight": 11.96,
+      "bucketCapacity": 1.7,
+      "workBucket": 1.7,
+      "power": 96,
+      "maxDepth": 0,
+      "travelSpeed": 39.5,
+      "supports": [
+        "LOADING",
+        "STOCKPILE",
+        "HAUL_SUPPORT"
+      ],
+      "evidence": [
+        "Equipment Pose",
+        "Cycle Events",
+        "Engine Status"
+      ],
+      "autonomy": [
+        "작업 패키지 수신",
+        "적재 사이클 반환"
+      ],
+      "autonomySource": "ASSUMED",
+      "specSource": "MANUFACTURER SPEC",
+      "sourceUrl": "https://www.hyundai-ce.com/en/products/view?productsSeq=510",
+      "color": "#eaa52a",
+      "assigned": "WP-HAUL-01"
+    },
+    {
+      "id": "DUMP45-01",
+      "model": "Generic Dump 4.5t",
+      "manufacturer": "Fleet Partner",
+      "type": "덤프트럭",
+      "icon": "dump",
+      "status": "working",
+      "operatingWeight": 4.5,
+      "bucketCapacity": 0,
+      "workBucket": 0,
+      "power": 0,
+      "maxDepth": 0,
+      "travelSpeed": 80,
+      "supports": [
+        "HAUL"
+      ],
+      "evidence": [
+        "Vehicle Pose",
+        "Trip Events",
+        "Payload Estimate"
+      ],
+      "autonomy": [
+        "배차 명령 수신",
+        "운반 이벤트 반환"
+      ],
+      "autonomySource": "ASSUMED",
+      "specSource": "PROJECT REQUIREMENT",
+      "sourceUrl": "",
+      "color": "#4d9ab5",
+      "assigned": "WP-HAUL-01"
+    },
+    {
+      "id": "DUMP24-01",
+      "model": "Generic Dump 24t",
+      "manufacturer": "Fleet Partner",
+      "type": "대형 덤프트럭",
+      "icon": "dump",
+      "status": "offline",
+      "operatingWeight": 24,
+      "bucketCapacity": 0,
+      "workBucket": 0,
+      "power": 0,
+      "maxDepth": 0,
+      "travelSpeed": 70,
+      "supports": [
+        "HAUL",
+        "DISPOSAL"
+      ],
+      "evidence": [
+        "Vehicle Pose",
+        "Trip Events",
+        "Payload Estimate"
+      ],
+      "autonomy": [
+        "배차 명령 수신",
+        "운반 이벤트 반환"
+      ],
+      "autonomySource": "ASSUMED",
+      "specSource": "PROJECT REQUIREMENT",
+      "sourceUrl": "",
+      "color": "#5f7d92",
+      "assigned": ""
+    }
+  ],
+  "workPackages": [
+    {
+      "id": "WP-SASANG-A01",
+      "zone": "A",
+      "name": "본관 터파기 — 서측 구간",
+      "task": "EXCAVATION",
+      "length": 120,
+      "target": 420,
+      "raw": 100,
+      "qualified": 100,
+      "remaining": 0,
+      "status": "accepted",
+      "version": 1,
+      "eta": "완료",
+      "risk": "low",
+      "start": "08:20",
+      "end": "11:40",
+      "x": 104,
+      "y": 278,
+      "width": 190,
+      "color": "#2d9477",
+      "completionThreshold": 100,
+      "observationThreshold": 90,
+      "toleranceMm": 50,
+      "assignments": [
+        {
+          "id": "AS-A-1",
+          "equipmentId": "HX210AL-01",
+          "role": "주 작업",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "WP-SASANG-B01",
+      "zone": "B",
+      "name": "배수설비 소구경 굴착",
+      "task": "SMALL_EXCAVATION",
+      "length": 140,
+      "target": 590,
+      "raw": 42,
+      "qualified": 37,
+      "remaining": 372,
+      "status": "executing",
+      "version": 1,
+      "eta": "3h 20m",
+      "risk": "medium",
+      "start": "10:05",
+      "end": "-",
+      "x": 294,
+      "y": 258,
+      "width": 205,
+      "color": "#159f96",
+      "completionThreshold": 100,
+      "observationThreshold": 90,
+      "toleranceMm": 50,
+      "assignments": [
+        {
+          "id": "AS-B-1",
+          "equipmentId": "HX48AZ-02",
+          "role": "주 작업",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "WP-SASANG-C01",
+      "zone": "C",
+      "name": "본관 터파기 — 교차로 구간",
+      "task": "EXCAVATION",
+      "length": 140,
+      "target": 639,
+      "raw": 78,
+      "qualified": 69,
+      "remaining": 198,
+      "status": "review",
+      "version": 1,
+      "eta": "검토 중",
+      "risk": "high",
+      "start": "09:10",
+      "end": "14:42",
+      "x": 499,
+      "y": 238,
+      "width": 207,
+      "color": "#e5a832",
+      "completionThreshold": 100,
+      "observationThreshold": 90,
+      "toleranceMm": 50,
+      "assignments": [
+        {
+          "id": "AS-C-1",
+          "equipmentId": "HX210AL-01",
+          "role": "주 작업",
+          "quantity": 1
+        },
+        {
+          "id": "AS-C-2",
+          "equipmentId": "DUMP45-01",
+          "role": "운반",
+          "quantity": 5
+        }
+      ]
+    },
+    {
+      "id": "WP-SASANG-D01",
+      "zone": "D",
+      "name": "본관 터파기 — 동측 구간",
+      "task": "EXCAVATION",
+      "length": 137.1,
+      "target": 630,
+      "raw": 0,
+      "qualified": 0,
+      "remaining": 630,
+      "status": "ready",
+      "version": 1,
+      "eta": "대기",
+      "risk": "low",
+      "start": "-",
+      "end": "-",
+      "x": 706,
+      "y": 218,
+      "width": 194,
+      "color": "#3d7fa0",
+      "completionThreshold": 100,
+      "observationThreshold": 90,
+      "toleranceMm": 50,
+      "assignments": [
+        {
+          "id": "AS-D-1",
+          "equipmentId": "HX210AL-01",
+          "role": "주 작업",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "WP-HAUL-01",
+      "zone": "H",
+      "name": "가적치장 반출·운반",
+      "task": "HAUL",
+      "length": 0,
+      "target": 700,
+      "raw": 33,
+      "qualified": 33,
+      "remaining": 469,
+      "status": "executing",
+      "version": 1,
+      "eta": "5h 10m",
+      "risk": "medium",
+      "start": "09:35",
+      "end": "-",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "color": "#4d9ab5",
+      "completionThreshold": 100,
+      "observationThreshold": 85,
+      "toleranceMm": 0,
+      "assignments": [
+        {
+          "id": "AS-H-1",
+          "equipmentId": "HL930ATM-01",
+          "role": "상차",
+          "quantity": 1
+        },
+        {
+          "id": "AS-H-2",
+          "equipmentId": "DUMP45-01",
+          "role": "운반",
+          "quantity": 5
+        }
+      ]
+    }
+  ],
+  "evidence": {
+    "WP-SASANG-A01": {
+      "rule": 100,
+      "completeness": 100,
+      "confidence": 94,
+      "observation": 96,
+      "workFinished": true,
+      "resultDeviationMm": 22,
+      "overcutVolume": 0,
+      "state": "accepted",
+      "missing": [],
+      "conflicts": [],
+      "externalEvidence": [
+        {
+          "id": "EXT-A01",
+          "type": "현장관리자 확인",
+          "performer": "김현장",
+          "time": "11:42",
+          "target": "Zone A 전체",
+          "result": "완료 확인",
+          "accuracy": "관리자 확인",
+          "attachment": "zone-a-check.jpg"
+        }
+      ]
+    },
+    "WP-SASANG-B01": {
+      "rule": 96,
+      "completeness": 62,
+      "confidence": 78,
+      "observation": 74,
+      "workFinished": false,
+      "resultDeviationMm": 0,
+      "overcutVolume": 0,
+      "state": "collecting",
+      "missing": [
+        "작업 종료 이벤트",
+        "After Surface"
+      ],
+      "conflicts": [],
+      "externalEvidence": []
+    },
+    "WP-SASANG-C01": {
+      "rule": 94,
+      "completeness": 82,
+      "confidence": 68,
+      "observation": 76,
+      "workFinished": true,
+      "resultDeviationMm": 78,
+      "overcutVolume": 9,
+      "state": "additional-check",
+      "missing": [
+        "남측 12% 구역 관측 데이터",
+        "외부 확인 기록"
+      ],
+      "conflicts": [],
+      "externalEvidence": []
+    },
+    "WP-SASANG-D01": {
+      "rule": 0,
+      "completeness": 25,
+      "confidence": 0,
+      "observation": 0,
+      "workFinished": false,
+      "resultDeviationMm": 0,
+      "overcutVolume": 0,
+      "state": "not-started",
+      "missing": [
+        "Execution Session",
+        "Result Evidence"
+      ],
+      "conflicts": [],
+      "externalEvidence": []
+    },
+    "WP-HAUL-01": {
+      "rule": 98,
+      "completeness": 58,
+      "confidence": 81,
+      "observation": 82,
+      "workFinished": false,
+      "resultDeviationMm": 0,
+      "overcutVolume": 0,
+      "state": "collecting",
+      "missing": [
+        "운반 종료 이벤트"
+      ],
+      "conflicts": [],
+      "externalEvidence": []
+    }
+  },
+  "events": [
+    {
+      "time": "17:42",
+      "type": "warning",
+      "title": "Zone C 추가 확인 필요",
+      "desc": "남측 12% 구역의 관측 데이터가 누락되었습니다."
+    },
+    {
+      "time": "17:36",
+      "type": "success",
+      "title": "Zone A 결과 승인",
+      "desc": "Evidence Bundle EB-A02가 Plan v1 기준 상태에 반영되었습니다."
+    },
+    {
+      "time": "17:21",
+      "type": "info",
+      "title": "HX48AZ 작업 상태 수신",
+      "desc": "WP-SASANG-B01 Raw Progress 42% · ETA 3h 20m"
+    },
+    {
+      "time": "16:58",
+      "type": "danger",
+      "title": "Acceptance Conflict 생성",
+      "desc": "WP-SASANG-C01 결과 인수 전 관리자 검토가 필요합니다."
+    },
+    {
+      "time": "16:42",
+      "type": "info",
+      "title": "Work Commit 수신",
+      "desc": "HX210AL-01이 작업 종료 이벤트와 결과 패키지를 제출했습니다."
+    }
+  ],
+  "versions": [
+    {
+      "type": "site",
+      "code": "Site Base v1",
+      "title": "사상구 공개 발주 데이터 등록",
+      "desc": "공사규모, 물량, 장비 산출조건과 가상 Zone geometry를 결합했습니다.",
+      "time": "08:10",
+      "actor": "SiteGit",
+      "state": "done"
+    },
+    {
+      "type": "plan",
+      "code": "Plan v1.0",
+      "title": "자율화 작업계획 발행",
+      "desc": "Zone A–D를 Work Package로 분할하고 장비 요구조건을 연결했습니다.",
+      "time": "08:18",
+      "actor": "김현장",
+      "state": "done"
+    },
+    {
+      "type": "work",
+      "code": "WP-SASANG-A01 v1",
+      "title": "Zone A 작업 완료",
+      "desc": "HX210AL-01 작업 결과가 승인되어 기준 상태에 반영됐습니다.",
+      "time": "11:45",
+      "actor": "HX210AL-01",
+      "state": "success"
+    },
+    {
+      "type": "work",
+      "code": "WP-SASANG-C01 v1",
+      "title": "Zone C Immediate Commit",
+      "desc": "품질 유효 진척률 69%, 잔여 198㎥, 관측 누락 12%.",
+      "time": "14:42",
+      "actor": "HX210AL-01",
+      "state": "warning",
+      "branch": true
+    },
+    {
+      "type": "evidence",
+      "code": "EB-C01",
+      "title": "추가 확인 대기",
+      "desc": "관리자 확인 또는 외부 Evidence 추가 후 인수 여부를 결정합니다.",
+      "time": "17:42",
+      "actor": "SiteGit",
+      "state": "current",
+      "branch": true
+    }
+  ],
+  "simulation": {
+    "running": false,
+    "stage": 5,
+    "selectedScenario": "conflict"
+  }
+}

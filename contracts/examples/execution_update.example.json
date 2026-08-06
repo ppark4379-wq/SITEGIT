@@ -1,0 +1,10 @@
+{
+  "work_package_id": "WP-SASANG-C01",
+  "execution_id": "EX-C01-001",
+  "equipment_id": "HX210AL-01",
+  "timestamp": "2026-08-06T17:00:00+09:00",
+  "status": "IN_PROGRESS",
+  "raw_progress_percent": 78,
+  "qualified_progress_percent": 69,
+  "remaining_quantity_m3": 198
+}

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0d3d5c" />
+  <title>SiteGit v2 — Autonomous Work Assurance</title>
+  <meta name="description" content="사상구 공개 발주 데이터를 기반으로 만든 SiteGit 자율화 건설장비 작업운영·검증 컨셉 프로토타입" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="sidebar" aria-label="주요 메뉴">
+      <div class="brand-wrap">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img"><path d="M12 10h24v7H19v7h15v7H19v7H12z"/><path d="M31 24h7v14h-7z"/></svg>
+        </div>
+        <div>
+          <div class="brand-name">SiteGit</div>
+          <div class="brand-sub">WORK ASSURANCE</div>
+        </div>
+      </div>
+
+      <div class="project-mini" id="projectMini">
+        <span class="pulse-dot"></span>
+        <div>
+          <strong>사상구 데모 현장</strong>
+          <small>Plan v1.0 · Shared Local DB</small>
+        </div>
+      </div>
+
+      <nav class="nav-list" id="navList">
+        <button class="nav-item active" data-page="dashboard">
+          <span class="nav-icon">⌂</span><span>통합 관제</span><span class="nav-badge" id="navAlertBadge">3</span>
+        </button>
+        <button class="nav-item" data-page="readiness">
+          <span class="nav-icon">◫</span><span>데이터 준비도</span>
+        </button>
+        <button class="nav-item" data-page="workpackages">
+          <span class="nav-icon">▤</span><span>Work Package</span>
+        </button>
+        <button class="nav-item" data-page="equipment">
+          <span class="nav-icon">◆</span><span>장비 Registry</span>
+        </button>
+        <button class="nav-item" data-page="evidence">
+          <span class="nav-icon">◎</span><span>결과 검토</span>
+        </button>
+        <button class="nav-item" data-page="versions">
+          <span class="nav-icon">⑂</span><span>Version 이력</span>
+        </button>
+        <button class="nav-item" data-page="settings">
+          <span class="nav-icon">⚙</span><span>설정·데이터</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <div class="system-chip">
+          <span class="status-light"></span>
+          <div><strong>Shared Server</strong><small>SQLite · 시뮬레이터 미연동</small></div>
+        </div>
+        <button class="ghost-button full" id="openOnboardingBtn">초기 설정 다시 열기</button>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="mobile-menu" id="mobileMenuBtn" aria-label="메뉴 열기">☰</button>
+          <div>
+            <div class="eyebrow" id="pageEyebrow">AUTONOMOUS WORK ASSURANCE</div>
+            <h1 id="pageTitle">통합 관리자 Control Center</h1>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <div class="sync-indicator syncing" id="syncIndicator"><span></span>공동 DB 연결 중</div><div class="source-pill"><span></span> 실제 공개값 + 시뮬레이션 데이터</div>
+          <button class="icon-button" id="notificationsBtn" aria-label="알림">🔔<span class="tiny-badge">3</span></button>
+          <button class="profile-button" id="profileBtn">
+            <span class="avatar">현</span>
+            <span><strong id="topManagerName">김현장</strong><small>현장관리자</small></span>
+          </button>
+          <button class="icon-button logout-button" id="logoutBtn" aria-label="로그아웃" title="로그아웃">↪</button>
+        </div>
+      </header>
+
+      <main class="main-content">
+        <section id="page-dashboard" class="page active"></section>
+        <section id="page-readiness" class="page"></section>
+        <section id="page-workpackages" class="page"></section>
+        <section id="page-equipment" class="page"></section>
+        <section id="page-evidence" class="page"></section>
+        <section id="page-versions" class="page"></section>
+        <section id="page-settings" class="page"></section>
+      </main>
+    </section>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop" aria-hidden="true">
+    <div class="modal" id="genericModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-header">
+        <div><div class="eyebrow" id="modalEyebrow">EDIT</div><h2 id="modalTitle">항목 수정</h2></div>
+        <button class="icon-button plain" id="closeModalBtn" aria-label="닫기">×</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer" id="modalFooter"></div>
+    </div>
+  </div>
+
+  <div class="onboarding-backdrop hidden" id="onboardingBackdrop">
+    <div class="onboarding-shell">
+      <div class="onboarding-visual">
+        <div class="grid-glow"></div>
+        <div class="intro-brand">
+          <div class="brand-mark xl">
+            <svg viewBox="0 0 48 48"><path d="M12 10h24v7H19v7h15v7H19v7H12z"/><path d="M31 24h7v14h-7z"/></svg>
+          </div>
+          <div><strong>SiteGit</strong><span>Autonomous Work Assurance</span></div>
+        </div>
+        <div class="onboarding-message">
+          <div class="step-kicker">무인화 시대의 Gray Zone</div>
+          <h2>건설사의 계획을 장비가 수행할 작업으로,<br/>장비의 결과를 사람이 믿을 근거로.</h2>
+          <p>사상구 공개 발주 데이터와 HD현대 건설기계 공개 제원을 기반으로 구성한 컨셉 프로토타입입니다.</p>
+        </div>
+        <div class="flow-preview" aria-hidden="true">
+          <div><span>01</span><b>Site Data</b></div><i>→</i>
+          <div><span>02</span><b>Work Package</b></div><i>→</i>
+          <div><span>03</span><b>Autonomous Work</b></div><i>→</i>
+          <div><span>04</span><b>Evidence & Release</b></div>
+        </div>
+        <div class="origin-legend compact">
+          <span class="origin public">PUBLIC PROJECT</span>
+          <span class="origin manufacturer">MANUFACTURER SPEC</span>
+          <span class="origin assumed">ASSUMED</span>
+          <span class="origin simulated">SIMULATED</span>
+        </div>
+      </div>
+      <div class="onboarding-panel">
+        <div class="onboarding-progress" id="onboardingProgress"></div>
+        <div id="onboardingContent"></div>
+        <div class="onboarding-actions">
+          <button class="ghost-button" id="onboardingPrevBtn">이전</button>
+          <div class="spacer"></div>
+          <button class="ghost-button" id="quickStartBtn">기본 데모로 바로 시작</button>
+          <button class="primary-button" id="onboardingNextBtn">다음</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+  <input type="file" id="jsonImportInput" accept="application/json" class="hidden-input" />
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

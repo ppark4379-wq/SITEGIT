@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0d3d5c" />
+  <title>SiteGit 로그인</title>
+  <link rel="stylesheet" href="/static/login.css" />
+</head>
+<body>
+  <main class="login-shell">
+    <section class="visual-panel">
+      <div class="grid"></div>
+      <div class="brand"><span class="mark">S</span><div><strong>SiteGit</strong><small>AUTONOMOUS WORK ASSURANCE</small></div></div>
+      <div class="headline">
+        <div class="eyebrow">SHARED LOCAL PLATFORM</div>
+        <h1>작업지시부터 Evidence와<br/>관리자 Release까지.</h1>
+        <p>대표 PC의 FastAPI와 외장 SSD SQLite를 기반으로 팀원이 같은 프로젝트 상태를 공유하는 개발 환경입니다.</p>
+      </div>
+      <div class="flow"><span>Plan</span><i>→</i><span>Work Package</span><i>→</i><span>Execution</span><i>→</i><span>Evidence</span><i>→</i><span>Release</span></div>
+      <div class="system-note"><b>고정 URL 전제</b><span>Cloudflare Named Tunnel → localhost:8000</span></div>
+    </section>
+
+    <section class="form-panel">
+      <form id="loginForm" class="login-card">
+        <div class="eyebrow">SECURE ACCESS</div>
+        <h2>SiteGit에 로그인</h2>
+        <p class="intro">계정별 역할에 따라 작업 편집·검토·조회 권한이 분리됩니다.</p>
+
+        <label>
+          <span>사용자 ID</span>
+          <input id="username" name="username" autocomplete="username" required value="admin" />
+        </label>
+        <label>
+          <span>비밀번호</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required value="sitegit-demo-2026" />
+        </label>
+
+        <div class="error hidden" id="loginError"></div>
+        <button type="submit" id="loginButton">로그인</button>
+
+        <div class="demo-accounts">
+          <strong>초기 개발 계정</strong>
+          <span><b>admin</b> · 전체 권한</span>
+          <span><b>manager</b> · 편집 권한</span>
+          <span><b>viewer</b> · 조회 전용</span>
+          <small>공개 URL 연결 전 반드시 .env에서 비밀번호와 JWT_SECRET을 변경하세요.</small>
+        </div>
+      </form>
+    </section>
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+services:
+  sitegit:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    environment:
+      SITEGIT_DATA_ROOT: /data
+      DATABASE_URL: sqlite:////data/database/sitegit.db
+    volumes:
+      - ${SITEGIT_DATA_ROOT}:/data
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - sitegit
+    restart: unless-stopped
+    profiles: ["tunnel"]

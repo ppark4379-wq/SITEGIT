@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=REPO_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    app_name: str = "SiteGit"
+    app_env: Literal["development", "production", "test"] = "development"
+    api_prefix: str = "/api/v1"
+    public_url: str = "http://localhost:8000"
+    public_hostname: str = "localhost"
+    server_host: str = "127.0.0.1"
+    server_port: int = 8000
+
+    sitegit_data_root: Path = REPO_ROOT / "runtime"
+    database_url: str | None = None
+    seed_state_path: Path = REPO_ROOT / "seed" / "sasang_state.json"
+    default_project_id: str = "SASANG-001"
+
+    isaac_adapter_enabled: bool = False
+    isaac_adapter_url: str = "http://localhost:8100"
+
+    jwt_secret: str = Field(default="CHANGE-ME-BEFORE-PUBLIC-ACCESS-1234567890", min_length=16)
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 480
+    auth_cookie_name: str = "sitegit_access_token"
+    cookie_secure: bool = False
+
+    initial_admin_username: str = "admin"
+    initial_admin_password: str = "sitegit-demo-2026"
+    initial_admin_name: str = "SiteGit 관리자"
+    seed_demo_users: bool = True
+    initial_manager_password: str = "sitegit-manager-2026"
+    initial_viewer_password: str = "sitegit-viewer-2026"
+
+    state_save_debounce_ms: int = 800
+
+    @property
+    def resolved_database_url(self) -> str:
+        if self.database_url:
+            return self.database_url
+        db_path = (self.sitegit_data_root / "database" / "sitegit.db").resolve()
+        return f"sqlite:///{db_path.as_posix()}"
+
+    @property
+    def frontend_dir(self) -> Path:
+        return REPO_ROOT / "frontend"
+
+    @property
+    def policy_dir(self) -> Path:
+        return REPO_ROOT / "policies"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    settings = Settings()
+    for name in ("database", "evidence", "isaac", "logs", "backups"):
+        (settings.sitegit_data_root / name).mkdir(parents=True, exist_ok=True)
+    return settings

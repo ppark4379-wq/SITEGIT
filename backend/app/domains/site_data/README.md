@@ -1,0 +1,5 @@
+# 1단계 Site Data Onboarding
+
+**담당:** 현장 데이터와 Data Readiness
+
+현재 v0.2에서는 기존 통합 JSON API가 계속 동작합니다. 이 폴더는 다음 개발부터 해당 단계의 DB 모델, 서비스, API를 옮길 고정 위치입니다.

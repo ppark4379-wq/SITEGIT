@@ -1,0 +1,164 @@
+[
+  {
+    "id": "HX210AL-01",
+    "model": "HX210AL",
+    "manufacturer": "HD Hyundai",
+    "type": "중형 굴착기",
+    "icon": "excavator",
+    "status": "available",
+    "operatingWeight": 22.15,
+    "bucketCapacity": 0.92,
+    "workBucket": 0.6,
+    "power": 128,
+    "maxDepth": 6.64,
+    "travelSpeed": 5.8,
+    "supports": [
+      "EXCAVATION",
+      "GRADING"
+    ],
+    "evidence": [
+      "Equipment Pose",
+      "Tool Pose",
+      "Work Events",
+      "Engine Status"
+    ],
+    "autonomy": [
+      "Work Package 수신",
+      "작업 상태 반환",
+      "원격 중지"
+    ],
+    "autonomySource": "ASSUMED",
+    "specSource": "MANUFACTURER SPEC",
+    "sourceUrl": "https://www.hyundai-ce.com/en/products/view?productsSeq=374",
+    "color": "#f3b331",
+    "assigned": "WP-SASANG-C01"
+  },
+  {
+    "id": "HX48AZ-02",
+    "model": "HX48AZ",
+    "manufacturer": "HD Hyundai",
+    "type": "소형 굴착기",
+    "icon": "excavator",
+    "status": "available",
+    "operatingWeight": 5.03,
+    "bucketCapacity": 0.15,
+    "workBucket": 0.15,
+    "power": 29.1,
+    "maxDepth": 3.5,
+    "travelSpeed": 4.4,
+    "supports": [
+      "SMALL_EXCAVATION",
+      "UTILITY"
+    ],
+    "evidence": [
+      "Equipment Pose",
+      "Tool Pose",
+      "Work Events"
+    ],
+    "autonomy": [
+      "Work Package 수신",
+      "작업 상태 반환"
+    ],
+    "autonomySource": "ASSUMED",
+    "specSource": "MANUFACTURER SPEC",
+    "sourceUrl": "https://www.hyundai-ce.com/en/products/view?productsSeq=573",
+    "color": "#f0aa2c",
+    "assigned": "WP-SASANG-B01"
+  },
+  {
+    "id": "HL930ATM-01",
+    "model": "HL930A TM",
+    "manufacturer": "HD Hyundai",
+    "type": "휠 로더",
+    "icon": "loader",
+    "status": "standby",
+    "operatingWeight": 11.96,
+    "bucketCapacity": 1.7,
+    "workBucket": 1.7,
+    "power": 96,
+    "maxDepth": 0,
+    "travelSpeed": 39.5,
+    "supports": [
+      "LOADING",
+      "STOCKPILE",
+      "HAUL_SUPPORT"
+    ],
+    "evidence": [
+      "Equipment Pose",
+      "Cycle Events",
+      "Engine Status"
+    ],
+    "autonomy": [
+      "작업 패키지 수신",
+      "적재 사이클 반환"
+    ],
+    "autonomySource": "ASSUMED",
+    "specSource": "MANUFACTURER SPEC",
+    "sourceUrl": "https://www.hyundai-ce.com/en/products/view?productsSeq=510",
+    "color": "#eaa52a",
+    "assigned": "WP-HAUL-01"
+  },
+  {
+    "id": "DUMP45-01",
+    "model": "Generic Dump 4.5t",
+    "manufacturer": "Fleet Partner",
+    "type": "덤프트럭",
+    "icon": "dump",
+    "status": "working",
+    "operatingWeight": 4.5,
+    "bucketCapacity": 0,
+    "workBucket": 0,
+    "power": 0,
+    "maxDepth": 0,
+    "travelSpeed": 80,
+    "supports": [
+      "HAUL"
+    ],
+    "evidence": [
+      "Vehicle Pose",
+      "Trip Events",
+      "Payload Estimate"
+    ],
+    "autonomy": [
+      "배차 명령 수신",
+      "운반 이벤트 반환"
+    ],
+    "autonomySource": "ASSUMED",
+    "specSource": "PROJECT REQUIREMENT",
+    "sourceUrl": "",
+    "color": "#4d9ab5",
+    "assigned": "WP-HAUL-01"
+  },
+  {
+    "id": "DUMP24-01",
+    "model": "Generic Dump 24t",
+    "manufacturer": "Fleet Partner",
+    "type": "대형 덤프트럭",
+    "icon": "dump",
+    "status": "offline",
+    "operatingWeight": 24,
+    "bucketCapacity": 0,
+    "workBucket": 0,
+    "power": 0,
+    "maxDepth": 0,
+    "travelSpeed": 70,
+    "supports": [
+      "HAUL",
+      "DISPOSAL"
+    ],
+    "evidence": [
+      "Vehicle Pose",
+      "Trip Events",
+      "Payload Estimate"
+    ],
+    "autonomy": [
+      "배차 명령 수신",
+      "운반 이벤트 반환"
+    ],
+    "autonomySource": "ASSUMED",
+    "specSource": "PROJECT REQUIREMENT",
+    "sourceUrl": "",
+    "color": "#5f7d92",
+    "assigned": ""
+  }
+]

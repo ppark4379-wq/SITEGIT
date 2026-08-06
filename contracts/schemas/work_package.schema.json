@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sitegit.local/contracts/work_package.schema.json",
+  "title": "SiteGit Work Package",
+  "type": "object",
+  "required": [
+    "work_package_id",
+    "project_id",
+    "zone_id",
+    "task_type",
+    "target",
+    "constraints"
+  ],
+  "properties": {
+    "work_package_id": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "zone_id": {
+      "type": "string"
+    },
+    "task_type": {
+      "type": "string"
+    },
+    "target": {
+      "type": "object"
+    },
+    "constraints": {
+      "type": "object"
+    },
+    "assigned_equipment": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": true
+}

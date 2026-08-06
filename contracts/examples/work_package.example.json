@@ -1,0 +1,18 @@
+{
+  "id": "WP-SASANG-C01",
+  "project_id": "SASANG-001",
+  "zone": "C",
+  "task": "EXCAVATION",
+  "target": {
+    "quantity_m3": 639,
+    "completion_threshold_percent": 100,
+    "tolerance_mm": 50,
+    "observation_threshold_percent": 90
+  },
+  "assignments": [
+    {"equipment_model_id": "HX210AL", "role": "PRIMARY", "quantity": 1},
+    {"equipment_model_id": "DUMP-4.5T", "role": "HAUL", "quantity": 5}
+  ],
+  "status": "DISPATCHED",
+  "version": 1
+}

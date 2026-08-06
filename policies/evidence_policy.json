@@ -1,0 +1,14 @@
+{
+  "policy_id": "evidence-default",
+  "version": 1,
+  "description": "컨셉 검증용 기본 Evidence 평가 기준. 기준이 확정되기 전에는 이 파일의 값만 수정합니다.",
+  "minimum_rule_compliance_percent": 90,
+  "minimum_completeness_percent": 95,
+  "minimum_observation_coverage_percent": 90,
+  "minimum_confidence_percent": 85,
+  "confidence_enabled": false,
+  "required_evidence_types": [
+    "execution_summary",
+    "geometry_result"
+  ]
+}

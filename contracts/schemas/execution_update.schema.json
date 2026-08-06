@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SiteGit Execution Update",
+  "type": "object",
+  "required": [
+    "execution_id",
+    "work_package_id",
+    "status",
+    "timestamp"
+  ],
+  "properties": {
+    "execution_id": {
+      "type": "string"
+    },
+    "work_package_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "raw_progress_percent": {
+      "type": "number"
+    },
+    "qualified_progress_percent": {
+      "type": "number"
+    },
+    "remaining_quantity_m3": {
+      "type": "number"
+    },
+    "equipment_status": {
+      "type": "object"
+    },
+    "events": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}

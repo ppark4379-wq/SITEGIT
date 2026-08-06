@@ -1,0 +1,37 @@
+{
+  "policy_id": "conflict-default",
+  "version": 1,
+  "description": "Conflict 분류와 활성화 여부를 관리하는 컨셉 검증용 기본 정책.",
+  "rules": [
+    {
+      "rule_id": "PROGRESS_REMAINING_QUANTITY",
+      "enabled": true,
+      "category": "PROGRESS",
+      "severity": "BLOCKING",
+      "metric": "remaining_quantity_m3",
+      "operator": ">",
+      "threshold": 0,
+      "resolution": "CORRECTION_WORK_PACKAGE"
+    },
+    {
+      "rule_id": "RESULT_GEOMETRY_DEVIATION",
+      "enabled": true,
+      "category": "RESULT",
+      "severity": "BLOCKING",
+      "metric": "max_deviation_mm",
+      "operator": ">",
+      "threshold_source": "work_package.tolerance_mm",
+      "resolution": "CORRECTION_WORK_PACKAGE"
+    },
+    {
+      "rule_id": "ACCEPTANCE_LOW_EVIDENCE",
+      "enabled": true,
+      "category": "ACCEPTANCE",
+      "severity": "REVIEW",
+      "metric": "evidence_completeness_percent",
+      "operator": "<",
+      "threshold_source": "evidence_policy.minimum_completeness_percent",
+      "resolution": "ADDITIONAL_CONFIRMATION"
+    }
+  ]
+}

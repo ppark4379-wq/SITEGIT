@@ -1,0 +1,59 @@
+# 실제 환경설정 / 비밀정보
+.env
+.env.*
+!.env.example
+!isaac_adapter/.env.example
+credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 실제 DB와 런타임 데이터
+runtime/*
+!runtime/README.md
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pcd
+*.ply
+*.las
+*.laz
+*.usd
+*.usda
+*.usdc
+*.mp4
+*.avi
+*.ogv
+*.log
+
+# 저장소 안에 실수로 만든 실제 데이터 폴더
+evidence/
+logs/
+exports/
+backups/
+
+# Cloudflare 인증정보
+ops/cloudflare/config.yml
+ops/cloudflare/*.json
+ops/cloudflare/cert.pem
+cloudflared/
+
+# Node / build
+node_modules/
+dist/
+build/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

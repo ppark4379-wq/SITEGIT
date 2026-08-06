@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sitegit.local/contracts/project-state.schema.json",
+  "title": "SiteGit Prototype Shared State",
+  "type": "object",
+  "required": ["project", "workPackages", "equipment", "evidence"],
+  "properties": {
+    "project": {"type": "object"},
+    "workPackages": {"type": "array", "items": {"type": "object"}},
+    "equipment": {"type": "array", "items": {"type": "object"}},
+    "evidence": {"type": "object"},
+    "events": {"type": "array", "items": {"type": "object"}},
+    "versions": {"type": "array", "items": {"type": "object"}}
+  },
+  "additionalProperties": true
+}

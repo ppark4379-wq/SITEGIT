@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SiteGit Evidence",
+  "type": "object",
+  "required": [
+    "evidence_id",
+    "execution_id",
+    "type",
+    "metrics",
+    "storage_keys"
+  ],
+  "properties": {
+    "evidence_id": {
+      "type": "string"
+    },
+    "execution_id": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    },
+    "metrics": {
+      "type": "object"
+    },
+    "storage_keys": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

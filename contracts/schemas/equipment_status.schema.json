@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SiteGit Equipment Status",
+  "type": "object",
+  "required": [
+    "equipment_id",
+    "status",
+    "timestamp"
+  ],
+  "properties": {
+    "equipment_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "pose": {
+      "type": "object"
+    },
+    "tool_pose": {
+      "type": "object"
+    },
+    "faults": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}

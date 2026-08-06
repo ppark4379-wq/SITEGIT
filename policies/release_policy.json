@@ -1,0 +1,12 @@
+{
+  "policy_id": "release-default",
+  "version": 1,
+  "description": "관리자 Release 가능 여부를 판단하는 컨셉 검증용 기본 정책.",
+  "require_work_finished": true,
+  "require_qualified_progress": true,
+  "require_zero_remaining_quantity": true,
+  "require_geometry_within_tolerance": true,
+  "require_no_over_excavation": true,
+  "require_no_blocking_conflict": true,
+  "human_release_required": true
+}

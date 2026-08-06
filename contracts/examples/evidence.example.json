@@ -1,0 +1,15 @@
+{
+  "work_package_id": "WP-SASANG-C01",
+  "execution_id": "EX-C01-001",
+  "evidence_type": "RESULT_SUMMARY",
+  "storage_provider": "local",
+  "storage_key": "sasang/WP-SASANG-C01/pcd/result_001.pcd",
+  "metrics": {
+    "rule_compliance_percent": 94,
+    "completeness_percent": 82,
+    "observation_percent": 76,
+    "confidence_percent": 68,
+    "max_deviation_mm": 78,
+    "overcut_volume_m3": 9
+  }
+}
