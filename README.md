@@ -107,7 +107,7 @@ $bytes = New-Object byte[] 32
 - 서버 상태: <http://localhost:8000/api/v1/health>
 - 개발 API 문서: <http://localhost:8000/api/v1/docs>
 
-로그인 아이디와 비밀번호는 `.env`의 `INITIAL_*_USERNAME`, `INITIAL_*_PASSWORD` 값입니다. 마지막으로 성공한 로그인 아이디만 브라우저에 기억되며 비밀번호는 항상 빈 상태로 시작합니다.
+로그인 아이디와 비밀번호는 `.env`의 `INITIAL_*_USERNAME`, `INITIAL_*_PASSWORD` 값입니다. 마지막으로 성공한 로그인 아이디만 브라우저에 기억되며 비밀번호는 항상 빈 상태로 시작합니다. 로그인 인증은 브라우저 세션 쿠키이므로 브라우저를 완전히 종료한 뒤 다시 열면 로그인 화면으로 돌아갑니다.
 
 `.env`에서 초기 계정의 아이디·비밀번호·표시 이름을 바꾼 뒤 서버를 재시작하면 DB의 해당 초기 계정에도 동기화됩니다.
 

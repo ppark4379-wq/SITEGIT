@@ -28,7 +28,6 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         httponly=True,
         secure=settings.cookie_secure,
         samesite="lax",
-        max_age=settings.access_token_expire_minutes * 60,
         path="/",
     )
     db.add(
