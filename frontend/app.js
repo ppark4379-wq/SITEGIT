@@ -707,7 +707,7 @@ function renderSettings(){
       <article class="card settings-card"><h3>로컬 데이터 관리</h3><p>현재 프로토타입은 서버 없이 브라우저 localStorage에 저장됩니다. JSON으로 내보내거나 다시 불러올 수 있습니다.</p><div class="settings-actions"><button class="secondary-button" data-action="export-json">JSON 내보내기</button><button class="ghost-button" data-action="import-json">JSON 불러오기</button></div></article>
       <article class="card settings-card"><h3>데이터 출처</h3><p>화면에 표시되는 값의 성격을 네 가지 태그로 구분합니다.</p><div class="source-list"><div class="source-row"><div><strong>사상구 공개 발주 데이터</strong><small>공사규모·기간·물량·금액·설계 장비조건</small></div>${sourceBadge('PUBLIC PROJECT')}</div><div class="source-row"><div><strong>HD현대 건설기계 공식 제원</strong><small>HX210AL · HX48AZ · HL930A TM</small></div>${sourceBadge('MANUFACTURER SPEC')}</div><div class="source-row"><div><strong>자율화 장비 인터페이스</strong><small>Work Package 수신·상태 반환·원격 중지</small></div>${sourceBadge('ASSUMED')}</div><div class="source-row"><div><strong>공간·진척·Evidence</strong><small>실제 시뮬레이터 연동 전 가상 데이터</small></div>${sourceBadge('SIMULATED')}</div></div></article>
       <article class="card settings-card"><h3>컨셉 범위</h3><p>SiteGit은 자율화 장비의 인지·경로·제어를 개발하지 않습니다. 건설사의 계획을 작업 패키지로 전달하고 결과를 인수하는 운영·검증 계층입니다.</p><div class="settings-actions"><button class="ghost-button" data-action="show-architecture">아키텍처 보기</button></div></article>
-      <article class="card settings-card danger-zone"><h3>데모 초기화</h3><p>수정한 현장정보, 장비 제원, Work Package, Evidence와 Version 이력을 기본 상태로 되돌립니다.</p><div class="settings-actions"><button class="danger-button" data-action="reset-all">전체 데모 초기화</button></div></article>
+      <article class="card settings-card danger-zone"><h3>데모 초기화</h3><p>일반 초기화는 현재 로그인 상태를 유지합니다. 완전 초기화는 공동 프로젝트 데이터와 초기 설정 기록을 모두 되돌린 뒤 로그아웃하여 다음 시연을 처음부터 시작합니다.</p><div class="settings-actions"><button class="ghost-button" data-action="reset-all">데모 데이터만 초기화</button><button class="danger-button" data-action="full-reset">완전 초기화 · 로그아웃</button></div></article>
     </div>`;
 }
 
@@ -751,7 +751,7 @@ function handleAction(action){
     'check-all-compatibility':()=>toast('장비 적합성 검사 완료','5개 장비의 작업 유형·범위·Evidence 반환 가능성을 다시 계산했습니다.','success'),
     'show-sources':showSourcesModal,'export-json':exportJson,'import-json':()=>$('#jsonImportInput').click(),'snapshot-version':snapshotVersion,
     'create-cube-instruction':openCubeInstructionModal,
-    'open-onboarding':openOnboarding,'reset-all':confirmReset,'show-architecture':showArchitectureModal,'fit-map':()=>{const frame=document.querySelector('.isaac-map-frame');frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin);toast('현장 뷰 재정렬','Isaac Sim Mud Map을 화면에 맞췄습니다.','success')},
+    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'fit-map':()=>{const frame=document.querySelector('.isaac-map-frame');frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin);toast('현장 뷰 재정렬','Isaac Sim Mud Map을 화면에 맞췄습니다.','success')},
   };
   handlers[action]?.();
 }
@@ -1055,6 +1055,39 @@ function exportJson(){
 }
 $('#jsonImportInput').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const parsed=JSON.parse(await file.text());state=mergeDefaults(deepClone(DEFAULT_STATE),parsed);renderAll();toast('JSON 불러오기 완료',file.name,'success')}catch(err){toast('불러오기 실패','유효한 SiteGit JSON 파일인지 확인하세요.','danger')}e.target.value=''});
 function confirmReset(){openModal({eyebrow:'DANGER ZONE',title:'전체 데모를 초기화할까요?',body:`<p style="font-size:11px;line-height:1.7;color:var(--slate-600)">현장정보, 장비 수정값, Work Package, Evidence와 Version 이력이 기본 사상구 데모 상태로 돌아갑니다. 내보내지 않은 변경사항은 복구할 수 없습니다.</p>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="danger-button" id="confirmResetBtn">초기화</button>`});$('[data-modal-close]').addEventListener('click',closeModal);$('#confirmResetBtn').addEventListener('click',()=>{if(simTimer)clearInterval(simTimer);state=deepClone(DEFAULT_STATE);safeRemoveItem(STORAGE_KEY);closeModal();toast('데모 초기화 완료','기본 사상구 컨셉 데이터로 돌아갔습니다.','success');renderAll()})}
+function confirmFullReset(){
+  openModal({
+    eyebrow:'DEMO FULL RESET',
+    title:'처음부터 다시 시연할까요?',
+    body:`<div class="full-reset-warning"><strong>다음 항목이 초기화됩니다.</strong><ul><li>현장정보·장비 제원·Work Package</li><li>Evidence·Conflict·Version 데모 이력</li><li>이 브라우저의 초기 설정 완료 기록</li><li>현재 로그인 세션</li></ul><p>사용자 계정과 서버의 감사 로그는 삭제하지 않습니다. 내보내지 않은 데모 변경사항은 복구할 수 없습니다.</p></div>`,
+    footer:'<button class="ghost-button" data-modal-close>취소</button><button class="danger-button" id="confirmFullResetBtn">완전 초기화 후 로그아웃</button>',
+  });
+  $('#confirmFullResetBtn').addEventListener('click',performFullReset);
+}
+async function performFullReset(){
+  const button=$('#confirmFullResetBtn');
+  const previousState=state;
+  const previousOnboarded=safeGetItem(ONBOARD_KEY);
+  button.disabled=true;button.textContent='초기화 중...';
+  if(simTimer)clearInterval(simTimer);
+  clearTimeout(remoteSaveTimer);
+  state=deepClone(DEFAULT_STATE);
+  safeRemoveItem(STORAGE_KEY);
+  safeRemoveItem(ONBOARD_KEY);
+  try{
+    if(!remoteReady||!remoteCanEdit)throw new Error('RESET_NOT_READY');
+    const response=await apiFetch(`/state/${PROJECT_ID}`,{method:'PUT',body:JSON.stringify({payload:state,revision:remoteRevision,source:'full-reset'})});
+    if(!response.ok)throw new Error(`RESET_${response.status}`);
+    await apiFetch('/auth/logout',{method:'POST',body:'{}'}).catch(()=>null);
+    location.href='/login';
+  }catch(error){
+    state=previousState;
+    safeSetItem(STORAGE_KEY,JSON.stringify(previousState));
+    if(previousOnboarded)safeSetItem(ONBOARD_KEY,previousOnboarded);
+    button.disabled=false;button.textContent='완전 초기화 후 로그아웃';
+    toast('완전 초기화 실패','공동 DB 연결을 확인한 뒤 다시 시도해 주세요.','danger');
+  }
+}
 
 function toast(title,message,type='success'){
   const el=document.createElement('div');el.className=`toast ${type}`;el.innerHTML=`<div class="toast-icon">${type==='success'?'✓':type==='danger'?'!':'△'}</div><div><strong>${esc(title)}</strong><p>${esc(message)}</p></div>`;$('#toastStack').appendChild(el);setTimeout(()=>{el.style.opacity='0';el.style.transform='translateY(8px)';setTimeout(()=>el.remove(),250)},3500)

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="SiteGit은 건설사의 현장 계획을 자율화 장비가 실행 가능한 작업 단위로 연결하고, 결과를 Evidence와 Version으로 남기는 운영 인터페이스입니다.">
+  <meta name="theme-color" content="#071b2a">
+  <title>SiteGit — 현장 계획을 자율화 장비의 실행으로</title>
+  <link rel="icon" href="assets/icons/sitegit-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">본문 바로가기</a>
+  <header class="site-header" data-header>
+    <a class="brand" href="#top" aria-label="SiteGit 처음으로">
+      <img src="assets/icons/sitegit-mark.svg" alt="" width="38" height="38">
+      <span><strong>SiteGit</strong><small>Built by Team HDMI</small></span>
+    </a>
+    <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" data-menu>메뉴</button>
+    <nav id="primary-nav" class="primary-nav" aria-label="주요 메뉴">
+      <a href="#problem">문제</a><a href="#features">핵심 기능</a><a href="#preview">제품 화면</a><a href="#flow">작동 흐름</a>
+      <a class="nav-cta" href="#preview">프로토타입 보기</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-glow" aria-hidden="true"></div>
+      <div class="hero-copy reveal">
+        <p class="eyebrow">AUTONOMOUS WORK ASSURANCE</p>
+        <h1>현장 계획을<br>자율화 장비의 실행으로.</h1>
+        <p class="hero-brand">HD 현대와 함께 현장과 장비를 잇는 인터페이스, <b>HDMI</b></p>
+        <p class="hero-lead">도면과 물량표에서 시작한 계획을 실행 가능한 Work Package로 전환하고,<br>장비의 결과를 검증 가능한 Evidence와 Version으로 연결합니다.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#features">핵심 기능 보기 <span>↓</span></a>
+          <a class="button secondary" href="#preview">실제 화면 보기</a>
+        </div>
+      </div>
+      <div class="device-stage reveal" data-parallax aria-label="SiteGit 대시보드 미리보기">
+        <div class="device laptop">
+          <div class="device-bar"><i></i><i></i><i></i><span>sitegit / dashboard</span></div>
+          <img src="assets/screenshots/dashboard.png" alt="SiteGit 통합 관리자 대시보드 실제 화면">
+        </div>
+        <div class="device tablet"><img src="assets/screenshots/control-center-tablet.png" alt="SiteGit 통합 관리자 태블릿 화면"></div>
+        <div class="device phone"><img src="assets/screenshots/control-center-mobile.png" alt="SiteGit 통합 관리자 모바일 화면"></div>
+      </div>
+      <a class="scroll-cue" href="#problem" aria-label="문제 섹션으로 이동"><span></span>SCROLL</a>
+    </section>
+
+    <section class="section problem" id="problem">
+      <div class="section-intro reveal">
+        <p class="eyebrow">THE DISCONNECTED SITE</p>
+        <h2>계획은 문서에, 실행은 장비에,<br>검증은 사람의 기억에 남아 있습니다.</h2>
+        <p>SiteGit은 흩어진 세 흐름을 하나의 운영 맥락으로 연결합니다.</p>
+      </div>
+      <div class="problem-flow reveal">
+        <article><span>01</span><i class="flow-icon plan-icon" aria-hidden="true"></i><h3>계획의 단절</h3><p>도면과 공정표가 장비가 이해하는 작업 단위로 이어지지 않습니다.</p></article>
+        <div class="flow-line" aria-hidden="true"></div>
+        <article><span>02</span><i class="flow-icon machine-icon" aria-hidden="true"></i><h3>실행의 불확실성</h3><p>어떤 조건으로 무엇을 수행했는지 공통된 기준이 부족합니다.</p></article>
+        <div class="flow-line" aria-hidden="true"></div>
+        <article><span>03</span><i class="flow-icon check-icon" aria-hidden="true"></i><h3>검증의 공백</h3><p>결과 데이터와 관리자 판단이 한 이력으로 남지 않습니다.</p></article>
+      </div>
+      <div class="value-statement reveal"><span>SiteGit</span><strong>Plan → Execute → Evidence → Release</strong><p>계획부터 승인까지, 자율화 작업의 신뢰 가능한 연결 구조</p></div>
+    </section>
+
+    <section class="features" id="features" aria-label="핵심 기능">
+      <article class="feature section reveal">
+        <div class="feature-copy"><p class="feature-no">01 · PLAN COMPILER</p><h2>현장 계획을<br>작업 단위로 컴파일</h2><p>구역, 목표 물량, 허용오차, 장비 역할을 하나의 Work Package로 묶어 실행 조건을 명확히 전달합니다.</p><ul><li>구역별 작업 목표와 제약조건</li><li>주 작업·상차·운반 장비 배정</li><li>Plan Version 기반 변경 추적</li></ul></div>
+        <figure class="screen-frame plan-screen"><img src="assets/screenshots/plan-compiler.png" alt="SiteGit Work Package Compiler 실제 화면" loading="lazy"><figcaption>WORK PACKAGE · PLAN V1.0</figcaption></figure>
+      </article>
+      <article class="feature section reverse reveal">
+        <div class="feature-copy"><p class="feature-no">02 · EQUIPMENT REGISTRY</p><h2>제원과 Capability로<br>장비를 정확히 연결</h2><p>제조사 공개 제원과 프로젝트 요구조건을 분리해 관리하고, 작업에 맞는 장비 조합을 빠르게 확인합니다.</p><ul><li>실제 장비 제원 기반 Registry</li><li>작업 유형별 Capability Matrix</li><li>장비팀 역할·수량 연결</li></ul></div>
+        <figure class="screen-frame full-screen"><img src="assets/screenshots/equipment-registry.png" alt="SiteGit Equipment Registry 실제 화면" loading="lazy"><figcaption>EQUIPMENT · CAPABILITY</figcaption></figure>
+      </article>
+      <article class="feature section reveal">
+        <div class="feature-copy"><p class="feature-no">03 · LIVE EXECUTION</p><h2>현장의 실행 상태를<br>하나의 화면에서</h2><p>구역별 진행률, 장비 상태, 잔여 물량과 위험 신호를 지도 중심 대시보드에서 동시에 파악합니다.</p><ul><li>공간 기반 Zone 모니터링</li><li>Raw / Qualified 진척도 구분</li><li>관리자 Command와 상태 신호</li></ul></div>
+        <figure class="screen-frame emphasis"><img src="assets/screenshots/dashboard.png" alt="SiteGit 통합 관리자 실행 모니터링 화면" loading="lazy"><figcaption>DASHBOARD · EXECUTION</figcaption></figure>
+      </article>
+      <article class="feature section reverse reveal">
+        <div class="feature-copy"><p class="feature-no">04 · EVIDENCE GATE</p><h2>장비의 결과를<br>믿을 근거로 전환</h2><p>계획 대비 결과, 관측 범위, 신뢰도와 추가 확인 기록을 하나의 Evidence Bundle로 구성합니다.</p><ul><li>Plan / Before / After 비교</li><li>Evidence 완전성과 관측 신뢰도</li><li>자동 Release Gate 계산</li></ul></div>
+        <figure class="screen-frame full-screen"><img src="assets/screenshots/evidence-acceptance.png" alt="SiteGit Evidence와 Acceptance Gate 실제 화면" loading="lazy"><figcaption>EVIDENCE · ACCEPTANCE</figcaption></figure>
+      </article>
+      <article class="feature section reveal">
+        <div class="feature-copy"><p class="feature-no">05 · MANAGER ACTION</p><h2>충돌은 숨기지 않고<br>결정 가능한 객체로</h2><p>물리적 미달과 Evidence 부족을 구분해 추가 확인, 보완 작업, 보류 또는 승인으로 연결합니다.</p><ul><li>Conflict 유형과 영향 분리</li><li>사람이 개입하는 최종 Gate</li><li>보완 Work Package 즉시 발행</li></ul></div>
+        <figure class="screen-frame crop-focus coming-soon"><img src="assets/screenshots/readiness.svg" alt="Manager Action 기능 구현 중 자리표시자" loading="lazy"><span class="coming-soon-label">구현 중</span><figcaption>CONFLICT · MANAGER ACTION</figcaption></figure>
+      </article>
+      <article class="feature section reverse reveal">
+        <div class="feature-copy"><p class="feature-no">06 · VERSION & AUDIT</p><h2>모든 변화와 판단을<br>연결된 이력으로</h2><p>계획, 실행, Evidence, 보완, 관리자 결정을 시간 순서의 Version과 Audit Trail로 남깁니다.</p><ul><li>Plan·Work·Evidence 연결 이력</li><li>결정 주체와 시점 기록</li><li>현재 상태 Snapshot과 내보내기</li></ul></div>
+        <figure class="screen-frame full-screen"><img src="assets/screenshots/version-audit.png" alt="SiteGit Version과 Audit Trail 실제 화면" loading="lazy"><figcaption>VERSION · AUDIT TRAIL</figcaption></figure>
+      </article>
+    </section>
+
+    <section class="section preview" id="preview">
+      <div class="section-intro reveal"><p class="eyebrow">PRODUCT PREVIEW</p><h2>SiteGit의 주요 화면을<br>한곳에서 미리보기</h2><p>현재 구현된 화면을 기능별로 빠르게 비교해 보세요.</p><aside class="preview-note"><strong>이 영역의 목적</strong><span>실제 앱을 내장해 조작하는 데모가 아니라, 각 기능의 구현 화면과 전체 제품 흐름을 빠르게 살펴보는 스크린샷 갤러리입니다.</span></aside></div>
+      <div class="preview-stage reveal">
+        <div class="preview-tabs" role="tablist" aria-label="제품 화면 선택">
+          <button role="tab" aria-selected="true" data-preview="dashboard.png" data-label="Dashboard">Dashboard</button>
+          <button role="tab" aria-selected="false" data-preview="plan-compiler.png" data-label="Work Package">Work Package</button>
+          <button role="tab" aria-selected="false" data-preview="equipment-registry.png" data-label="Equipment">Equipment</button>
+          <button role="tab" aria-selected="false" data-preview="evidence-acceptance.png" data-label="Evidence">Evidence</button>
+          <button role="tab" aria-selected="false" data-preview="version-audit.png" data-label="Versions">Versions</button>
+        </div>
+        <figure class="preview-window"><div class="window-bar"><i></i><i></i><i></i><span data-preview-label>Dashboard</span></div><img data-preview-image src="assets/screenshots/dashboard.png" alt="SiteGit 통합 관리자 Dashboard 제품 화면"></figure>
+      </div>
+    </section>
+
+    <section class="section flow" id="flow">
+      <div class="section-intro reveal"><p class="eyebrow">HOW SITEGIT WORKS</p><h2>계획이 실행되고,<br>실행이 신뢰가 되는 과정</h2></div>
+      <ol class="timeline reveal">
+        <li><span>01</span><h3>Site Data</h3><p>현장 좌표와 기준 데이터를 준비합니다.</p></li>
+        <li><span>02</span><h3>Work Package</h3><p>계획을 실행 가능한 조건으로 묶습니다.</p></li>
+        <li><span>03</span><h3>Autonomous Work</h3><p>장비팀이 작업을 수행하고 상태를 반환합니다.</p></li>
+        <li><span>04</span><h3>Evidence & Release</h3><p>결과를 검증하고 관리자가 승인합니다.</p></li>
+      </ol>
+    </section>
+
+    <section class="closing">
+      <div class="closing-grid" aria-hidden="true"></div>
+      <div class="reveal"><p class="eyebrow">SITEGIT PROTOTYPE</p><h2>자율화 장비가 일하는 현장에는<br>새로운 운영 인터페이스가 필요합니다.</h2><p>SiteGit은 건설사의 계획과 장비의 실행 사이에 신뢰 가능한 연결 구조를 제안합니다.</p><a class="button primary light" href="#preview">제품 화면 다시 보기 <span>↑</span></a></div>
+    </section>
+  </main>
+
+  <footer><a class="brand footer-brand" href="#top"><img src="assets/icons/sitegit-mark.svg" alt="" width="34" height="34"><span><strong>SiteGit</strong><small>Autonomous Work Assurance</small></span></a><p>HD 현대와 함께 현장과 장비를 잇는 인터페이스, HDMI</p><small>Concept prototype · 2026</small></footer>
+  <script src="script.js"></script>
+</body>
+</html>
