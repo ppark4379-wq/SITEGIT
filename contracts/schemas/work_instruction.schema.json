@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sitegit.local/contracts/work_instruction.schema.json",
+  "title": "SiteGit Work Instruction",
+  "description": "웹이 Isaac Sim으로 내리는 단일 작업 지시. kind에 따라 params 형태가 달라집니다.",
+  "type": "object",
+  "required": ["project_id", "kind", "params"],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "description": "현재 지원: place_cube. 굴착 지시가 추가되면 여기에 확장합니다.",
+      "enum": ["place_cube"]
+    },
+    "params": {
+      "$ref": "#/$defs/placeCubeParams"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "dispatched", "committed", "approved", "rejected"]
+    },
+    "note": {
+      "type": ["string", "null"]
+    },
+    "created_by_username": {
+      "type": ["string", "null"]
+    },
+    "created_at": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "vector3": {
+      "type": "object",
+      "required": ["x", "y", "z"],
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "z": {"type": "number"}
+      },
+      "additionalProperties": false
+    },
+    "placeCubeParams": {
+      "type": "object",
+      "required": ["position"],
+      "properties": {
+        "position": {"$ref": "#/$defs/vector3"},
+        "size": {"$ref": "#/$defs/vector3"},
+        "label": {"type": "string", "maxLength": 80},
+        "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

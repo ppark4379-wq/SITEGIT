@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     initial_viewer_name: str = "현장 조회자"
 
     state_save_debounce_ms: int = 800
+
+    @field_validator("sitegit_data_root", "seed_state_path", mode="after")
+    @classmethod
+    def _anchor_to_repo_root(cls, value: Path) -> Path:
+        """Anchor relative paths at the repository root instead of the CWD.
+
+        외장 SSD를 들고 다니면 드라이브 문자가 PC마다 달라지므로 `.env`에는
+        `../SiteGitData` 같은 상대경로를 넣습니다. 이때 실행 위치에 따라 다른
+        폴더를 가리키면 빈 DB가 조용히 새로 생기므로 항상 저장소 기준으로
+        고정합니다. `isaac_adapter/map_publisher.py`도 같은 규칙을 씁니다.
+        """
+        return (value if value.is_absolute() else REPO_ROOT / value).resolve()
 
     @property
     def resolved_database_url(self) -> str:

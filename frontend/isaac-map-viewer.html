@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SiteGit Isaac Map Viewer</title>
+  <style>
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#07131b;font-family:Arial,"Noto Sans KR",sans-serif}
+    #viewer{position:relative;width:100%;height:100%;background:radial-gradient(circle at 50% 36%,#18333e,#061119 72%);user-select:none}
+    canvas{display:block;width:100%;height:100%;outline:0;cursor:grab}canvas.dragging{cursor:grabbing}
+    .state{position:absolute;left:14px;bottom:14px;max-width:260px;padding:8px 11px;border:1px solid #ffffff22;border-radius:9px;color:#9db2bd;background:#061722df;font-size:10px;box-shadow:0 8px 24px #0006}
+    .state b,.state span{display:block}.state b{color:#fff;font-size:11px}.state.error b{color:#ff8e8e}
+    .help{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);padding:7px 10px;border-radius:8px;color:#b4c8d1;background:#061722cf;font-size:9px;white-space:nowrap}
+    .axis{position:absolute;right:14px;bottom:14px;width:46px;height:46px;border:1px solid #ffffff20;border-radius:50%;background:#061722c8}
+    .axis i{position:absolute;font-size:9px;font-style:normal;font-weight:900}.axis .x{right:5px;bottom:17px;color:#ff6b6b}.axis .y{left:19px;top:3px;color:#6ee7a8}.axis .z{left:4px;bottom:7px;color:#68a7ff}
+    @media(max-width:620px){.help{display:none}.state{max-width:190px}}
+  </style>
+</head>
+<body>
+  <div id="viewer">
+    <canvas id="mapCanvas" aria-label="Isaac Sim Mud Map 3D viewer"></canvas>
+    <div class="state" id="viewerState"><b>Isaac Map 불러오는 중</b><span>Mesh manifest 확인</span></div>
+    <div class="help">좌클릭 회전 · 우클릭 이동 · 휠 확대/축소 · 더블클릭 초기화</div>
+    <div class="axis" aria-hidden="true"><i class="x">X</i><i class="y">Y</i><i class="z">Z</i></div>
+  </div>
+  <script src="/static/isaac-map-viewer.js"></script>
+</body>
+</html>

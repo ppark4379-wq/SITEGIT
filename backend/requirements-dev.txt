@@ -1,0 +1,6 @@
+# 테스트 전용 의존성. 운영 서버에는 설치하지 않아도 됩니다.
+#   .\.venv\Scripts\pip.exe install -r backend\requirements-dev.txt
+#   $env:PYTHONPATH="backend;."; .\.venv\Scripts\python.exe -m pytest tests
+-r requirements.txt
+pytest>=8.0,<9.0
+httpx>=0.27,<1.0

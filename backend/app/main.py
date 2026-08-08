@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -66,3 +66,22 @@ def app_page(request: Request, db: Session = Depends(get_db)):
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     return FileResponse(settings.frontend_dir / "favicon.svg", media_type="image/svg+xml")
+
+
+@app.get("/isaac-data/{storage_path:path}", include_in_schema=False)
+def isaac_data(storage_path: str, request: Request, db: Session = Depends(get_db)) -> FileResponse:
+    """Isaac 지형 Mesh 번들. 로그인한 사용자에게만 내보냅니다.
+
+    StaticFiles 마운트로 두면 FastAPI 의존성이 걸리지 않아 무인증으로 공개됩니다.
+    고정 URL로 외부에 노출하는 순간 현장 지형 전체가 무인증 다운로드 대상이 되므로
+    직접 라우트로 받아 쿠키를 검사합니다.
+    """
+    if not _request_user(request, db):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    root = (settings.sitegit_data_root / "isaac").resolve()
+    target = (root / storage_path).resolve()
+    # 경로 탈출 차단. resolve() 뒤에 비교해야 ../ 를 확실히 걸러냅니다.
+    if root not in target.parents or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return FileResponse(target)

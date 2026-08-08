@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sitegit.local/contracts/execution_commit.schema.json",
+  "title": "SiteGit Execution Commit",
+  "description": "Isaac Sim이 작업을 마치고 올리는 결과. 관리자가 승인해야 맵에 반영됩니다.",
+  "type": "object",
+  "required": ["instruction_id", "status", "result"],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "instruction_id": {
+      "type": "string"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["succeeded", "failed"]
+    },
+    "result": {
+      "type": "object",
+      "description": "실제로 배치·시공된 결과. 지형 스냅이나 충돌 회피로 지시값과 다를 수 있으므로 맵은 이 값을 그립니다.",
+      "properties": {
+        "placed_position": {"$ref": "work_instruction.schema.json#/$defs/vector3"},
+        "placed_size": {"$ref": "work_instruction.schema.json#/$defs/vector3"},
+        "prim_path": {"type": "string"},
+        "error": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "object",
+      "description": "센서 결과. 대용량 파일은 여기에 담지 않고 SSD에 저장한 뒤 storage_keys로 가리킵니다.",
+      "properties": {
+        "sensors": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "예: lidar_point_cloud, camera_rgb, bucket_imu"
+        },
+        "storage_keys": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "metrics": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "adapter": {
+      "type": "string"
+    },
+    "review_status": {
+      "type": "string",
+      "enum": ["pending", "approved", "rejected"]
+    },
+    "reviewed_by": {
+      "type": ["string", "null"]
+    },
+    "review_note": {
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": true
+}

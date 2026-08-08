@@ -226,6 +226,7 @@ sitegit/
 - Cloudflare 고정 URL 설정 템플릿
 - Mock Isaac Adapter
 - 정책 조회 API: `/api/v1/policies`
+- Isaac 작업 폐루프: 웹 지시 → 실행 → Commit → 관리자 승인 → 3D 맵 반영
 
 ### 아직 구조만 만든 부분
 
@@ -255,6 +256,29 @@ E:/SiteGitData/
 ```
 
 실행하면 없는 폴더는 자동 생성됩니다. DB에는 절대 파일 경로 대신 `sasang/WP-C01/...` 같은 상대 `storage_key`를 저장하는 방향으로 구성합니다.
+
+### 외장 SSD를 들고 다니며 개발할 때
+
+저장소와 데이터를 같은 SSD에 두고 여러 PC에 번갈아 꽂는다면 **상대경로**를 사용합니다. PC마다 드라이브 문자가 `E:`에서 `F:`로 바뀌어도 그대로 동작합니다.
+
+```text
+(SSD 루트)
+├─ SITEGIT/          ← 저장소
+└─ SiteGitData/      ← 데이터
+```
+
+```env
+SITEGIT_DATA_ROOT=../SiteGitData
+```
+
+상대경로는 실행 위치가 아니라 **저장소 루트**를 기준으로 해석됩니다. 따라서 `start_sitegit.ps1`, IDE, 수동 `uvicorn` 중 무엇으로 띄우든 같은 폴더를 가리킵니다. Backend, `ops` 스크립트, `isaac_adapter/map_publisher.py`가 모두 같은 규칙을 씁니다.
+
+절대경로(`E:/SiteGitData`)는 SSD를 상시 운영 PC에 고정할 때만 쓰세요. 드라이브 문자가 바뀌면 서버가 오류 없이 **빈 DB를 새로 만들기** 때문에 이동용으로는 위험합니다.
+
+주의할 점 두 가지입니다.
+
+- **안전 제거.** 서버 실행 중 SSD를 뽑으면 SQLite가 손상됩니다. `stop_sitegit.ps1`로 서버를 끈 뒤 안전하게 제거하세요.
+- **백업.** `backup_database.ps1`은 같은 SSD의 `backups/`에 복사합니다. SSD 분실·고장에 대비해 다른 물리 디스크에도 주기적으로 복사하세요.
 
 ---
 
@@ -362,6 +386,39 @@ python isaac_adapter/mock_adapter.py
 ```
 
 실제 Stage·Prim·로봇·ROS 2 코드는 `isaac_adapter/isaac_bridge.py`에 추가합니다. Isaac Sim이 SQLite를 직접 수정해서는 안 됩니다.
+
+### 작업 폐루프
+
+웹에서 지시를 내리면 Isaac이 실행하고, 관리자가 승인해야 맵이 바뀝니다.
+
+```text
+① 웹      작업 지시 발행          → pending
+② Adapter 지시 수신               → dispatched
+③ Isaac   실제 작업 수행
+④ Adapter 결과 Commit             → committed
+⑤ 웹      관리자 승인 / 반려      → approved / rejected
+⑥ 맵      승인된 결과만 렌더링
+```
+
+**⑤를 통과하지 않은 결과는 맵에 나타나지 않습니다.** 지금은 굴착기와 센서 없이 "지정한 좌표에 큐브를 배치"하는 지시 하나만 지원합니다.
+
+```powershell
+Copy-Item isaac_adapter\.env.example isaac_adapter\.env
+
+# 실제 Isaac Sim 연결 — Isaac의 Python으로 실행합니다
+E:\isaacsim\python.bat E:\SITEGIT\isaac_adapter\isaac_runner.py
+
+# Isaac 없이 배관만 검증 (실제 실행 아님)
+.\.venv\Scripts\python.exe isaac_adapter\cube_task_runner.py --interval 3
+```
+
+두 러너는 같은 지시를 두고 경쟁하므로 동시에 켜지 마세요. Commit의 `result.simulator`가 `isaac-sim`이면 Isaac Stage에서 실제로 읽어온 값이고, `simulated-cube-bridge`면 지시값을 되돌린 것뿐입니다.
+
+대시보드 아래쪽 **Isaac 작업 루프** 카드에서 지시를 발행하고 결과를 승인합니다. 승인하는 순간 열려 있는 모든 브라우저의 3D 맵에 반영됩니다.
+
+지형 Mesh와 작업 결과는 저장 위치가 다릅니다. 지형은 SSD의 정적 번들이라 `map_publisher.py`로 재게시할 때만 바뀌고, 작업 결과는 DB에 있어 승인 즉시 반영됩니다. 자세한 내용은 `docs/ISAAC_INTEGRATION.md`를 확인합니다.
+
+LiDAR point cloud, 카메라 이미지, 버킷 IMU 같은 센서 Evidence는 `ExecutionCommit.evidence`가 받을 자리이며 아직 비어 있습니다.
 
 ---
 

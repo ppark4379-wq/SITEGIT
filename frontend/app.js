@@ -24,6 +24,9 @@ let remoteSaveTimer = null;
 let remoteSocket = null;
 let remoteCanEdit = true;
 let currentUser = null;
+// Isaac 지시·Commit은 DB 테이블이라 공동 state payload에 들어 있지 않습니다.
+// 별도로 받아 두고 대시보드 카드에서만 사용합니다.
+let isaacInstructions = [];
 
 const DEFAULT_STATE = {
   selectedPage: 'dashboard',
@@ -248,6 +251,12 @@ function connectRealtime(){
         await pullRemoteState();
         toast('공동 데이터 갱신',`${message.updated_by||'다른 사용자'}의 변경사항을 반영했습니다.`,'success');
       }
+      // Isaac 지시·Commit·승인은 같은 소켓으로 알립니다. 승인된 경우에만
+      // 맵 오브젝트가 바뀌므로 그때만 뷰어를 다시 읽게 합니다.
+      if(message.type==='isaac.map.updated'){
+        await loadIsaacInstructions();
+        if(String(message.reason||'').startsWith('review.'))reloadIsaacMapObjects();
+      }
     }catch(error){console.warn('Realtime message failed',error)}
   });
   remoteSocket.addEventListener('close',()=>{
@@ -267,6 +276,7 @@ async function bootstrapSharedState(){
     const avatar=$('#profileBtn .avatar');if(avatar)avatar.textContent=(me.full_name||me.username).trim().slice(0,1).toUpperCase();
     const profile=$('#profileBtn small');if(profile)profile.textContent=roleLabel;
     await pullRemoteState();
+    await loadIsaacInstructions();
     remoteReady=true;
     connectRealtime();
     if(!remoteCanEdit)updateSyncIndicator('조회 전용','readonly');
@@ -410,6 +420,8 @@ function renderAll(){
   prepareState();
   renderHeader();
   renderDashboard();
+  // renderDashboard가 page.innerHTML을 갈아끼우므로 Isaac 카드는 그 뒤에 채웁니다.
+  renderIsaacPanel();
   renderReadiness();
   renderWorkPackages();
   renderEquipment();
@@ -479,12 +491,12 @@ function renderDashboard(){
     <div class="dashboard-main">
       <article class="card map-card">
         <div class="card-header">
-          <div><h2>Site Work Map</h2><p>실제 연장·물량을 기반으로 구성한 가상 작업구역. 공간 geometry와 장비 위치는 SIMULATED입니다.</p></div>
+          <div><h2>Site Work Map</h2><p>게시된 지형 Mesh 위에 관리자가 승인한 Isaac 작업 결과를 얹어 보여줍니다.</p></div>
           <div class="map-toolbar"><div class="segmented"><button class="active">Work</button><button>Evidence</button><button>Constraint</button></div><button class="ghost-button button-sm" data-action="fit-map">화면 맞춤</button></div>
         </div>
-        <div class="site-map-wrap">
-          <div class="map-overlay-top">${sourceBadge('PUBLIC PROJECT')} ${sourceBadge('SIMULATED GEOMETRY')}</div>
-          ${renderSiteMap(wp)}
+        <div class="site-map-wrap isaac-map">
+          <div class="map-overlay-top">${sourceBadge('PUBLISHED MESH')} ${sourceBadge('SIMULATED GEOMETRY')}</div>
+          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html" title="Isaac Sim Mud Map 3D viewer" loading="eager"></iframe>
           <div class="map-info-float">
             <div class="map-zone-title">Zone ${esc(wp.zone)} · ${esc(wp.id)}</div>
             <div class="map-zone-sub">${esc(wp.name)}</div>
@@ -493,7 +505,7 @@ function renderDashboard(){
             <div class="map-stat-row"><span>잔여량</span><b>${num(wp.remaining)}㎥</b></div>
             <div class="map-stat-row"><span>상태</span><b>${statusText(wp.status)}</b></div>
           </div>
-          <div class="map-legend"><span><i class="legend-dot" style="background:#2d9477"></i>승인 완료</span><span><i class="legend-dot" style="background:#159f96"></i>작업 중</span><span><i class="legend-dot" style="background:#e5a832"></i>검토 필요</span><span><i class="legend-dot" style="background:#d95757"></i>금지구역</span></div>
+          <div class="isaac-map-note">승인된 Isaac 작업 ${isaacInstructions.filter(i=>i.status==='approved').length}건 · 좌클릭 회전 · 우클릭 이동 · 휠 확대</div>
         </div>
       </article>
 
@@ -530,7 +542,15 @@ function renderDashboard(){
         <div class="card-header"><div><h2>Live Audit Stream</h2><p>지시·실행·검토·승인 이벤트</p></div><span class="badge info">LOCAL LOG</span></div>
         <div class="event-list">${renderEvents(state.events.slice(0,5))}</div>
       </article>
-    </div>`;
+    </div>
+
+    <article class="card isaac-loop-card">
+      <div class="card-header">
+        <div><h2>Isaac 작업 루프</h2><p>웹 지시 → Isaac 실행 → Commit → 관리자 승인 → 맵 반영</p></div>
+        <div class="map-toolbar"><span class="badge info" id="isaacLoopCount">승인 대기 없음</span><button class="ghost-button button-sm" data-action="create-cube-instruction">＋ 큐브 배치 지시</button></div>
+      </div>
+      <div class="isaac-loop-list" id="isaacLoopList"></div>
+    </article>`;
 }
 function kpiCard(label,value,unit,delta,icon,tone){return `<article class="card kpi-card ${tone}"><div class="kpi-icon">${icon}</div><div class="kpi-label">${label}</div><div class="kpi-value">${value}<span class="kpi-unit">${unit}</span></div><div class="kpi-delta">${delta}</div></article>`}
 function renderSiteMap(selected){
@@ -705,6 +725,8 @@ document.addEventListener('click',e=>{
   if(e.target.closest('.equipment-card .source-link'))return;
   const editE=e.target.closest('[data-edit-equipment]'); if(editE){openEquipmentModal(editE.dataset.editEquipment);return}
   const editW=e.target.closest('[data-edit-wp]'); if(editW){openWpModal(editW.dataset.editWp);return}
+  const approveIsaac=e.target.closest('[data-isaac-approve]'); if(approveIsaac){reviewIsaacCommit(approveIsaac.dataset.isaacApprove,'approved');return}
+  const rejectIsaac=e.target.closest('[data-isaac-reject]'); if(rejectIsaac){reviewIsaacCommit(rejectIsaac.dataset.isaacReject,'rejected');return}
   const action=e.target.closest('[data-action]'); if(action){handleAction(action.dataset.action);return}
 });
 document.addEventListener('keydown',event=>{
@@ -728,7 +750,8 @@ function handleAction(action){
     'edit-project':openProjectModal,'add-readiness':()=>openReadinessModal(null),'create-wp':()=>openWpModal(null),'add-equipment':()=>openEquipmentModal(null),'edit-assignments':()=>openWpModal(selectedWp().id),
     'check-all-compatibility':()=>toast('장비 적합성 검사 완료','5개 장비의 작업 유형·범위·Evidence 반환 가능성을 다시 계산했습니다.','success'),
     'show-sources':showSourcesModal,'export-json':exportJson,'import-json':()=>$('#jsonImportInput').click(),'snapshot-version':snapshotVersion,
-    'open-onboarding':openOnboarding,'reset-all':confirmReset,'show-architecture':showArchitectureModal,'fit-map':()=>toast('현장 뷰 재정렬','Zone A–D와 장비 위치를 화면에 맞췄습니다.','success'),
+    'create-cube-instruction':openCubeInstructionModal,
+    'open-onboarding':openOnboarding,'reset-all':confirmReset,'show-architecture':showArchitectureModal,'fit-map':()=>{const frame=document.querySelector('.isaac-map-frame');frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin);toast('현장 뷰 재정렬','Isaac Sim Mud Map을 화면에 맞췄습니다.','success')},
   };
   handlers[action]?.();
 }
@@ -804,6 +827,127 @@ function approveResult(){
 function pauseWork(){const wp=selectedWp();wp.status='paused';addEvent('warning',`${wp.id} 작업 보류`,'관리자 결정으로 자동 작업을 일시중지했습니다.');toast('작업 보류','실제 장비 연동 전 컨셉 상태만 변경했습니다.','warning');renderAll()}
 function snapshotVersion(){state.versions.push({type:'decision',code:`Snapshot ${state.versions.length+1}`,title:'현재 상태 Snapshot',desc:`선택 작업 ${selectedWp().id}, Qualified ${selectedWp().qualified}%`,time:nowTime(),actor:state.manager.name,state:'current'});toast('Snapshot 생성','현재 작업·Evidence 상태가 이력에 추가됐습니다.','success');renderAll()}
 function addEvent(type,title,desc){state.events.unshift({time:nowTime(),type,title,desc});state.events=state.events.slice(0,30)}
+
+/* Isaac 폐루프 — 웹 지시 → Isaac 실행 → Commit → 관리자 승인 → 맵 반영 */
+const ISAAC_STATUS_TEXT={pending:'Isaac 대기',dispatched:'Isaac 실행 중',committed:'승인 대기',approved:'맵 반영됨',rejected:'반려됨'};
+const ISAAC_STATUS_BADGE={pending:'neutral',dispatched:'info',committed:'warning',approved:'accepted',rejected:'danger'};
+function isaacLatestCommit(instruction){return (instruction.commits||[]).at(-1)||null}
+function isaacPositionText(instruction){
+  const commit=isaacLatestCommit(instruction);
+  const p=commit?.result?.placed_position||instruction.params?.position||{};
+  return `${Number(p.x||0).toFixed(1)} , ${Number(p.y||0).toFixed(1)} , ${Number(p.z||0).toFixed(1)}`;
+}
+function reloadIsaacMapObjects(){
+  document.querySelector('.isaac-map-frame')?.contentWindow?.postMessage({type:'sitegit.isaac-map.reload-objects'},window.location.origin);
+}
+async function loadIsaacInstructions(){
+  try{
+    const response=await apiFetch(`/isaac/instructions?project_id=${encodeURIComponent(PROJECT_ID)}&limit=20`);
+    if(!response.ok)throw new Error(`ISAAC_${response.status}`);
+    isaacInstructions=await response.json();
+    renderIsaacPanel();
+  }catch(error){
+    if(error.message!=='AUTH_REQUIRED')console.warn('Isaac instruction load failed',error);
+  }
+}
+function renderIsaacPanel(){
+  const host=$('#isaacLoopList');
+  if(!host)return;
+  const waiting=isaacInstructions.filter(i=>i.status==='committed').length;
+  const counter=$('#isaacLoopCount');
+  if(counter){counter.textContent=waiting?`승인 대기 ${waiting}건`:'승인 대기 없음';counter.className=`badge ${waiting?'warning':'info'}`}
+  host.innerHTML=isaacInstructions.length
+    ?isaacInstructions.map(isaacInstructionRow).join('')
+    :'<div class="empty-state">아직 발행한 Isaac 작업 지시가 없습니다. 오른쪽 위에서 큐브 배치를 지시해 보세요.</div>';
+}
+function isaacInstructionRow(instruction){
+  const commit=isaacLatestCommit(instruction);
+  const label=instruction.params?.label||instruction.kind;
+  const color=instruction.params?.color||'#f0b429';
+  const failed=commit&&commit.status==='failed';
+  const pendingReview=instruction.status==='committed'&&commit&&commit.review_status==='pending';
+  const detail=failed
+    ?`실행 실패 · ${esc(commit.result?.error||'원인 미기록')}`
+    :`위치 ${esc(isaacPositionText(instruction))}${commit?.review_note?` · 사유 ${esc(commit.review_note)}`:''}`;
+  return `<div class="isaac-row">
+    <span class="isaac-swatch" style="background:${esc(color)}"></span>
+    <div class="isaac-row-main">
+      <strong>${esc(label)}</strong>
+      <span>${detail}</span>
+      <small>${esc(instruction.created_by_username||'-')} 발행${commit?.reviewed_by?` · ${esc(commit.reviewed_by)} 판정`:''}</small>
+    </div>
+    <span class="badge ${ISAAC_STATUS_BADGE[instruction.status]||'neutral'}">${ISAAC_STATUS_TEXT[instruction.status]||instruction.status}</span>
+    ${pendingReview?`<div class="isaac-row-actions">
+      <button class="secondary-button button-sm" data-isaac-approve="${esc(commit.id)}">✓ 승인</button>
+      <button class="ghost-button button-sm" data-isaac-reject="${esc(commit.id)}">반려</button>
+    </div>`:''}
+  </div>`;
+}
+function openCubeInstructionModal(){
+  openModal({
+    eyebrow:'ISAAC WORK INSTRUCTION',
+    title:'큐브 배치 지시',
+    body:`<div class="evidence-scope-note"><b>이 지시가 하는 일</b><span>Isaac Sim에 "이 좌표에 큐브를 두라"고 지시합니다.</span><em>Isaac이 Commit하고 관리자가 승인해야 맵에 나타납니다.</em></div>
+      <div class="form-grid">
+        <div class="form-group"><label>라벨</label><input class="form-control" id="cbLabel" value="시험 큐브"></div>
+        <div class="form-group"><label>색상</label><input class="form-control" id="cbColor" type="color" value="#f0b429"></div>
+        <div class="form-group"><label>X (좌우)</label><input class="form-control" id="cbX" type="number" step="1" value="0"></div>
+        <div class="form-group"><label>Y (앞뒤)</label><input class="form-control" id="cbY" type="number" step="1" value="0"></div>
+        <div class="form-group"><label>Z (높이)</label><input class="form-control" id="cbZ" type="number" step="1" value="8"></div>
+        <div class="form-group"><label>한 변 크기</label><input class="form-control" id="cbSize" type="number" step="1" min="1" value="6"></div>
+        <div class="form-group full"><label>메모</label><input class="form-control" id="cbNote" placeholder="선택 입력"><span class="form-hint">Isaac Sim 현장 좌표계입니다 — Z가 높이, 지면이 Z=0. 현장 범위는 X ±106m, Y ±114m, 높이 0~12m입니다.</span></div>
+      </div>`,
+    footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="sendCubeInstructionBtn">Isaac으로 지시 전송</button>`,
+  });
+  $('#sendCubeInstructionBtn').addEventListener('click',async()=>{
+    const size=Math.max(1,Number($('#cbSize').value)||6);
+    const body={
+      project_id:PROJECT_ID,
+      kind:'place_cube',
+      params:{
+        position:{x:Number($('#cbX').value)||0,y:Number($('#cbY').value)||0,z:Number($('#cbZ').value)||0},
+        size:{x:size,y:size,z:size},
+        label:$('#cbLabel').value||'시험 큐브',
+        color:$('#cbColor').value||'#f0b429',
+      },
+      note:$('#cbNote').value||null,
+    };
+    try{
+      const response=await apiFetch('/isaac/instructions',{method:'POST',body:JSON.stringify(body)});
+      if(!response.ok)throw new Error(`CREATE_${response.status}`);
+      closeModal();
+      await loadIsaacInstructions();
+      addEvent('info','Isaac 작업 지시 발행',`${body.params.label} · 위치 ${body.params.position.x}, ${body.params.position.y}, ${body.params.position.z}`);
+      toast('지시 전송 완료','Isaac Adapter가 가져가면 Commit이 올라옵니다.','success');
+      renderAll();
+    }catch(error){
+      if(error.message!=='AUTH_REQUIRED')toast('지시 전송 실패','서버 연결과 권한을 확인하세요.','danger');
+    }
+  });
+}
+async function reviewIsaacCommit(commitId,decision){
+  const note=decision==='rejected'?(prompt('반려 사유를 입력하세요.')||'').slice(0,500):null;
+  if(decision==='rejected'&&!note){toast('반려 취소','사유를 입력해야 반려할 수 있습니다.','warning');return}
+  try{
+    const response=await apiFetch(`/isaac/commits/${encodeURIComponent(commitId)}/review`,{
+      method:'POST',body:JSON.stringify({decision,note}),
+    });
+    if(response.status===409){toast('이미 판정된 결과','다른 관리자가 먼저 처리했습니다.','warning');await loadIsaacInstructions();return}
+    if(!response.ok)throw new Error(`REVIEW_${response.status}`);
+    await loadIsaacInstructions();
+    if(decision==='approved'){
+      reloadIsaacMapObjects();
+      addEvent('success','Isaac 결과 승인','승인된 작업 결과가 Site Work Map에 반영됐습니다.');
+      toast('승인 완료','맵에 작업 결과가 반영됐습니다.','success');
+    }else{
+      addEvent('warning','Isaac 결과 반려',`사유: ${note}`);
+      toast('반려 처리','맵에는 반영되지 않습니다.','warning');
+    }
+    renderAll();
+  }catch(error){
+    if(error.message!=='AUTH_REQUIRED')toast('판정 실패','서버 연결과 권한을 확인하세요.','danger');
+  }
+}
 
 /* Modal helpers */
 function openModal({eyebrow='EDIT',title,body,footer}){
