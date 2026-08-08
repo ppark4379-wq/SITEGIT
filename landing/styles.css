@@ -22,3 +22,6 @@
 .preview-window>img{height:auto;aspect-ratio:auto;object-fit:contain;object-position:center top;background:#eaf0f3}
 @media(max-width:760px){.preview-note{display:block}.preview-note strong{display:block;margin-bottom:4px}}
 .site-header .brand small{margin-top:0;transform:translateY(-2px)}
+.hero-brand>span{display:block}
+.hero-brand-expansion{margin-top:7px;color:#d6e5ea;font-size:clamp(13px,1.05vw,16px);font-weight:650;letter-spacing:.035em}
+.hero-brand-expansion b{color:#77ddd2;font-weight:950;text-shadow:0 0 22px rgba(119,221,210,.2)}
