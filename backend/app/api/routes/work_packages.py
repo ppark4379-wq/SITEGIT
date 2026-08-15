@@ -10,6 +10,9 @@ from sqlalchemy.orm import Session
 from ...core.config import get_settings
 from ...domains.executions.service import ExecutionsService
 from ...domains.executions.stage_inventory import load_stage_inventory
+from ...domains.evaluation.service import EvaluationService
+from ...domains.versioning.service import VersioningService
+from ...domains.work_packages.service import WorkPackagesService
 from ...domains.work_packages.ai_compiler import (
     WorkPackageLLMError,
     WorkPackageLLMUnavailable,
@@ -33,11 +36,99 @@ from ...schemas.work_package_ai import (
     ExcavationDraft,
     ExcavationWorkPackageRecord,
 )
+from ...schemas.work_package import (
+    EvaluationCreate, ReworkCreate, SuccessorResponse, VersionEventResponse,
+    WorkPackageCreate, WorkPackageResponse,
+)
 from ..deps import get_db, require_roles
 
 
 router = APIRouter(prefix="/work-packages", tags=["work-packages"])
 OPERATOR_ROLES = ("admin", "manager", "reviewer")
+
+
+def _evaluation_payload(item):
+    return {
+        "id": item.id, "work_package_id": item.work_package_id,
+        "progress": item.progress_json, "overall": item.overall,
+        "criteria": item.criteria_json, "recommended_action": item.recommended_action,
+        "created_at": item.created_at,
+    }
+
+
+@router.get("", response_model=list[WorkPackageResponse])
+def list_work_packages(project_id: str = "SASANG-001", db: Session = Depends(get_db),
+                       _user: User = Depends(require_roles("admin", "manager", "reviewer", "viewer"))):
+    return WorkPackagesService.list(db, project_id)
+
+
+@router.post("", response_model=WorkPackageResponse, status_code=201)
+def create_work_package(payload: WorkPackageCreate, db: Session = Depends(get_db),
+                        user: User = Depends(require_roles(*OPERATOR_ROLES))):
+    return WorkPackagesService.create(db, payload, actor=user.username)
+
+
+@router.get("/{work_package_id}", response_model=WorkPackageResponse)
+def get_work_package(work_package_id: str, db: Session = Depends(get_db),
+                     _user: User = Depends(require_roles("admin", "manager", "reviewer", "viewer"))):
+    return WorkPackagesService.get(db, work_package_id)
+
+
+@router.post("/{work_package_id}/start", response_model=WorkPackageResponse)
+def start_work_package(work_package_id: str, db: Session = Depends(get_db),
+                       user: User = Depends(require_roles(*OPERATOR_ROLES))):
+    return WorkPackagesService.start(db, WorkPackagesService.get(db, work_package_id), actor=user.username)
+
+
+@router.post("/{work_package_id}/finish", response_model=WorkPackageResponse)
+def finish_work_package(work_package_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(require_roles(*OPERATOR_ROLES))):
+    return WorkPackagesService.mark_review(db, WorkPackagesService.get(db, work_package_id), actor=user.username)
+
+
+@router.post("/{work_package_id}/evaluation", status_code=201)
+def evaluate_work_package(work_package_id: str, payload: EvaluationCreate,
+                          db: Session = Depends(get_db),
+                          user: User = Depends(require_roles(*OPERATOR_ROLES))):
+    item = EvaluationService.evaluate(db, work_package=WorkPackagesService.get(db, work_package_id),
+                                      payload=payload, actor=user.username)
+    return _evaluation_payload(item)
+
+
+@router.get("/{work_package_id}/evaluation")
+def get_evaluation(work_package_id: str, db: Session = Depends(get_db),
+                   _user: User = Depends(require_roles("admin", "manager", "reviewer", "viewer"))):
+    item = EvaluationService.latest(WorkPackagesService.get(db, work_package_id))
+    if not item: raise HTTPException(status_code=404, detail="Evaluation not found")
+    return _evaluation_payload(item)
+
+
+@router.post("/{work_package_id}/rework", response_model=WorkPackageResponse, status_code=201)
+def create_rework(work_package_id: str, payload: ReworkCreate, db: Session = Depends(get_db),
+                  user: User = Depends(require_roles(*OPERATOR_ROLES))):
+    return WorkPackagesService.create_rework(db, WorkPackagesService.get(db, work_package_id),
+                                             payload, actor=user.username)
+
+
+@router.post("/{work_package_id}/release", response_model=WorkPackageResponse)
+def release_work_package(work_package_id: str, db: Session = Depends(get_db),
+                         user: User = Depends(require_roles(*OPERATOR_ROLES))):
+    return WorkPackagesService.release(db, WorkPackagesService.get(db, work_package_id), actor=user.username)
+
+
+@router.get("/{work_package_id}/versions", response_model=list[VersionEventResponse])
+def get_versions(work_package_id: str, db: Session = Depends(get_db),
+                 _user: User = Depends(require_roles("admin", "manager", "reviewer", "viewer"))):
+    WorkPackagesService.get(db, work_package_id)
+    return VersioningService.list_for_work_package(db, work_package_id)
+
+
+@router.get("/{work_package_id}/successor", response_model=SuccessorResponse)
+def get_successor(work_package_id: str, db: Session = Depends(get_db),
+                  _user: User = Depends(require_roles("admin", "manager", "reviewer", "viewer"))):
+    item = WorkPackagesService.get(db, work_package_id)
+    successor = db.get(type(item), item.successor_wp_id) if item.successor_wp_id else None
+    return {"predecessor_id": item.id, "successor": successor, "release_gate": successor.release_gate if successor else "OPEN"}
 
 
 @router.post("/ai/excavation/interpret", response_model=ExcavationDraft)
@@ -132,6 +223,18 @@ async def dispatch_excavation_work_package(
         note=f"AI excavation Work Package · {payload.message}"[:500],
         user=user,
     )
+    stored = WorkPackagesService.create(
+        db,
+        WorkPackageCreate(
+            id=work_package_id, project_id=payload.project_id, work_type="EXCAVATION",
+            zone_id=payload.plan.zone_id or "UNSPECIFIED", title=payload.plan.summary,
+            description=payload.message,
+            target={"prim_path": draft.target.path, "name": draft.target.name},
+            constraints={"equipment_prim_path": draft.equipment.path},
+        ),
+        actor=user.username,
+    )
+    WorkPackagesService.link_instruction(db, item=stored, instruction_id=instruction.id)
     await manager.broadcast(
         payload.project_id,
         {
@@ -227,6 +330,18 @@ async def dispatch_work_package(
         note=f"AI Work Package · {payload.source_text}"[:500],
         user=user,
     )
+    stored = WorkPackagesService.create(
+        db,
+        WorkPackageCreate(
+            id=work_package_id, project_id=payload.project_id, work_type="PLACE_CUBE",
+            zone_id=payload.plan.zone_id, title=payload.plan.label,
+            description=payload.source_text,
+            target={"position": draft.position.model_dump(), "size": size},
+            constraints={"zone_location": draft.plan.location},
+        ),
+        actor=user.username,
+    )
+    WorkPackagesService.link_instruction(db, item=stored, instruction_id=instruction.id)
     await manager.broadcast(
         payload.project_id,
         {
