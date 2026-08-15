@@ -25,7 +25,12 @@ import os
 from pathlib import Path
 import sys
 
+from dotenv import load_dotenv
+
 ADAPTER_DIR = Path(__file__).resolve().parent
+REPO_ROOT = ADAPTER_DIR.parent
+load_dotenv(REPO_ROOT / ".env")
+load_dotenv(ADAPTER_DIR / ".env", override=True)
 if str(ADAPTER_DIR) not in sys.path:
     sys.path.insert(0, str(ADAPTER_DIR))
 
@@ -61,7 +66,34 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="작업 후 Stage를 저장할 경로. Isaac이 수정한 맵을 남겨 둡니다.",
     )
+    parser.add_argument(
+        "--equipment",
+        default=None,
+        help="함께 불러올 굴착기 USD. 생략하면 SITEGIT_EQUIPMENT_ASSET를 사용합니다.",
+    )
+    parser.add_argument(
+        "--no-equipment",
+        action="store_true",
+        help="SITEGIT_EQUIPMENT_ASSET가 있어도 굴착기를 자동 로드하지 않습니다.",
+    )
+    parser.add_argument(
+        "--no-demo-soil",
+        action="store_true",
+        help="기본 독립 토사 더미 Prim을 만들지 않습니다.",
+    )
     return parser.parse_args()
+
+
+def _float_tuple(raw: str, *, count: int, setting_name: str) -> tuple[float, ...]:
+    """Parse one comma-separated numeric adapter setting."""
+
+    try:
+        values = tuple(float(value.strip()) for value in raw.split(","))
+    except ValueError as error:
+        raise SystemExit(f"{setting_name}은 쉼표로 구분한 숫자 {count}개여야 합니다.") from error
+    if len(values) != count:
+        raise SystemExit(f"{setting_name}은 쉼표로 구분한 숫자 {count}개여야 합니다.")
+    return values
 
 
 def main() -> None:
@@ -75,9 +107,16 @@ def main() -> None:
     # 여기서부터 omni/pxr 사용 가능합니다.
     import omni.usd
 
-    from isaac_bridge import IsaacBridge
+    from isaac_bridge import IsaacBridge, _path_list
     from cube_task_runner import PROJECT_ID, API_URL, USERNAME, PASSWORD, run_instruction
-    from site_stage import default_site_asset, load_site, write_site_frame
+    from evidence_exporter import EvidenceExporter
+    from site_stage import (
+        create_diggable_soil_pile,
+        default_site_asset,
+        load_equipment,
+        load_site,
+        write_site_frame,
+    )
     from sitegit_client import SiteGitClient
 
     try:
@@ -115,6 +154,70 @@ def main() -> None:
                     flush=True,
                 )
 
+        stage = omni.usd.get_context().get_stage()
+        create_demo_soil = os.getenv("SITEGIT_CREATE_DEMO_SOIL_PILE", "true").strip().lower()
+        if (
+            not args.no_demo_soil
+            and create_demo_soil not in {"0", "false", "no", "off"}
+            and stage.GetPrimAtPath("/World/Site").IsValid()
+        ):
+            pile_xy = _float_tuple(
+                os.getenv("SITEGIT_DEMO_SOIL_PILE_POSITION", "-12,12"),
+                count=2,
+                setting_name="SITEGIT_DEMO_SOIL_PILE_POSITION",
+            )
+            pile_size = _float_tuple(
+                os.getenv("SITEGIT_DEMO_SOIL_PILE_SIZE", "6,5,2.5"),
+                count=3,
+                setting_name="SITEGIT_DEMO_SOIL_PILE_SIZE",
+            )
+            pile_info = create_diggable_soil_pile(
+                stage,
+                prim_path=os.getenv(
+                    "SITEGIT_DEMO_SOIL_PILE_PRIM",
+                    "/World/Diggable/ZoneA_SoilPile_01",
+                ),
+                position_xy=(pile_xy[0], pile_xy[1]),
+                size=(pile_size[0], pile_size[1], pile_size[2]),
+                zone_id=os.getenv("SITEGIT_DEMO_SOIL_PILE_ZONE", "A"),
+                simulation_app=simulation_app,
+            )
+            print(
+                "독립 토사 Prim 준비 완료: "
+                f"{pile_info['prim_path']} · "
+                f"{pile_info['size'][0]:.1f}×{pile_info['size'][1]:.1f}×"
+                f"{pile_info['size'][2]:.1f}m · 바닥 Z={pile_info['base_z']:.2f}m",
+                flush=True,
+            )
+
+        if not args.usd and not args.no_equipment:
+            equipment_value = args.equipment or os.getenv("SITEGIT_EQUIPMENT_ASSET", "")
+            if equipment_value:
+                position_values = _float_tuple(
+                    os.getenv("SITEGIT_EQUIPMENT_POSITION", "0,0,0"),
+                    count=3,
+                    setting_name="SITEGIT_EQUIPMENT_POSITION",
+                )
+                equipment_prim_path = os.getenv(
+                    "SITEGIT_EQUIPMENT_PRIMS", "/World/Equipment/EXC_001"
+                ).split(",")[0].strip()
+                equipment_info = load_equipment(
+                    omni.usd.get_context().get_stage(),
+                    equipment_value,
+                    prim_path=equipment_prim_path,
+                    position=position_values,
+                    simulation_app=simulation_app,
+                )
+                print(
+                    f"굴착기 로드 완료: {equipment_info['prim_path']} · "
+                    f"{equipment_info['asset']}"
+                )
+                print(
+                    "  실제 Skeleton: "
+                    + (", ".join(equipment_info["skeleton_paths"]) or "없음")
+                )
+                print(f"  애니메이션 Prim: {len(equipment_info['animation_paths'])}개")
+
         if not PASSWORD:
             raise SystemExit("SITEGIT_PASSWORD가 비어 있습니다. isaac_adapter/.env를 설정하세요.")
 
@@ -130,15 +233,46 @@ def main() -> None:
                 "  isaac_adapter/.env의 SITEGIT_PASSWORD가 루트 .env의\n"
                 "  INITIAL_MANAGER_PASSWORD와 같은지 확인하세요."
             ) from error
-        bridge = IsaacBridge()
+        bridge = IsaacBridge(update_callback=simulation_app.update)
+        data_root_value = Path(os.getenv("SITEGIT_DATA_ROOT", REPO_ROOT / "runtime"))
+        if not data_root_value.is_absolute():
+            data_root_value = REPO_ROOT / data_root_value
+        evidence_exporter = EvidenceExporter(data_root_value.resolve() / "evidence")
+        equipment_paths = _path_list(
+            "SITEGIT_EQUIPMENT_PRIMS", "/World/Equipment/EXC_001,/World/Armature"
+        )
+        diggable_roots = _path_list(
+            "SITEGIT_DIGGABLE_ROOTS", "/World/Diggable"
+        )
+
+        def publish_inventory() -> None:
+            inventory = bridge.stage_inventory(
+                equipment_paths=equipment_paths,
+                diggable_roots=diggable_roots,
+            )
+            response = client.update_stage_inventory(PROJECT_ID, inventory)
+            print(
+                "  [inventory] "
+                f"장비 {len(response['equipment'])} · 대상 {len(response['diggable_targets'])}"
+            )
+
+        publish_inventory()
         print(f"Isaac Sim ↔ SiteGit {API_URL} · project={PROJECT_ID}")
-        print("웹 대시보드에서 큐브 배치를 지시하면 이 Stage에 Prim이 생깁니다.")
+        print("웹 맵 왼쪽에서 실제 장비와 굴착 대상 Prim을 선택할 수 있습니다.")
 
         elapsed = 0.0
+        inventory_elapsed = 0.0
         frame_seconds = 1.0 / 60.0
         while simulation_app.is_running():
             simulation_app.update()
             elapsed += frame_seconds
+            inventory_elapsed += frame_seconds
+            if inventory_elapsed >= 5.0:
+                inventory_elapsed = 0.0
+                try:
+                    publish_inventory()
+                except Exception as error:
+                    print(f"  [warning] Stage inventory 전송 실패: {error}")
             if elapsed < args.interval:
                 continue
             elapsed = 0.0
@@ -152,7 +286,14 @@ def main() -> None:
             if instructions:
                 print(f"지시 {len(instructions)}건 수신")
                 for instruction in instructions:
-                    run_instruction(client, bridge, instruction)
+                    run_instruction(
+                        client,
+                        bridge,
+                        instruction,
+                        evidence_exporter=evidence_exporter,
+                        update_callback=simulation_app.update,
+                    )
+                    publish_inventory()
                 if args.save_usd:
                     omni.usd.get_context().save_as_stage(str(Path(args.save_usd).resolve()))
                     print(f"  [saved] {args.save_usd}")

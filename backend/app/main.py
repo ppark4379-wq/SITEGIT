@@ -85,3 +85,15 @@ def isaac_data(storage_path: str, request: Request, db: Session = Depends(get_db
     if root not in target.parents or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return FileResponse(target)
+
+
+@app.get("/evidence/{storage_path:path}", include_in_schema=False)
+def evidence_data(storage_path: str, request: Request, db: Session = Depends(get_db)) -> FileResponse:
+    """Serve authenticated before/after images, Stage summaries, and LiDAR PLY files."""
+    if not _request_user(request, db):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    root = (settings.sitegit_data_root / "evidence").resolve()
+    target = (root / storage_path).resolve()
+    if root not in target.parents or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return FileResponse(target)

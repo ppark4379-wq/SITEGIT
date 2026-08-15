@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     isaac_adapter_enabled: bool = False
     isaac_adapter_url: str = "http://localhost:8100"
 
+    # 자연어 Work Package Compiler. Ollama는 이 PC에서만 실행하며 외부 API 키가 없습니다.
+    llm_provider: Literal["ollama"] = "ollama"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "qwen3:8b"
+    ollama_timeout_seconds: float = Field(default=90.0, gt=0, le=300)
+
     jwt_secret: str = Field(default="CHANGE-ME-BEFORE-PUBLIC-ACCESS-1234567890", min_length=16)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 480

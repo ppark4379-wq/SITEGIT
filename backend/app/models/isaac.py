@@ -51,6 +51,7 @@ REVIEW_REJECTED = "rejected"
 # 지금은 큐브 배치 하나뿐입니다. 굴착(dig_depth 등)이 붙어도 params JSON만
 # 바뀌도록 kind를 문자열로 열어 둡니다.
 KIND_PLACE_CUBE = "place_cube"
+KIND_EXCAVATE_PRIM = "excavate_prim"
 
 
 class WorkInstruction(Base):
@@ -62,6 +63,7 @@ class WorkInstruction(Base):
     project_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(40), nullable=False, default=KIND_PLACE_CUBE)
     # place_cube: {"position": {x,y,z}, "size": {x,y,z}, "label": str, "color": "#rrggbb"}
+    # excavate_prim: {"equipment_prim_path": str, "target_prim_path": str, ...}
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=INSTRUCTION_PENDING, index=True

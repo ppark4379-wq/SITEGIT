@@ -8,11 +8,16 @@ Adapter도 일반 사용자로 로그인하므로 별도 인증 경로를 만들
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from ...core.config import get_settings
 from ...domains.executions.service import ExecutionsService
+from ...domains.executions.stage_inventory import (
+    find_inventory_prim,
+    load_stage_inventory,
+    save_stage_inventory,
+)
 from ...domains.trust_gate.service import TrustGateService
 from ...models.user import User
 from ...realtime.manager import manager
@@ -23,6 +28,8 @@ from ...schemas.isaac import (
     InstructionResponse,
     MapObjectsResponse,
     ReviewDecision,
+    StageInventoryResponse,
+    StageInventoryUpdate,
 )
 from ..deps import get_current_user, get_db, require_roles
 
@@ -34,6 +41,31 @@ OPERATOR_ROLES = ("admin", "manager", "reviewer")
 
 def _default_project_id() -> str:
     return get_settings().default_project_id
+
+
+@router.get("/stage-inventory", response_model=StageInventoryResponse)
+def get_stage_inventory(
+    project_id: str | None = Query(default=None),
+    _user: User = Depends(get_current_user),
+) -> StageInventoryResponse:
+    """Return exact equipment and diggable Prim paths reported by Isaac Sim."""
+    return load_stage_inventory(project_id or _default_project_id())
+
+
+@router.post("/stage-inventory", response_model=StageInventoryResponse)
+async def update_stage_inventory(
+    payload: StageInventoryUpdate,
+    _user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> StageInventoryResponse:
+    """Adapter heartbeat. Browser clients cannot invent executable Prim paths."""
+    inventory = save_stage_inventory(payload)
+    await _broadcast_map_changed(
+        payload.project_id,
+        "stage.inventory",
+        equipment_count=len(payload.equipment),
+        target_count=len(payload.diggable_targets),
+    )
+    return inventory
 
 
 async def _broadcast_map_changed(project_id: str, reason: str, **extra: object) -> None:
@@ -70,6 +102,19 @@ async def create_instruction(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*OPERATOR_ROLES)),
 ) -> InstructionResponse:
+    if payload.kind == "excavate_prim":
+        params = payload.params.model_dump()
+        inventory, equipment = find_inventory_prim(
+            payload.project_id, params["equipment_prim_path"], "equipment"
+        )
+        _, target = find_inventory_prim(
+            payload.project_id, params["target_prim_path"], "diggable"
+        )
+        if not inventory.connected or equipment is None or target is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Excavation paths must match the current live Isaac Stage inventory.",
+            )
     instruction = ExecutionsService.create_instruction(
         db,
         project_id=payload.project_id,

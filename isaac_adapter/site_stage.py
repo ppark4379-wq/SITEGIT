@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Any
 
 SITE_PRIM_PATH = "/World/Site"
+DIGGABLE_ROOT_PATH = "/World/Diggable"
+DEFAULT_SOIL_PILE_PRIM_PATH = f"{DIGGABLE_ROOT_PATH}/ZoneA_SoilPile_01"
+# USD Prim names must be valid identifiers. Keep the business-facing equipment
+# ID as ``EXC-001``, but use an underscore in the Stage path.
+DEFAULT_EQUIPMENT_PRIM_PATH = "/World/Equipment/EXC_001"
 
 # 기본 현장 에셋. 대용량이라 Git이 아니라 SSD 데이터 루트에 둡니다.
 DEFAULT_SITE_ASSET = "isaac/assets/construction_site_mud.usdz"
@@ -178,4 +183,284 @@ def load_site(
             "applied_scale": scale,
             "applied_rotate_x_deg": rotate_x,
         },
+    }
+
+
+def _triangle_surface_z_at_xy(
+    x: float,
+    y: float,
+    first: tuple[float, float, float],
+    second: tuple[float, float, float],
+    third: tuple[float, float, float],
+) -> float | None:
+    """Return the interpolated Z where an XY point falls inside a triangle."""
+
+    denominator = (
+        (second[1] - third[1]) * (first[0] - third[0])
+        + (third[0] - second[0]) * (first[1] - third[1])
+    )
+    if abs(denominator) < 1e-12:
+        return None
+    first_weight = (
+        (second[1] - third[1]) * (x - third[0])
+        + (third[0] - second[0]) * (y - third[1])
+    ) / denominator
+    second_weight = (
+        (third[1] - first[1]) * (x - third[0])
+        + (first[0] - third[0]) * (y - third[1])
+    ) / denominator
+    third_weight = 1.0 - first_weight - second_weight
+    tolerance = 1e-7
+    if min(first_weight, second_weight, third_weight) < -tolerance:
+        return None
+    if max(first_weight, second_weight, third_weight) > 1.0 + tolerance:
+        return None
+    return (
+        first_weight * first[2]
+        + second_weight * second[2]
+        + third_weight * third[2]
+    )
+
+
+def site_surface_height(stage: Any, x: float, y: float) -> float:
+    """Find the topmost terrain triangle below one SiteGit XY coordinate.
+
+    The imported mud map has no semantic height-field. Its authored mesh is
+    therefore sampled directly so the demo soil pile does not float or sink.
+    """
+
+    from pxr import Gf, Usd, UsdGeom
+
+    root = stage.GetPrimAtPath(SITE_PRIM_PATH)
+    if not root.IsValid():
+        raise RuntimeError(f"현장 Prim이 없습니다: {SITE_PRIM_PATH}")
+
+    highest: float | None = None
+    nearest_distance_squared = float("inf")
+    nearest_z = 0.0
+    for prim in Usd.PrimRange(root):
+        if not prim.IsActive() or not prim.IsA(UsdGeom.Mesh):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        authored_points = mesh.GetPointsAttr().Get(Usd.TimeCode.Default()) or []
+        counts = mesh.GetFaceVertexCountsAttr().Get(Usd.TimeCode.Default()) or []
+        indices = mesh.GetFaceVertexIndicesAttr().Get(Usd.TimeCode.Default()) or []
+        if not authored_points or not counts or not indices:
+            continue
+        matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        points: list[tuple[float, float, float]] = []
+        for value in authored_points:
+            world = matrix.Transform(Gf.Vec3d(float(value[0]), float(value[1]), float(value[2])))
+            point = (float(world[0]), float(world[1]), float(world[2]))
+            points.append(point)
+            distance_squared = (point[0] - x) ** 2 + (point[1] - y) ** 2
+            if distance_squared < nearest_distance_squared:
+                nearest_distance_squared = distance_squared
+                nearest_z = point[2]
+
+        offset = 0
+        for raw_count in counts:
+            count = int(raw_count)
+            face = [int(index) for index in indices[offset : offset + count]]
+            offset += count
+            if count < 3 or any(index < 0 or index >= len(points) for index in face):
+                continue
+            first = points[face[0]]
+            for triangle_index in range(1, count - 1):
+                second = points[face[triangle_index]]
+                third = points[face[triangle_index + 1]]
+                if x < min(first[0], second[0], third[0]) - 1e-7:
+                    continue
+                if x > max(first[0], second[0], third[0]) + 1e-7:
+                    continue
+                if y < min(first[1], second[1], third[1]) - 1e-7:
+                    continue
+                if y > max(first[1], second[1], third[1]) + 1e-7:
+                    continue
+                height = _triangle_surface_z_at_xy(x, y, first, second, third)
+                if height is not None and (highest is None or height > highest):
+                    highest = height
+
+    if highest is not None:
+        return highest
+    if nearest_distance_squared < float("inf"):
+        return nearest_z
+    raise RuntimeError("현장 Mesh에서 토사 더미 배치 높이를 계산하지 못했습니다.")
+
+
+def create_diggable_soil_pile(
+    stage: Any,
+    *,
+    prim_path: str = DEFAULT_SOIL_PILE_PRIM_PATH,
+    position_xy: tuple[float, float] = (-12.0, 12.0),
+    size: tuple[float, float, float] = (6.0, 5.0, 2.5),
+    zone_id: str = "A",
+    simulation_app: Any = None,
+) -> dict[str, Any]:
+    """Create one small, semantic and independently removable soil Mesh Prim."""
+
+    import math
+
+    from pxr import Gf, Sdf, UsdGeom, UsdPhysics
+
+    if any(value <= 0 for value in size):
+        raise ValueError("토사 더미 크기는 모두 0보다 커야 합니다.")
+    if max(size[0], size[1]) > 25.0:
+        raise ValueError("데모 토사 더미의 가로·세로 크기는 25m 이하여야 합니다.")
+
+    prepare_stage(stage)
+    UsdGeom.Xform.Define(stage, Sdf.Path(DIGGABLE_ROOT_PATH))
+    existing = stage.GetPrimAtPath(prim_path)
+    if existing.IsValid():
+        position_range = _world_range(stage, prim_path)
+        return {
+            "prim_path": prim_path,
+            "position": [float(value) for value in position_xy],
+            "base_z": float(position_range.GetMin()[2]),
+            "size": [float(value) for value in size],
+            "zone_id": zone_id,
+            "existing": True,
+        }
+
+    base_z = site_surface_height(stage, float(position_xy[0]), float(position_xy[1]))
+    radius_x, radius_y, height = size[0] * 0.5, size[1] * 0.5, size[2]
+    segments = 24
+    # Center peak plus three rings produces a rounded mound without relying on
+    # an external asset or subdivision at runtime.
+    points = [Gf.Vec3f(0.0, 0.0, float(height))]
+    rings = ((0.34, 0.76), (0.70, 0.34), (1.0, 0.0))
+    for ring_scale, height_scale in rings:
+        for segment in range(segments):
+            angle = 2.0 * math.pi * segment / segments
+            # A deterministic ripple avoids a perfectly machined cone.
+            ripple = 1.0 + 0.045 * math.sin(segment * 2.7 + ring_scale * 3.0)
+            points.append(
+                Gf.Vec3f(
+                    float(math.cos(angle) * radius_x * ring_scale * ripple),
+                    float(math.sin(angle) * radius_y * ring_scale * ripple),
+                    float(height * height_scale),
+                )
+            )
+
+    faces: list[int] = []
+    for segment in range(segments):
+        current = 1 + segment
+        following = 1 + (segment + 1) % segments
+        faces.extend((0, current, following))
+    for ring in range(len(rings) - 1):
+        inner_start = 1 + ring * segments
+        outer_start = inner_start + segments
+        for segment in range(segments):
+            next_segment = (segment + 1) % segments
+            inner = inner_start + segment
+            inner_next = inner_start + next_segment
+            outer = outer_start + segment
+            outer_next = outer_start + next_segment
+            faces.extend((inner, outer, outer_next, inner, outer_next, inner_next))
+
+    mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(prim_path))
+    mesh.CreatePointsAttr(points)
+    mesh.CreateFaceVertexCountsAttr([3] * (len(faces) // 3))
+    mesh.CreateFaceVertexIndicesAttr(faces)
+    mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+    mesh.CreateDoubleSidedAttr(True)
+    mesh.CreateDisplayColorAttr([Gf.Vec3f(0.34, 0.21, 0.10)])
+    mesh.CreateExtentAttr(
+        [
+            Gf.Vec3f(float(-radius_x * 1.05), float(-radius_y * 1.05), 0.0),
+            Gf.Vec3f(float(radius_x * 1.05), float(radius_y * 1.05), float(height)),
+        ]
+    )
+    UsdGeom.XformCommonAPI(mesh).SetTranslate(
+        Gf.Vec3d(float(position_xy[0]), float(position_xy[1]), float(base_z - 0.03))
+    )
+    prim = mesh.GetPrim()
+    prim.SetCustomDataByKey("sitegitDiggable", True)
+    prim.SetCustomDataByKey("sitegitDiggableId", "ZoneA-SoilPile-01")
+    prim.SetCustomDataByKey("sitegitZoneId", zone_id)
+    UsdPhysics.CollisionAPI.Apply(prim)
+
+    if simulation_app is not None:
+        for _ in range(10):
+            simulation_app.update()
+    aligned = _world_range(stage, prim_path)
+    minimum, maximum = aligned.GetMin(), aligned.GetMax()
+    return {
+        "prim_path": prim_path,
+        "position": [
+            float((minimum[0] + maximum[0]) * 0.5),
+            float((minimum[1] + maximum[1]) * 0.5),
+            float((minimum[2] + maximum[2]) * 0.5),
+        ],
+        "base_z": float(minimum[2]),
+        "size": [float(maximum[index] - minimum[index]) for index in range(3)],
+        "zone_id": zone_id,
+        "existing": False,
+    }
+
+
+def load_equipment(
+    stage: Any,
+    asset_path: str | Path,
+    *,
+    prim_path: str = DEFAULT_EQUIPMENT_PRIM_PATH,
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    simulation_app: Any = None,
+    settle_frames: int = 180,
+) -> dict[str, Any]:
+    """Reference one excavator asset, normalize units/up-axis, and place it on site ground."""
+    from pxr import Gf, Sdf, Usd, UsdGeom
+
+    asset = Path(asset_path).resolve()
+    if not asset.is_file():
+        raise FileNotFoundError(f"장비 에셋을 찾을 수 없습니다: {asset}")
+    asset_stage = Usd.Stage.Open(asset.as_posix(), load=Usd.Stage.LoadNone)
+    asset_meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(asset_stage))
+    asset_up_axis = str(UsdGeom.GetStageUpAxis(asset_stage))
+
+    prepare_stage(stage)
+    UsdGeom.Xform.Define(stage, Sdf.Path("/World/Equipment"))
+    equipment = UsdGeom.Xform.Define(stage, Sdf.Path(prim_path))
+    if not equipment.GetPrim().GetReferences().AddReference(asset.as_posix()):
+        raise RuntimeError(f"장비 USD 참조를 추가하지 못했습니다: {asset}")
+    xform = UsdGeom.XformCommonAPI(equipment)
+    xform.SetScale(Gf.Vec3f(asset_meters_per_unit, asset_meters_per_unit, asset_meters_per_unit))
+    xform.SetRotate(Gf.Vec3f(90.0 if asset_up_axis.lower() == "y" else 0.0, 0.0, 0.0))
+
+    world_range = None
+    for _ in range(settle_frames):
+        if simulation_app is not None:
+            simulation_app.update()
+        world_range = _world_range(stage, prim_path)
+        if not world_range.IsEmpty():
+            break
+    if world_range is None or world_range.IsEmpty():
+        raise RuntimeError("장비 메시의 bounds를 계산하지 못했습니다.")
+    minimum, maximum = world_range.GetMin(), world_range.GetMax()
+    xform.SetTranslate(
+        Gf.Vec3d(
+            position[0] - float((minimum[0] + maximum[0]) * 0.5),
+            position[1] - float((minimum[1] + maximum[1]) * 0.5),
+            position[2] - float(minimum[2]),
+        )
+    )
+    if simulation_app is not None:
+        for _ in range(10):
+            simulation_app.update()
+    equipment_prim = stage.GetPrimAtPath(prim_path)
+    equipment_prim.SetCustomDataByKey("sitegitEquipmentId", "EXC-001")
+    skeleton_paths: list[str] = []
+    animation_paths: list[str] = []
+    for descendant in Usd.PrimRange(equipment_prim):
+        if descendant.GetTypeName() == "Skeleton":
+            skeleton_paths.append(str(descendant.GetPath()))
+        elif descendant.GetTypeName() == "SkelAnimation":
+            animation_paths.append(str(descendant.GetPath()))
+    return {
+        "asset": str(asset),
+        "prim_path": prim_path,
+        "position": list(position),
+        "meters_per_unit": 1.0,
+        "skeleton_paths": skeleton_paths,
+        "animation_paths": animation_paths,
     }

@@ -21,9 +21,11 @@ from ...models.isaac import (
     REVIEW_PENDING,
     REVIEW_REJECTED,
     ExecutionCommit,
+    KIND_EXCAVATE_PRIM,
     WorkInstruction,
 )
 from ...models.user import User
+from ...schemas.isaac import MAX_EXCAVATION_TARGET_SPAN_M
 
 # 뷰어 기본값. 지시에 색·라벨이 없으면 이 값으로 그립니다.
 DEFAULT_CUBE_COLOR = "#f0b429"
@@ -66,6 +68,34 @@ class TrustGateService:
                 status_code=422,
                 detail="Failed execution cannot be approved. Re-run the instruction instead.",
             )
+        if decision == REVIEW_APPROVED and commit.instruction.kind == KIND_EXCAVATE_PRIM:
+            result = commit.result or {}
+            if (
+                result.get("simulator") != "isaac-sim"
+                or result.get("source") != "stage-readback"
+                or result.get("target_active_after") is not False
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Excavation approval requires real Isaac Stage read-back and a "
+                        "verified inactive target Prim."
+                    ),
+                )
+            target_size = result.get("target_bounds_size") or {}
+            target_span = max(
+                float(target_size.get("x", 0.0)),
+                float(target_size.get("y", 0.0)),
+            )
+            if target_span > MAX_EXCAVATION_TARGET_SPAN_M:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Excavation target span is {target_span:.1f}m. "
+                        f"Targets larger than {MAX_EXCAVATION_TARGET_SPAN_M:.0f}m "
+                        "cannot be approved because they may represent the full site mesh."
+                    ),
+                )
 
         commit.review_status = REVIEW_APPROVED if decision == REVIEW_APPROVED else REVIEW_REJECTED
         commit.reviewed_by = user.username
@@ -116,6 +146,26 @@ class TrustGateService:
         for commit, instruction in db.execute(query).all():
             params = instruction.params or {}
             result = commit.result or {}
+            if instruction.kind == KIND_EXCAVATE_PRIM:
+                position = result.get("target_position")
+                size = result.get("target_bounds_size")
+                if not position or not size:
+                    continue
+                objects.append(
+                    {
+                        "id": commit.id,
+                        "instruction_id": instruction.id,
+                        "type": "removed_prim",
+                        "label": params.get("target_name") or params.get("label") or "굴착 대상",
+                        "color": "#d95757",
+                        "position": position,
+                        "size": size,
+                        "approved_by": commit.reviewed_by,
+                        "approved_at": commit.reviewed_at,
+                        "prim_path": result.get("target_prim_path") or params.get("target_prim_path"),
+                    }
+                )
+                continue
             # 실제로 배치된 값이 있으면 그것을 쓰고, 없으면 지시값으로 그립니다.
             position = result.get("placed_position") or params.get("position")
             if not position:
@@ -132,6 +182,7 @@ class TrustGateService:
                     "size": size,
                     "approved_by": commit.reviewed_by,
                     "approved_at": commit.reviewed_at,
+                    "prim_path": result.get("prim_path"),
                 }
             )
         return objects

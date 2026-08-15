@@ -400,7 +400,12 @@ python isaac_adapter/mock_adapter.py
 ⑥ 맵      승인된 결과만 렌더링
 ```
 
-**⑤를 통과하지 않은 결과는 맵에 나타나지 않습니다.** 지금은 굴착기와 센서 없이 "지정한 좌표에 큐브를 배치"하는 지시 하나만 지원합니다.
+**⑤를 통과하지 않은 결과는 맵에 나타나지 않습니다.** 메인 맵 왼쪽의 Work Package
+패널은 실행 중인 Isaac Stage가 보고한 장비 Prim과 `sitegitDiggable=true`가 지정된
+독립 토사 Mesh Prim만 보여줍니다. Mud Map의 `Object_*`는 재질별 대형 메시 묶음이라
+굴착 대상으로 사용하지 않습니다.
+LLM이 임의의 Prim 경로를 만들 수 없으며, Backend가 최신 inventory와 정확히 일치하는
+경로만 `excavate_prim` 지시로 발행합니다.
 
 ```powershell
 Copy-Item isaac_adapter\.env.example isaac_adapter\.env
@@ -414,11 +419,79 @@ E:\isaacsim\python.bat E:\SITEGIT\isaac_adapter\isaac_runner.py
 
 두 러너는 같은 지시를 두고 경쟁하므로 동시에 켜지 마세요. Commit의 `result.simulator`가 `isaac-sim`이면 Isaac Stage에서 실제로 읽어온 값이고, `simulated-cube-bridge`면 지시값을 되돌린 것뿐입니다.
 
-대시보드 아래쪽 **Isaac 작업 루프** 카드에서 지시를 발행하고 결과를 승인합니다. 승인하는 순간 열려 있는 모든 브라우저의 3D 맵에 반영됩니다.
+메인 맵 왼쪽 **Work Package** 패널에서 지시와 Commit을 확인합니다. 증거 버튼으로
+작업 전·후 Viewport 이미지, Stage 상태, LiDAR PLY를 검토하고 승인합니다. 승인 전에는
+맵이 바뀌지 않으며, 승인 후에는 실제 Target Prim의 Stage bounds가 브라우저 지형에서
+반영됩니다. `/World/Diggable` 아래의 독립 토사 Prim은 정적 Mud Map을 잘라내지 않고,
+웹의 토사 overlay가 승인 후 사라지는 방식으로 반영됩니다.
 
-지형 Mesh와 작업 결과는 저장 위치가 다릅니다. 지형은 SSD의 정적 번들이라 `map_publisher.py`로 재게시할 때만 바뀌고, 작업 결과는 DB에 있어 승인 즉시 반영됩니다. 자세한 내용은 `docs/ISAAC_INTEGRATION.md`를 확인합니다.
+지형 Mesh와 작업 결과는 저장 위치가 다릅니다. 승인 직후에는 Target Prim의 실제
+bounds로 정적 Mesh를 잘라 결과를 표시합니다. 구멍의 새 단면까지 포함한 완전한 지형
+Mesh가 필요하면 Isaac에서 후보 번들을 다시 내보내 `map_publisher.py`로 재게시해야
+합니다. 자세한 내용은 `docs/ISAAC_INTEGRATION.md`를 확인합니다.
 
-LiDAR point cloud, 카메라 이미지, 버킷 IMU 같은 센서 Evidence는 `ExecutionCommit.evidence`가 받을 자리이며 아직 비어 있습니다.
+Runner는 작업 전·후 Viewport PNG와 Stage JSON을 Evidence 폴더에 저장합니다.
+`SITEGIT_LIDAR_POINTS_PRIM`에 실제 `UsdGeom.Points` Prim이 있으면 각 시점의 Point
+Cloud도 PLY로 저장합니다. 센서가 없으면 Evidence에 누락 이유가 명시됩니다.
+
+### 자연어 실제 Prim 굴착 Work Package
+
+메인 맵 왼쪽의 **작업 지시 생성** 버튼은 로컬 Ollama의 JSON Schema Structured
+Outputs로 자연어를 구조화합니다. LLM은 굴착 의도와 참조 이름만 추출하고, 실행할
+장비와 대상은 Adapter가 보고한 실제 Stage Prim 목록에서 사용자가 선택합니다.
+
+Ollama 앱에서 모델 위치를 SSD로 지정하고 `qwen3:8b`를 내려받습니다. 로컬 API라
+OpenAI API 키와 크레딧은 필요하지 않습니다.
+
+```powershell
+ollama pull qwen3:8b
+```
+
+루트 `.env`에는 로컬 Ollama 연결 정보를 둡니다.
+
+```dotenv
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3:8b
+OLLAMA_TIMEOUT_SECONDS=90
+```
+
+Ollama 앱을 실행한 상태에서 Backend와 실제 Isaac Runner를 실행합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+.\ops\scripts\start_sitegit.ps1
+
+# 별도 PowerShell
+E:\isaacsim\python.bat E:\SITEGIT\isaac_adapter\isaac_runner.py
+```
+
+`isaac_adapter/.env`에서 장비 에셋과 Stage 경계를 설정합니다.
+
+```dotenv
+SITEGIT_EQUIPMENT_ASSET=E:\sitegit1\assets\construction_machinery\pbr-excavator-animated\source\Excavator\Excavator.usd
+SITEGIT_EQUIPMENT_POSITION=0,0,0
+SITEGIT_EQUIPMENT_PRIMS=/World/Equipment/EXC_001,/World/Armature
+SITEGIT_DIGGABLE_ROOTS=/World/Diggable
+SITEGIT_LIDAR_POINTS_PRIM=/World/SiteGitLiveLidarPoints
+SITEGIT_MAX_EXCAVATION_TARGET_SPAN_M=25
+SITEGIT_CREATE_DEMO_SOIL_PILE=true
+SITEGIT_DEMO_SOIL_PILE_PRIM=/World/Diggable/ZoneA_SoilPile_01
+SITEGIT_DEMO_SOIL_PILE_POSITION=-12,12
+SITEGIT_DEMO_SOIL_PILE_SIZE=6,5,2.5
+SITEGIT_DEMO_SOIL_PILE_ZONE=A
+```
+
+기본 데모 설정은 실제 Mud Map 삼각형에서 `(-12m, 12m)`의 표면 높이를 계산하고,
+그 위에 `6×5×2.5m` 토사 Mesh와 Collision을 생성합니다. 위치와 크기는 위 환경변수로
+바꿀 수 있으며 `--no-demo-soil`로 자동 생성을 끌 수 있습니다. 가로·세로 최대 폭이
+25m를 넘는 Prim은 웹·Backend·승인 Gate·Isaac Adapter 모든 단계에서 거부됩니다.
+
+예시 입력은 `선택한 굴착기로 Zone A의 선택한 Prim을 굴착해줘`입니다. Runner는
+장비 루트를 대상 앞으로 이동시키고, 에셋에 포함된 `TrackAnimation` → `ArmDig` →
+`ArmDump` 클립을 실제 Skeleton에 연결해 재생합니다. 정확한 Target Prim을 비활성화한
+뒤 Stage read-back 결과를 Commit합니다. 현재는 독립 토사 Mesh Prim 단위 제거이며, 버킷과
+토사의 연속 물리 변형은 최종 articulation/soil 시나리오에서 연결합니다.
 
 ---
 

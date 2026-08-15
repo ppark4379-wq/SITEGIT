@@ -5,6 +5,7 @@
   // 승인된 Commit만 map-objects에 나타나므로 미승인 결과는 절대 그려지지 않습니다.
   var MAP_ROOT = "/isaac-data/site-work-map";
   var MAP_OBJECTS_URL = "/api/v1/isaac/map-objects";
+  var STAGE_INVENTORY_URL = "/api/v1/isaac/stage-inventory";
 
   var root = document.getElementById("viewer");
   var canvas = document.getElementById("mapCanvas");
@@ -13,6 +14,9 @@
   var groups = [];
   var mapObjectsRaw = [];
   var mapObjects = [];
+  var removalObjects = [];
+  var diggableTargetsRaw = [];
+  var diggableObjects = [];
   var bounds = null;
   var triangleCount = 0;
   var meshStatus = "loading";
@@ -55,18 +59,26 @@
     CAMERA_UNIFORMS,
     "varying vec2 vUv;",
     "varying float vDepth;",
+    "varying vec3 vWorld;",
     PROJECT_FN,
     "void main(){",
     " gl_Position=projectWorld(aPosition);",
-    " vUv=aUv;vDepth=gl_Position.w;",
+    " vUv=aUv;vDepth=gl_Position.w;vWorld=aPosition;",
     "}"
   ].join("\n");
   var meshFragmentSource = [
     "precision mediump float;",
     "uniform sampler2D uTexture;",
+    "uniform int uRemovalCount;",
+    "uniform vec3 uRemovalCenters[16];",
+    "uniform vec3 uRemovalHalfSizes[16];",
     "varying vec2 vUv;",
     "varying float vDepth;",
+    "varying vec3 vWorld;",
     "void main(){",
+    " for(int i=0;i<16;i++){",
+    "  if(i<uRemovalCount){ vec3 d=abs(vWorld-uRemovalCenters[i]); if(all(lessThanEqual(d,uRemovalHalfSizes[i]))) discard; }",
+    " }",
     " vec3 c=texture2D(uTexture,vUv).rgb;",
     " float fog=clamp((vDepth-120.0)/520.0,0.0,0.34);",
     " gl_FragColor=vec4(mix(c*0.98,vec3(0.07,0.12,0.14),fog),1.0);",
@@ -141,6 +153,9 @@
   }
   var meshUniforms = cameraUniforms(meshProgram);
   meshUniforms.texture = gl.getUniformLocation(meshProgram, "uTexture");
+  meshUniforms.removalCount = gl.getUniformLocation(meshProgram, "uRemovalCount");
+  meshUniforms.removalCenters = gl.getUniformLocation(meshProgram, "uRemovalCenters[0]");
+  meshUniforms.removalHalfSizes = gl.getUniformLocation(meshProgram, "uRemovalHalfSizes[0]");
   meshUniforms.position = gl.getAttribLocation(meshProgram, "aPosition");
   meshUniforms.uv = gl.getAttribLocation(meshProgram, "aUv");
 
@@ -177,6 +192,57 @@
     return buffer;
   }
   var cubeBuffer = buildCubeBuffer();
+
+  function buildMoundBuffer() {
+    var segments = 24;
+    var rings = [
+      { radius: 1.0, height: -0.5 },
+      { radius: 0.70, height: -0.16 },
+      { radius: 0.34, height: 0.26 }
+    ];
+    var vertices = [];
+    function point(ring, segment) {
+      var angle = Math.PI * 2 * segment / segments;
+      return [
+        Math.cos(angle) * ring.radius * 0.5,
+        ring.height,
+        Math.sin(angle) * ring.radius * 0.5
+      ];
+    }
+    function triangle(a, b, c) {
+      var ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      var ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      var normal = normalize(cross(ab, ac));
+      [a, b, c].forEach(function (value) {
+        vertices.push(value[0], value[1], value[2], normal[0], normal[1], normal[2]);
+      });
+    }
+    for (var ringIndex = 0; ringIndex < rings.length - 1; ringIndex += 1) {
+      for (var segment = 0; segment < segments; segment += 1) {
+        var next = (segment + 1) % segments;
+        var outer = point(rings[ringIndex], segment);
+        var outerNext = point(rings[ringIndex], next);
+        var inner = point(rings[ringIndex + 1], segment);
+        var innerNext = point(rings[ringIndex + 1], next);
+        triangle(inner, outer, outerNext);
+        triangle(inner, outerNext, innerNext);
+      }
+    }
+    var peak = [0, 0.5, 0];
+    var topRing = rings[rings.length - 1];
+    for (var topSegment = 0; topSegment < segments; topSegment += 1) {
+      triangle(
+        peak,
+        point(topRing, topSegment),
+        point(topRing, (topSegment + 1) % segments)
+      );
+    }
+    var buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    return { buffer: buffer, count: vertices.length / 6 };
+  }
+  var moundGeometry = buildMoundBuffer();
 
   function hexToRgb(hex) {
     var value = /^#?([0-9a-f]{6})$/i.exec(String(hex || ""));
@@ -227,6 +293,14 @@
     applyCamera(meshUniforms, view);
     gl.enableVertexAttribArray(meshUniforms.position);
     gl.enableVertexAttribArray(meshUniforms.uv);
+    var clipped = removalObjects.slice(0, 16);
+    gl.uniform1i(meshUniforms.removalCount, clipped.length);
+    if (clipped.length) {
+      gl.uniform3fv(meshUniforms.removalCenters, new Float32Array(clipped.flatMap(function (item) { return item.center; })));
+      gl.uniform3fv(meshUniforms.removalHalfSizes, new Float32Array(clipped.flatMap(function (item) {
+        return item.size.map(function (value) { return Math.max(value * 0.5, 0.01); });
+      })));
+    }
     groups.forEach(function (group) {
       gl.bindBuffer(gl.ARRAY_BUFFER, group.buffer);
       gl.vertexAttribPointer(meshUniforms.position, 3, gl.FLOAT, false, 20, 0);
@@ -242,17 +316,21 @@
   function drawObjects(view) {
     gl.useProgram(cubeProgram);
     applyCamera(cubeUniforms, view);
-    gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuffer);
     gl.enableVertexAttribArray(cubeUniforms.position);
     gl.enableVertexAttribArray(cubeUniforms.normal);
-    gl.vertexAttribPointer(cubeUniforms.position, 3, gl.FLOAT, false, 24, 0);
-    gl.vertexAttribPointer(cubeUniforms.normal, 3, gl.FLOAT, false, 24, 12);
-    mapObjects.forEach(function (item) {
-      gl.uniform3fv(cubeUniforms.center, item.center);
-      gl.uniform3fv(cubeUniforms.size, item.size);
-      gl.uniform3fv(cubeUniforms.color, item.color);
-      gl.drawArrays(gl.TRIANGLES, 0, 36);
-    });
+    function drawSet(items, buffer, count) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.vertexAttribPointer(cubeUniforms.position, 3, gl.FLOAT, false, 24, 0);
+      gl.vertexAttribPointer(cubeUniforms.normal, 3, gl.FLOAT, false, 24, 12);
+      items.forEach(function (item) {
+        gl.uniform3fv(cubeUniforms.center, item.center);
+        gl.uniform3fv(cubeUniforms.size, item.size);
+        gl.uniform3fv(cubeUniforms.color, item.color);
+        gl.drawArrays(gl.TRIANGLES, 0, count);
+      });
+    }
+    drawSet(mapObjects, cubeBuffer, 36);
+    drawSet(diggableObjects, moundGeometry.buffer, moundGeometry.count);
     gl.disableVertexAttribArray(cubeUniforms.normal);
   }
 
@@ -265,7 +343,7 @@
     gl.disable(gl.CULL_FACE);
     var view = camera();
     if (groups.length) drawMesh(view);
-    if (mapObjects.length) drawObjects(view);
+    if (mapObjects.length || diggableObjects.length) drawObjects(view);
   }
 
   function resize() {
@@ -328,9 +406,11 @@
   }
 
   function describeState() {
-    var objectPart = mapObjects.length
-      ? " · 승인된 작업 " + mapObjects.length + "건"
+    var approvedCount = mapObjects.length + removalObjects.length;
+    var objectPart = approvedCount
+      ? " · 승인된 작업 " + approvedCount + "건"
       : " · 승인된 작업 없음";
+    if (diggableObjects.length) objectPart += " · 토사 Prim " + diggableObjects.length + "개";
     if (meshStatus === "ready") {
       setState(
         "Isaac Site Work Map",
@@ -435,13 +515,40 @@
         Math.abs(Number(size.y) || 1)
       ],
       color: hexToRgb(item.color)
+      ,type: item.type || "cube"
+      ,label: item.label || ""
+      ,primPath: item.prim_path || null
     };
   }
 
   // 변환이 manifest bounds에 의존하므로, 지형과 오브젝트 중 무엇이 먼저
   // 도착하든 좌표가 맞도록 원본을 들고 있다가 다시 계산합니다.
   function rebuildMapObjects() {
-    mapObjects = mapObjectsRaw.map(toRenderable);
+    var rendered = mapObjectsRaw.map(toRenderable);
+    mapObjects = rendered.filter(function (item) { return item.type !== "removed_prim"; });
+    var approvedDiggablePaths = {};
+    rendered.forEach(function (item) {
+      if (item.type === "removed_prim" && String(item.primPath || "").indexOf("/World/Diggable/") === 0) {
+        approvedDiggablePaths[item.primPath] = true;
+      }
+    });
+    // 독립 토사 Prim은 정적 Mud Map의 일부가 아니므로 지형을 잘라내지 않고
+    // 해당 overlay만 승인 후 숨깁니다.
+    removalObjects = rendered.filter(function (item) {
+      return item.type === "removed_prim" && !approvedDiggablePaths[item.primPath];
+    });
+    diggableObjects = diggableTargetsRaw
+      .filter(function (item) { return !approvedDiggablePaths[item.path]; })
+      .map(function (item) {
+        return toRenderable({
+          position: item.world_position,
+          size: item.bounds_size,
+          color: "#76502d",
+          type: "diggable",
+          label: item.name,
+          prim_path: item.path
+        });
+      });
   }
 
   async function loadMapObjects() {
@@ -459,6 +566,23 @@
       describeState();
     } catch (error) {
       console.warn("Map object load failed:", error);
+    }
+  }
+
+  async function loadStageInventory() {
+    try {
+      var response = await fetch(STAGE_INVENTORY_URL, {
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      if (!response.ok) throw new Error("stage-inventory HTTP " + response.status);
+      var data = await response.json();
+      diggableTargetsRaw = data.diggable_targets || [];
+      rebuildMapObjects();
+      draw();
+      describeState();
+    } catch (error) {
+      console.warn("Stage inventory load failed:", error);
     }
   }
 
@@ -513,4 +637,6 @@
   // 지형은 60MB라 느립니다. 오브젝트는 기다리지 않고 함께 받습니다.
   loadMesh();
   loadMapObjects();
+  loadStageInventory();
+  window.setInterval(loadStageInventory, 5000);
 }());

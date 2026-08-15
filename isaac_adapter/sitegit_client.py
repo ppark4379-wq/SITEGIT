@@ -95,3 +95,17 @@ class SiteGitClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def update_stage_inventory(
+        self,
+        project_id: str,
+        inventory: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Publish exact Prim paths from the currently running Isaac Stage."""
+        response = self.session.post(
+            f"{self.base_url}/api/v1/isaac/stage-inventory",
+            json={"project_id": project_id, **inventory},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
