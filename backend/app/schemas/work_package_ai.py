@@ -51,6 +51,74 @@ class AIWorkPackageInterpretRequest(BaseModel):
     message: str = Field(min_length=3, max_length=1000)
 
 
+class PlanningCoordinate(BaseModel):
+    """One drawing station in the normalized Isaac site frame."""
+
+    station_m: float = Field(ge=0, le=100_000)
+    x: float = Field(ge=-100_000, le=100_000)
+    y: float = Field(ge=-100_000, le=100_000)
+    z: float = Field(default=0, ge=-100_000, le=100_000)
+    width_m: float = Field(gt=0, le=1_000)
+
+
+class PlanningBounds(BaseModel):
+    min_x: float
+    max_x: float
+    min_y: float
+    max_y: float
+
+
+class PlanningWorkfrontPreview(BaseModel):
+    """One independently assignable excavation front from the scenario drawing."""
+
+    id: str = Field(min_length=1, max_length=80)
+    zone_id: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=120)
+    station_start_m: float = Field(ge=0)
+    station_end_m: float = Field(gt=0)
+    equipment_id: str = Field(min_length=1, max_length=80)
+    equipment_prim_path: str = Field(pattern=USD_PRIM_PATH_PATTERN, max_length=500)
+    target_volume_m3: float = Field(ge=0)
+    target_prim_paths: list[str] = Field(default_factory=list, max_length=8)
+    bounds: PlanningBounds
+
+
+class PlanningPhasePreview(BaseModel):
+    """A manager-visible phase in the drawing-derived construction workflow."""
+
+    id: str = Field(min_length=1, max_length=80)
+    zone_id: str = Field(min_length=1, max_length=80)
+    order: int = Field(ge=1, le=20)
+    title: str = Field(min_length=1, max_length=120)
+    work_type: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=300)
+    target_amount: float = Field(ge=0, le=1_000_000)
+    target_unit: Literal["m", "m3", "ea"]
+    estimated_hours: float = Field(ge=0, le=100_000)
+    equipment: list[str] = Field(default_factory=list, max_length=20)
+    depends_on: list[str] = Field(default_factory=list, max_length=20)
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=20)
+
+
+class PlanningDesignPreview(BaseModel):
+    """Canonical site drawing context returned alongside an LLM planning draft."""
+
+    plan_id: str = Field(min_length=1, max_length=120)
+    revision: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=160)
+    source_map: str = Field(min_length=1, max_length=160)
+    work_area_id: str = Field(min_length=1, max_length=120)
+    work_area_label: str = Field(min_length=1, max_length=160)
+    station_range: str = Field(min_length=1, max_length=120)
+    total_length_m: float = Field(gt=0)
+    design_depth_m: float = Field(gt=0)
+    pipe_diameter_m: float = Field(gt=0)
+    centerline: list[PlanningCoordinate] = Field(min_length=2, max_length=200)
+    workfronts: list[PlanningWorkfrontPreview] = Field(default_factory=list, max_length=20)
+    phases: list[PlanningPhasePreview] = Field(min_length=1, max_length=20)
+    assumptions: list[str] = Field(default_factory=list, max_length=30)
+
+
 class PlanningWorkPackagePlan(BaseModel):
     """관리자 검토용 작업지시 초안. 실행 좌표나 Isaac Prim은 포함하지 않습니다."""
 
@@ -71,7 +139,33 @@ class PlanningWorkPackageDraft(BaseModel):
     project_id: str
     source_text: str
     plan: PlanningWorkPackagePlan
+    design: PlanningDesignPreview | None = None
     model: str
+
+
+class PlanningScenarioDispatchRequest(BaseModel):
+    project_id: str = Field(default="SASANG-001", max_length=80)
+    source_text: str = Field(min_length=3, max_length=1500)
+    plan_id: str = Field(min_length=1, max_length=120)
+    phase_id: str = Field(default="excavation", min_length=1, max_length=80)
+
+
+class PlanningScenarioWorkPackageRecord(BaseModel):
+    id: str
+    phase_id: str
+    workfront_id: str
+    zone_id: str
+    equipment_id: str
+    target_prim_paths: list[str]
+    status: Literal["pending", "blocked"]
+    missing_resources: list[str] = Field(default_factory=list)
+
+
+class PlanningScenarioDispatchResponse(BaseModel):
+    plan_id: str
+    phase_id: str
+    work_packages: list[PlanningScenarioWorkPackageRecord]
+    instructions: list[InstructionResponse]
 
 
 class ZoneBounds(BaseModel):

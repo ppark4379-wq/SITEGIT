@@ -10,6 +10,10 @@ const ONBOARD_KEY = 'sitegit-concept-onboarded-v2';
 const VIEW_STORAGE_KEY = 'sitegit-view-state-v1';
 const PROJECT_ID = 'SASANG-001';
 const API_BASE = '/api/v1';
+// Zone/Timeline 기능 도입 이전의 데모 Work Package와 Commit은 새 지도에서
+// Baseline으로만 취급합니다. 이 시각 이후 발행된 실제 지시부터 동적 Zone과
+// Timeline 항목으로 노출됩니다.
+const MAP_FEATURE_CUTOVER_AT = '2026-08-19T14:52:00.000Z';
 const EQUIPMENT_PHOTOS = {
   HX210AL:'/static/assets/equipment/hx210al.jpg',
   HX48AZ:'/static/assets/equipment/hx48az.jpg',
@@ -33,7 +37,9 @@ let aiWorkPackageDraft = null;
 let stageInventory = {connected:false,equipment:[],diggable_targets:[],scene_objects:[],age_seconds:0};
 let activeMapLayer = 'work';
 let timelineStepIndex = null;
+let timelineZoneFilter = 'ALL';
 let mapTimelineCommitRefs = null;
+let isaacPlanningOverlay = null;
 
 const DEFAULT_STATE = {
   selectedPage: 'dashboard',
@@ -489,6 +495,7 @@ function renderAll(){
   renderEvidence();
   renderVersions();
   renderSettings();
+  wireIsaacMapFrames();
   applyPage();
   persistLocalView();
   saveState();
@@ -509,6 +516,115 @@ function applyPage(){
   $(`#page-${state.selectedPage}`)?.classList.add('active');
 }
 
+const DYNAMIC_ZONE_COLORS=['#d99620','#2ca66f','#3478cf','#b74983','#7658c7','#d45f3f','#2c9ca6','#70823b'];
+function afterMapFeatureCutover(value){
+  const timestamp=Date.parse(value||'');
+  return Number.isFinite(timestamp)&&timestamp>=Date.parse(MAP_FEATURE_CUTOVER_AT);
+}
+function dynamicMapInstructions(){
+  return (isaacInstructions||[])
+    .filter(instruction=>afterMapFeatureCutover(instruction.created_at))
+    .sort((a,b)=>(Date.parse(a.created_at)||0)-(Date.parse(b.created_at)||0)||String(a.id).localeCompare(String(b.id)));
+}
+function normalizedDynamicZoneId(value){
+  return String(value||'').replace(/^zone\s*/i,'').trim().toUpperCase();
+}
+function dynamicInstructionZoneId(instruction,index,instructions=dynamicMapInstructions()){
+  const requested=normalizedDynamicZoneId(instruction?.params?.zone_id);
+  if(requested&&requested!=='-')return requested;
+  const unresolved=instructions.filter(item=>{
+    const zone=normalizedDynamicZoneId(item?.params?.zone_id);
+    return !zone||zone==='-';
+  });
+  const fallbackIndex=Math.max(0,unresolved.findIndex(item=>item.id===instruction?.id));
+  return String.fromCharCode(65+(fallbackIndex%26));
+}
+function mapWorkTypeLabel(instruction){
+  const operation=String(instruction?.params?.operation||instruction?.kind||'').toLowerCase();
+  if(operation.includes('excavat')||operation.includes('dig'))return '터파기 작업';
+  if(operation.includes('install')||operation.includes('pipe'))return '관로 매설 작업';
+  if(operation.includes('backfill')||operation.includes('fill'))return '되메우기 작업';
+  if(operation.includes('grade')||operation.includes('level'))return '정지 작업';
+  if(operation.includes('move')||operation.includes('haul'))return '토사 이동 작업';
+  if(operation.includes('soil')||operation.includes('create')||operation.includes('place'))return '토사 배치 작업';
+  return instruction?.params?.summary||'현장 작업';
+}
+function validMapVector(value){
+  if(!value||typeof value!=='object')return null;
+  const vector={x:Number(value.x),y:Number(value.y),z:Number(value.z)};
+  return Object.values(vector).every(Number.isFinite)?vector:null;
+}
+function stagePrimForPath(path){
+  if(!path)return null;
+  return [
+    ...(stageInventory.diggable_targets||[]),
+    ...(stageInventory.scene_objects||[]),
+    ...(stageInventory.equipment||[]),
+  ].find(item=>item.path===path)||null;
+}
+function dynamicInstructionGeometry(instruction){
+  const params=instruction?.params||{};
+  const commit=isaacLatestCommit(instruction);
+  const result=commit?.result||{};
+  const changes=Array.isArray(result.map_changes)?result.map_changes:[];
+  const targetPath=result.target_prim_path||params.target_prim_path||params.resource_bindings?.target||'';
+  const targetChange=changes.find(change=>change?.prim_path===targetPath)||changes.find(change=>change?.position&&change?.size)||null;
+  const stagePrim=stagePrimForPath(targetPath);
+  const work=(state.workPackages||[]).find(item=>item.id===params.work_package_id||item.isaacInstructionId===instruction.id);
+  const position=validMapVector(
+    result.target_position||result.target_after_position||targetChange?.position||stagePrim?.world_position||work?.position
+  );
+  const size=validMapVector(
+    result.target_bounds_size||result.target_after_bounds_size||targetChange?.size||stagePrim?.bounds_size||work?.size
+  );
+  if(!position||!size)return null;
+  return {
+    position,
+    size:{x:Math.max(.5,Math.abs(size.x)),y:Math.max(.5,Math.abs(size.y)),z:Math.max(.25,Math.abs(size.z))},
+  };
+}
+function dynamicMapZones(){
+  const instructions=dynamicMapInstructions();
+  const grouped=new Map();
+  instructions.forEach((instruction,index)=>{
+    const geometry=dynamicInstructionGeometry(instruction);
+    if(!geometry)return;
+    const zoneId=dynamicInstructionZoneId(instruction,index,instructions);
+    const halfX=Math.max(4,geometry.size.x*.5+1.5);
+    const halfY=Math.max(4,geometry.size.y*.5+1.5);
+    const bounds={
+      minX:geometry.position.x-halfX,maxX:geometry.position.x+halfX,
+      minY:geometry.position.y-halfY,maxY:geometry.position.y+halfY,
+      minZ:geometry.position.z-geometry.size.z*.5,maxZ:geometry.position.z+geometry.size.z*.5,
+    };
+    const current=grouped.get(zoneId);
+    if(!current){
+      grouped.set(zoneId,{zoneId,instructions:[instruction],bounds,title:mapWorkTypeLabel(instruction)});
+      return;
+    }
+    current.instructions.push(instruction);
+    current.bounds={
+      minX:Math.min(current.bounds.minX,bounds.minX),maxX:Math.max(current.bounds.maxX,bounds.maxX),
+      minY:Math.min(current.bounds.minY,bounds.minY),maxY:Math.max(current.bounds.maxY,bounds.maxY),
+      minZ:Math.min(current.bounds.minZ,bounds.minZ),maxZ:Math.max(current.bounds.maxZ,bounds.maxZ),
+    };
+  });
+  return [...grouped.values()].map((group,index)=>{
+    const {bounds}=group;
+    const latest=group.instructions.at(-1);
+    return {
+      id:group.zoneId,
+      label:`ZONE ${group.zoneId}`,
+      title:group.instructions.length>1?`${group.title} 외 ${group.instructions.length-1}건`:group.title,
+      color:DYNAMIC_ZONE_COLORS[index%DYNAMIC_ZONE_COLORS.length],
+      position:{x:(bounds.minX+bounds.maxX)/2,y:(bounds.minY+bounds.maxY)/2,z:bounds.maxZ},
+      size:{x:bounds.maxX-bounds.minX,y:bounds.maxY-bounds.minY,z:Math.max(.5,bounds.maxZ-bounds.minZ)},
+      status:latest.status,
+      instructionIds:group.instructions.map(item=>item.id),
+    };
+  });
+}
+
 function timelineChangeSummary(instruction,commit){
   const result=commit?.result||{};
   const changes=Array.isArray(result.map_changes)?result.map_changes:[];
@@ -521,9 +637,14 @@ function timelineChangeSummary(instruction,commit){
   if(instruction?.kind==='place_cube')return '승인된 작업 객체 1건 배치';
   return '승인된 Isaac 작업 결과 반영';
 }
-function approvedTimelineSteps(){
+function approvedTimelineSteps(zoneId=timelineZoneFilter){
   const commits=[];
-  isaacInstructions.forEach(instruction=>{
+  const allInstructions=dynamicMapInstructions();
+  const instructions=allInstructions.filter((instruction,index)=>
+    zoneId==='ALL'||dynamicInstructionZoneId(instruction,index,allInstructions)===zoneId
+  );
+  instructions.forEach(instruction=>{
+    const instructionZone=dynamicInstructionZoneId(instruction,allInstructions.indexOf(instruction),allInstructions);
     (instruction.commits||[]).forEach(commit=>{
       if(commit.review_status!=='approved'||!commit.reviewed_at)return;
       const params=instruction.params||{};
@@ -550,6 +671,7 @@ function approvedTimelineSteps(){
         key:commit.id,
         commitId:commit.id,
         instructionId:instruction.id,
+        zoneId:instructionZone,
         approvedAt:commit.reviewed_at,
         approvedBy:commit.reviewed_by||'-',
         title:operation.includes('excavat')&&Array.isArray(result.map_changes)&&result.map_changes.length>1
@@ -561,27 +683,19 @@ function approvedTimelineSteps(){
       });
     });
   });
-  const visibleCommits=Array.isArray(mapTimelineCommitRefs)
-    ?mapTimelineCommitRefs.map(ref=>commits.find(item=>
-      ref.commitId===item.commitId||(
-        ref.instructionId===item.instructionId&&ref.approvedAt===item.approvedAt
-      )
-    )||{
-      key:ref.commitId||`${ref.instructionId}@${ref.approvedAt}`,
-      commitId:ref.commitId,
-      instructionId:ref.instructionId,
-      approvedAt:ref.approvedAt,
-      approvedBy:'-',
-      title:`승인 Commit ${(ref.commitId||'').slice(0,8)}`,
-      detail:'승인된 현장 작업 결과 반영',
-      beforeObjects:[],
-      changePaths:[],
-    })
+  const instructionIds=new Set(instructions.map(item=>item.id));
+  const visibleRefs=Array.isArray(mapTimelineCommitRefs)
+    ?mapTimelineCommitRefs.filter(ref=>instructionIds.has(ref.instructionId))
+    :[];
+  const visibleCommits=visibleRefs.length
+    ?visibleRefs.map(ref=>commits.find(item=>ref.commitId===item.commitId)).filter(Boolean)
     :commits;
-  visibleCommits.sort((a,b)=>new Date(a.approvedAt)-new Date(b.approvedAt)||a.commitId.localeCompare(b.commitId));
+  visibleCommits.sort((a,b)=>new Date(a.approvedAt)-new Date(b.approvedAt)||String(a.commitId).localeCompare(String(b.commitId)));
   return [{
     key:'baseline',commitId:null,instructionId:null,approvedAt:null,approvedBy:'SiteGit',
-    title:'초기 현장 Baseline',detail:'승인된 관로 작업을 적용하기 전 demolition 현장',
+    zoneId:zoneId==='ALL'?null:zoneId,
+    title:zoneId==='ALL'?'현재 현장 Baseline':`Zone ${zoneId} 작업 전 Baseline`,
+    detail:'새 Zone/Timeline 기능 적용 이후 Commit을 반영하기 전 현장 상태',
   },...visibleCommits];
 }
 function timelineBaselineObjects(steps=approvedTimelineSteps()){
@@ -612,10 +726,11 @@ function timelineControlMarkup(){
   const steps=approvedTimelineSteps();
   const index=normalizedTimelineIndex(steps);
   const step=steps[index];
+  const zones=dynamicMapZones();
   const progress=steps.length<=1?0:(index/(steps.length-1))*100;
   return `<div class="timeline-head">
     <div><span>APPROVED COMMIT TIMELINE</span><strong>${esc(step.title)}</strong><small>${esc(step.detail)}</small></div>
-    <div class="timeline-position"><b>${index}</b><span>/ ${Math.max(0,steps.length-1)} Commit</span></div>
+    <div class="timeline-head-actions"><label>범위<select data-timeline-zone><option value="ALL">전체 맵</option>${zones.map(zone=>`<option value="${esc(zone.id)}" ${timelineZoneFilter===zone.id?'selected':''}>Zone ${esc(zone.id)} · ${esc(zone.title)}</option>`).join('')}</select></label><div class="timeline-position"><b>${index}</b><span>/ ${Math.max(0,steps.length-1)} Commit</span></div></div>
   </div>
   <div class="timeline-range-row">
     <span class="timeline-end-label">Baseline</span>
@@ -697,7 +812,7 @@ function renderDashboard(){
           <div class="map-toolbar"><div class="segmented"><button class="${activeMapLayer==='work'?'active':''}" data-map-layer="work">Work</button><button class="${activeMapLayer==='zone'?'active':''}" data-map-layer="zone">Zone</button><button class="${activeMapLayer==='evidence'?'active':''}" data-map-layer="evidence">Evidence</button><button class="${activeMapLayer==='constraint'?'active':''}" data-map-layer="constraint">Constraint</button><button class="${activeMapLayer==='timeline'?'active':''}" data-map-layer="timeline">Timeline</button></div><button class="ghost-button button-sm" data-action="fit-map">화면 맞춤</button></div>
         </div>
         <div class="site-map-wrap isaac-map">
-          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html" title="Isaac Sim pipeline construction site 3D viewer" loading="eager"></iframe>
+          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html?v=20260820-front-masks-4" title="Isaac Sim pipeline construction site 3D viewer" loading="eager"></iframe>
           <div class="map-info-float">${mapInfoMarkup(wp)}</div>
           <div class="isaac-map-note">${stageInventory.connected?`Isaac Stage 연결 · 객체 ${(stageInventory.scene_objects||[]).length}개 · 1초 갱신`:'Isaac Stage 연결 대기'} · 좌클릭 회전 · 우클릭 이동 · 휠 확대</div>
           <div class="map-timeline-shell ${activeMapLayer==='timeline'?'active':''}" id="mapTimelineControl">${timelineControlMarkup()}</div>
@@ -1017,6 +1132,10 @@ document.addEventListener('input',e=>{
   if(!range)return;
   setTimelineStep(Number(range.value));
 });
+document.addEventListener('change',e=>{
+  const zone=e.target.closest?.('[data-timeline-zone]');
+  if(zone)setTimelineZone(zone.value);
+});
 window.addEventListener('message',event=>{
   if(event.origin!==window.location.origin||event.data?.type!=='sitegit.isaac-map.timeline-data')return;
   mapTimelineCommitRefs=Array.isArray(event.data.commits)?event.data.commits:[];
@@ -1037,29 +1156,84 @@ $('#openOnboardingBtn').addEventListener('click',openOnboarding);
 function navigate(page){
   state.selectedPage=page; $('.sidebar').classList.remove('open'); renderHeader(); applyPage(); persistLocalView(); window.scrollTo({top:0,behavior:'smooth'});
 }
-function syncIsaacMapLayer(frame=document.querySelector('.isaac-map-frame')){
-  frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.layer',layer:activeMapLayer},window.location.origin);
+function isaacMapFrames(){
+  return [...document.querySelectorAll('.isaac-map-frame,.workflow-map')];
+}
+function mapFrameTargets(frame){return frame?[frame]:isaacMapFrames();}
+function wireIsaacMapFrames(){
+  isaacMapFrames().forEach(frame=>{
+    if(frame.dataset.sitegitMapBound==='1')return;
+    frame.dataset.sitegitMapBound='1';
+    frame.addEventListener('load',()=>syncIsaacMapLayer(frame));
+  });
+  requestAnimationFrame(()=>syncIsaacMapLayer());
+}
+function syncIsaacMapZones(frame=null){
+  const zones=dynamicMapZones();
+  mapFrameTargets(frame).forEach(target=>target?.contentWindow?.postMessage({
+    type:'sitegit.isaac-map.zones',zones,featureStartAt:MAP_FEATURE_CUTOVER_AT,
+  },window.location.origin));
+}
+function syncIsaacMapLayer(frame=null){
+  const targets=mapFrameTargets(frame);
+  syncIsaacMapZones(frame);
+  targets.forEach(target=>target?.contentWindow?.postMessage({type:'sitegit.isaac-map.layer',layer:activeMapLayer},window.location.origin));
+  syncIsaacPlanningOverlay(frame);
   if(activeMapLayer==='timeline')syncIsaacTimeline(frame);
 }
-function syncIsaacTimeline(frame=document.querySelector('.isaac-map-frame')){
+function setIsaacPlanningOverlay(design=null){
+  isaacPlanningOverlay=design||null;
+  syncIsaacPlanningOverlay();
+}
+function syncIsaacPlanningOverlay(frame=null){
+  mapFrameTargets(frame).filter(target=>target?.dataset?.planningMap==='1').forEach(target=>{
+    target.contentWindow?.postMessage(
+      isaacPlanningOverlay
+        ?{type:'sitegit.isaac-map.plan',plan:isaacPlanningOverlay}
+        :{type:'sitegit.isaac-map.plan-clear'},
+      window.location.origin,
+    );
+  });
+}
+function syncIsaacTimeline(frame=null){
   const steps=approvedTimelineSteps();
   const index=normalizedTimelineIndex(steps);
   const step=steps[index];
-  frame?.contentWindow?.postMessage({
-    type:'sitegit.isaac-map.timeline',
-    baseline:index===0,
-    approvedAt:step.approvedAt,
-    commitId:step.commitId,
-    baselineObjects:timelineBaselineObjects(steps),
-  },window.location.origin);
+  const allInstructions=dynamicMapInstructions();
+  const visibleInstructions=allInstructions.filter((instruction,instructionIndex)=>
+    timelineZoneFilter==='ALL'||dynamicInstructionZoneId(instruction,instructionIndex,allInstructions)===timelineZoneFilter
+  );
+  mapFrameTargets(frame).forEach(target=>target?.contentWindow?.postMessage({
+      type:'sitegit.isaac-map.timeline',
+      baseline:index===0,
+      approvedAt:step.approvedAt,
+      commitId:step.commitId,
+      zoneId:timelineZoneFilter,
+      featureStartAt:MAP_FEATURE_CUTOVER_AT,
+      instructionIds:visibleInstructions.map(item=>item.id),
+      baselineObjects:timelineBaselineObjects(steps),
+    },window.location.origin));
 }
 function refreshTimelineControl({sync=true}={}){
-  const shell=$('#mapTimelineControl');
-  if(shell){
+  document.querySelectorAll('#mapTimelineControl,.map-timeline-control').forEach(shell=>{
     shell.classList.toggle('active',activeMapLayer==='timeline');
     shell.innerHTML=timelineControlMarkup();
-  }
-  document.querySelector('.site-map-wrap')?.classList.toggle('timeline-active',activeMapLayer==='timeline');
+  });
+  document.querySelectorAll('.site-map-wrap,.workflow-map-shell').forEach(shell=>{
+    if(shell.classList.contains('planning'))return;
+    shell.classList.toggle('timeline-active',activeMapLayer==='timeline');
+  });
+  document.querySelectorAll('.workflow-map-caption').forEach(caption=>{
+    if(caption.closest('.workflow-map-shell')?.classList.contains('planning'))return;
+    const title=caption.querySelector('b');
+    const detail=caption.querySelector('span');
+    if(title)title.textContent=activeMapLayer==='zone'?'작업 Zone':activeMapLayer==='timeline'?'Commit Timeline':'현재 현장 맵';
+    if(detail)detail.textContent=activeMapLayer==='zone'
+      ?(dynamicMapZones().length?'작업 지시의 실제 대상 위치를 표시합니다.':'새 작업 지시가 발행되면 Zone이 생성됩니다.')
+      :activeMapLayer==='timeline'
+        ?(approvedTimelineSteps().length>1?'슬라이더로 승인 Commit을 재생합니다.':'새 Commit을 승인하면 Timeline에 추가됩니다.')
+        :'관리자 승인으로 Merge된 작업 결과를 표시합니다.';
+  });
   const info=document.querySelector('.map-info-float');
   if(info)info.innerHTML=mapInfoMarkup(selectedWp());
   if(sync&&activeMapLayer==='timeline')syncIsaacTimeline();
@@ -1069,6 +1243,11 @@ function setTimelineStep(index){
   timelineStepIndex=Math.max(0,Math.min(Number.isFinite(index)?Math.round(index):0,steps.length-1));
   refreshTimelineControl();
 }
+function setTimelineZone(zoneId){
+  timelineZoneFilter=zoneId||'ALL';
+  timelineStepIndex=Math.max(0,approvedTimelineSteps().length-1);
+  refreshTimelineControl();
+}
 function setIsaacMapLayer(layer){
   const enteringTimeline=layer==='timeline'&&activeMapLayer!=='timeline';
   activeMapLayer=layer;
@@ -1076,8 +1255,8 @@ function setIsaacMapLayer(layer){
   $$('[data-map-layer]').forEach(button=>button.classList.toggle('active',button.dataset.mapLayer===layer));
   refreshTimelineControl({sync:false});
   syncIsaacMapLayer();
-  if(layer==='zone')toast('작업구역 표시','Zone A–D를 실제 Work Package 좌표 기준으로 표시합니다.','success');
-  if(layer==='timeline')toast('승인 이력 Timeline','슬라이더를 움직여 Baseline부터 승인 Commit까지 현장 변화를 확인하세요.','success');
+  if(layer==='zone')toast('작업구역 표시',dynamicMapZones().length?'새 작업 지시의 실제 대상 범위를 Zone으로 표시합니다.':'아직 새 작업 지시가 없어 표시할 Zone이 없습니다.','success');
+  if(layer==='timeline')toast('승인 이력 Timeline','전체 맵 또는 Zone을 선택하고 Baseline부터 새 승인 Commit까지 확인하세요.','success');
 }
 function handleAction(action){
   const handlers={
@@ -1085,7 +1264,7 @@ function handleAction(action){
     'edit-project':openProjectModal,'add-readiness':()=>openReadinessModal(null),'create-wp':openAiWorkPackageModal,'add-equipment':()=>openEquipmentModal(null),'edit-assignments':()=>openWpModal(selectedWp().id),
     'check-all-compatibility':()=>toast('장비 적합성 검사 완료','5개 장비의 작업 유형·범위·Evidence 반환 가능성을 다시 계산했습니다.','success'),
     'show-sources':showSourcesModal,'export-json':exportJson,'import-json':()=>$('#jsonImportInput').click(),'snapshot-version':snapshotVersion,
-    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'fit-map':()=>{const frame=document.querySelector('.isaac-map-frame');frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin);toast('현장 뷰 재정렬','Isaac Sim 관로 공사 현장을 화면에 맞췄습니다.','success')},
+    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'fit-map':()=>{isaacMapFrames().forEach(frame=>frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin));toast('현장 뷰 재정렬','Isaac Sim 관로 공사 현장을 화면에 맞췄습니다.','success')},
   };
   handlers[action]?.();
 }
@@ -1173,7 +1352,7 @@ function isaacPositionText(instruction){
   return `${Number(p.x||0).toFixed(1)} , ${Number(p.y||0).toFixed(1)} , ${Number(p.z||0).toFixed(1)}`;
 }
 function reloadIsaacMapObjects(){
-  document.querySelector('.isaac-map-frame')?.contentWindow?.postMessage({type:'sitegit.isaac-map.reload-objects'},window.location.origin);
+  isaacMapFrames().forEach(frame=>frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.reload-objects'},window.location.origin));
 }
 async function loadStageInventory(){
   try{
@@ -1182,6 +1361,7 @@ async function loadStageInventory(){
     stageInventory=await response.json();
     updateStageInventoryUi();
     renderIsaacPanel();
+    syncIsaacMapZones();
   }catch(error){
     if(error.message!=='AUTH_REQUIRED')console.warn('Stage inventory load failed',error);
     stageInventory={connected:false,equipment:[],diggable_targets:[],scene_objects:[],age_seconds:0};
@@ -1410,37 +1590,61 @@ function renderAiWorkPackageDraft(){
   $('#dispatchAiWpBtn').disabled=false;
   $('#dispatchAiWpBtn').textContent=executable?'작업 지시 확정 · Isaac 전송':'자원 대기 Work Package 저장';
 }
+function cacheCodeWorkPackageDispatch(data,display={}){
+  const record=data.work_package;
+  const instruction=data.instruction;
+  let workPackage=state.workPackages.find(item=>item.id===record.id);
+  const target=Number(display.target)||1;
+  const zone=String(display.zone||record.zone_id||'-').replace(/zone\s*/i,'').trim().toUpperCase()||'-';
+  const base={
+    id:record.id,zone,name:display.title||record.summary,task:display.task||record.operation||'GENERATED_SCRIPT',length:0,
+    target,raw:0,qualified:0,remaining:target,status:record.status,version:1,
+    eta:record.status==='blocked'?'자원 대기':'Isaac 대기',risk:record.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,
+    color:'#d95757',completionThreshold:Number(display.completionThreshold)||100,
+    observationThreshold:Number(display.observationThreshold)||100,toleranceMm:Number(display.toleranceMm)||0,assignments:[],
+    isaacInstructionId:instruction.id,sourceText:record.source_text,
+    equipmentPrimPath:record.equipment?.path||'',targetPrimPath:record.target?.path||record.execution_target_path||'',
+    position:record.target?.world_position||display.position||null,
+    size:record.target?.bounds_size||display.size||null,
+    generatedCode:record.generated_code,segment:display.segment||'',successor:display.successor||'',
+  };
+  if(workPackage)Object.assign(workPackage,base);
+  else{
+    workPackage=base;
+    state.workPackages.unshift(workPackage);
+  }
+  const evidence=state.evidence[record.id]||{};
+  state.evidence[record.id]={...evidence,
+    rule:100,completeness:record.status==='blocked'?10:25,confidence:0,observation:0,workFinished:false,
+    resultDeviationMm:0,overcutVolume:0,state:'not-started',
+    missing:[...new Set([...(record.missing_resources||[]),'Isaac 실행 Commit','관리자 승인'])],
+    conflicts:evidence.conflicts||[],externalEvidence:evidence.externalEvidence||[],
+  };
+  if(!state.versions.some(version=>version.code===record.id)){
+    state.versions.push({type:'work',code:record.id,title:'AI Code Work Package 발행',desc:record.summary,time:nowTime(),actor:currentUser?.full_name||state.manager.name,state:record.status==='blocked'?'warning':'current',branch:true});
+  }
+  state.selectedWpId=record.id;
+  addEvent(record.status==='blocked'?'warning':'info','AI Work Package 발행',`${record.id} · ${record.status==='blocked'?'자원 대기':'Isaac Sim 실행 대기'}`);
+  return workPackage;
+}
+async function submitCodeWorkPackageDraft(draft,display={}){
+  const response=await apiFetch('/work-packages/ai/code/dispatch',{
+    method:'POST',
+    body:JSON.stringify({project_id:PROJECT_ID,message:draft.source_text,plan:draft.plan}),
+  });
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(data.detail?.message||data.detail||`AI_DISPATCH_${response.status}`);
+  cacheCodeWorkPackageDispatch(data,display);
+  await loadIsaacInstructions();
+  return data;
+}
 async function dispatchAiWorkPackage(){
   if(!aiWorkPackageDraft)return;
   const button=$('#dispatchAiWpBtn');button.disabled=true;button.textContent='Work Package 저장 중...';
   try{
-    const response=await apiFetch('/work-packages/ai/code/dispatch',{
-      method:'POST',
-      body:JSON.stringify({
-        project_id:PROJECT_ID,
-        message:aiWorkPackageDraft.source_text,
-        plan:aiWorkPackageDraft.plan,
-      }),
-    });
-    const data=await response.json().catch(()=>({}));
-    if(!response.ok)throw new Error(data.detail?.message||`AI_DISPATCH_${response.status}`);
+    const data=await submitCodeWorkPackageDraft(aiWorkPackageDraft);
     const record=data.work_package;
-    if(!state.workPackages.some(item=>item.id===record.id)){
-      state.workPackages.push({
-        id:record.id,zone:record.zone_id||'-',name:record.summary,task:'GENERATED_SCRIPT',length:0,
-        target:1,raw:0,qualified:0,remaining:1,status:record.status,version:1,
-        eta:record.status==='blocked'?'자원 대기':'Isaac 대기',risk:record.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,
-        color:'#d95757',completionThreshold:100,observationThreshold:100,toleranceMm:0,assignments:[],
-        isaacInstructionId:data.instruction.id,sourceText:record.source_text,
-        equipmentPrimPath:record.equipment?.path||'',targetPrimPath:record.target?.path||record.execution_target_path||'',generatedCode:record.generated_code,
-      });
-      state.evidence[record.id]={rule:100,completeness:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:[...(record.missing_resources||[]),'Isaac 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
-      state.versions.push({type:'work',code:record.id,title:'AI Code Work Package 발행',desc:record.summary,time:nowTime(),actor:currentUser?.full_name||state.manager.name,state:record.status==='blocked'?'warning':'current',branch:true});
-    }
-    state.selectedWpId=record.id;
-    addEvent(record.status==='blocked'?'warning':'info','AI Work Package 발행',`${record.id} · ${record.status==='blocked'?'자원 대기':'Isaac Sim 실행 대기'}`);
     closeModal();
-    await loadIsaacInstructions();
     renderAll();navigate('dashboard');
     toast(record.status==='blocked'?'Work Package 자원 대기':'Work Package 전송 완료',record.status==='blocked'?(record.missing_resources||[]).join(' · '):'검증된 작업 지시가 Isaac Adapter 실행 대기열에 등록됐습니다.',record.status==='blocked'?'warning':'success');
   }catch(error){
@@ -1696,7 +1900,7 @@ function openIsaacEvidence(instructionId){
     ${lidarComparisonPanel(evidence.before,evidence.after,result)}
     ${imuComparisonPanel(evidence.before,evidence.after)}
     <section class="execution-events"><div class="execution-events-head"><h3>실행 이벤트</h3><span>${num((evidence.events||[]).length)}건</span></div>${executionEventTimeline(evidence)}</section>`,
-    footer:`<button class="ghost-button" data-modal-close>닫기</button>${commit.review_status==='pending'?`<button class="secondary-button" data-isaac-approve="${esc(commit.id)}">증거 확인 · 승인</button>`:''}`,
+    footer:`<button class="ghost-button" data-modal-close>닫기</button>${commit.review_status==='pending'?`<button class="ghost-button" data-isaac-reject="${esc(commit.id)}">반려 · Conflict</button><button class="secondary-button" data-isaac-approve="${esc(commit.id)}">증거 확인 · 승인</button>`:''}`,
   });
   $$('[data-evidence-image]',$('#modalBody')).forEach(image=>image.addEventListener('error',()=>{
     image.hidden=true;
@@ -1927,7 +2131,7 @@ document.addEventListener('click',event=>{
   if(remoteCanEdit)return;
   const button=event.target.closest('button');
   if(!button)return;
-  const allowed=button.matches('.nav-item,#mobileMenuBtn,#logoutBtn,#notificationsBtn,#profileBtn,#closeModalBtn,[data-modal-close],[data-select-wp],[data-wp-id],[data-zone],[data-page-link],[data-review-open],[data-review-back],[data-review-phase],[data-settings-tab],[data-equipment-select]');
+  const allowed=button.matches('.nav-item,#mobileMenuBtn,#logoutBtn,#notificationsBtn,#profileBtn,#closeModalBtn,[data-modal-close],[data-select-wp],[data-wp-id],[data-zone],[data-page-link],[data-review-open],[data-review-back],[data-review-phase],[data-settings-tab],[data-equipment-select],[data-isaac-detail],[data-real-wp-detail],[data-history-event],[data-map-layer],[data-action="fit-map"],[data-workflow-action="refresh"]');
   if(allowed)return;
   event.preventDefault();
   event.stopImmediatePropagation();

@@ -22,6 +22,14 @@ from ...domains.work_packages.ai_compiler import (
 from ...domains.work_packages.code_agent import (
     compile_code_work_package,
     resolve_code_work_package,
+    validate_restricted_code,
+)
+from ...domains.work_packages.site_plan import (
+    apply_pipeline_design_defaults,
+    design_prompt_context,
+    get_raw_pipeline_plan,
+    is_pipeline_plan_request,
+    load_pipeline_design,
 )
 from ...models.user import User
 from ...realtime.manager import manager
@@ -43,6 +51,9 @@ from ...schemas.work_package_ai import (
     CodeWorkPackageInterpretRequest,
     CodeWorkPackageRecord,
     PlanningWorkPackageDraft,
+    PlanningScenarioDispatchRequest,
+    PlanningScenarioDispatchResponse,
+    PlanningScenarioWorkPackageRecord,
 )
 from ..deps import get_db, require_roles
 
@@ -58,8 +69,17 @@ def interpret_planning_work_package(
 ) -> PlanningWorkPackageDraft:
     """Isaac 실행과 분리해 관리자 검토용 작업지시 초안만 생성합니다."""
     settings = get_settings()
+    design = (
+        load_pipeline_design(payload.project_id)
+        if is_pipeline_plan_request(payload.message)
+        else None
+    )
     try:
-        plan = compile_planning_work_package(payload.message, settings)
+        plan = compile_planning_work_package(
+            payload.message,
+            settings,
+            design_prompt_context(design) if design else "",
+        )
     except WorkPackageLLMUnavailable as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -70,11 +90,163 @@ def interpret_planning_work_package(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"code": "LLM_REQUEST_FAILED", "message": str(error)},
         ) from error
+    if design:
+        plan = apply_pipeline_design_defaults(payload.message, plan, design)
     return PlanningWorkPackageDraft(
         project_id=payload.project_id,
         source_text=payload.message,
         plan=plan,
+        design=design,
         model=settings.ollama_model,
+    )
+
+
+def _scenario_excavation_code(equipment_path: str, target_paths: list[str]) -> str:
+    """Build one small, validated program for a drawing work front."""
+
+    lines = ["def execute(ctx):"]
+    for target_path in target_paths:
+        lines.append(
+            "    ctx.excavate("
+            f"equipment_prim_path={equipment_path!r}, "
+            f"target_prim_path={target_path!r}, "
+            "approach_distance_m=3.0, animation_seconds=6.0)"
+        )
+    lines.append("    return ctx.finish()")
+    code = "\n".join(lines)
+    validate_restricted_code(code)
+    return code
+
+
+@router.post(
+    "/ai/planning/dispatch",
+    response_model=PlanningScenarioDispatchResponse,
+    status_code=201,
+)
+async def dispatch_planning_scenario(
+    payload: PlanningScenarioDispatchRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> PlanningScenarioDispatchResponse:
+    """Approve one drawing phase and issue deterministic per-front Isaac work."""
+
+    try:
+        raw_plan = get_raw_pipeline_plan(payload.plan_id, payload.project_id)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    if payload.phase_id != "excavation":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="현재 데모에서는 터파기 승인 후 관로 설치와 되메우기를 순서대로 해제합니다.",
+        )
+
+    inventory = load_stage_inventory(payload.project_id)
+    equipment_by_path = {item.path: item for item in inventory.equipment if item.active}
+    target_by_path = {item.path: item for item in inventory.diggable_targets if item.active}
+    phase = next(
+        item for item in raw_plan["workflow"] if item["id"] == payload.phase_id
+    )
+    phase_zone_id = str(phase["zone_id"])
+    records: list[PlanningScenarioWorkPackageRecord] = []
+    instructions: list[InstructionResponse] = []
+    work_area = raw_plan["work_area"]
+    for front in work_area["workfronts"]:
+        equipment_path = str(front["equipment_prim_path"])
+        target_paths = [str(path) for path in front["target_prim_paths"]]
+        missing: list[str] = []
+        if not inventory.connected:
+            missing.append("Isaac Stage 연결 대기")
+        if equipment_path not in equipment_by_path:
+            missing.append(f"장비 Prim 없음: {equipment_path}")
+        missing.extend(
+            f"굴착 대상 Prim 없음: {path}"
+            for path in target_paths
+            if path not in target_by_path
+        )
+        generated_code = _scenario_excavation_code(equipment_path, target_paths)
+        work_package_id = f"WP-PIPE-{phase_zone_id}-{uuid4().hex[:8].upper()}"
+        instruction_status = "blocked" if missing else "pending"
+        instruction = ExecutionsService.create_instruction(
+            db,
+            project_id=payload.project_id,
+            kind="generated_script",
+            params={
+                "work_package_id": work_package_id,
+                "scenario_plan_id": payload.plan_id,
+                "scenario_phase_id": payload.phase_id,
+                "scenario_phase_order": 1,
+                "workfront_id": front["id"],
+                "operation": "pipeline_excavation",
+                "summary": f"Zone {phase_zone_id} · {front['label']}",
+                "zone_id": phase_zone_id,
+                "source_text": payload.source_text,
+                "generated_code": generated_code,
+                "program_version": 1,
+                "resource_bindings": {
+                    "equipment": equipment_path,
+                    "target": target_paths[0],
+                },
+                "target_prim_paths": target_paths,
+                "equipment_name": front["equipment_id"],
+                "target_name": front["label"],
+                "planned_quantity": {
+                    "value": front["target_volume_m3"],
+                    "unit": "m3",
+                    "source": f"{payload.plan_id} Rev.{raw_plan['revision']}",
+                },
+                "station_range": (
+                    f"STA {front['station_start_m']:05.1f} ~ {front['station_end_m']:05.1f}"
+                ),
+                "depends_on_phase_ids": [],
+                "missing_resources": missing,
+                "checks": [
+                    {
+                        "code": "drawing",
+                        "ok": True,
+                        "message": f"승인 도면 확인: {payload.plan_id} Rev.{raw_plan['revision']}",
+                    },
+                    {
+                        "code": "resources",
+                        "ok": not missing,
+                        "message": "Stage 자원 확인 완료" if not missing else missing[0],
+                    },
+                ],
+                "compiler_model": "site-plan-deterministic-v1",
+            },
+            note=f"관로 도면 작업 하달 · {front['label']}"[:500],
+            user=user,
+            initial_status=instruction_status,
+        )
+        records.append(
+            PlanningScenarioWorkPackageRecord(
+                id=work_package_id,
+                phase_id=payload.phase_id,
+                workfront_id=front["id"],
+                zone_id=phase_zone_id,
+                equipment_id=front["equipment_id"],
+                target_prim_paths=target_paths,
+                status=instruction_status,
+                missing_resources=missing,
+            )
+        )
+        instructions.append(
+            InstructionResponse.model_validate(instruction, from_attributes=True)
+        )
+
+    await manager.broadcast(
+        payload.project_id,
+        {
+            "type": "isaac.map.updated",
+            "reason": "work_package.scenario.issued",
+            "plan_id": payload.plan_id,
+            "phase_id": payload.phase_id,
+        },
+    )
+    return PlanningScenarioDispatchResponse(
+        plan_id=payload.plan_id,
+        phase_id=payload.phase_id,
+        work_packages=records,
+        instructions=instructions,
     )
 
 

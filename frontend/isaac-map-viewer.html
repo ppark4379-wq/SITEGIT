@@ -16,23 +16,20 @@
     .zone-label-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
     .zone-label{position:absolute;min-width:72px;transform:translate(-50%,-50%);padding:7px 10px;border:1px solid #ffffffb8;border-radius:10px;color:#fff;text-align:center;box-shadow:0 8px 24px #0008;backdrop-filter:blur(5px)}
     .zone-label b,.zone-label small{display:block}.zone-label b{font-size:13px;letter-spacing:.08em}.zone-label small{margin-top:2px;font-size:8px;color:#f5fbfd}
-    .zone-label[data-zone="A"]{background:#a96f16d9}.zone-label[data-zone="B"]{background:#18794ed9}.zone-label[data-zone="C"]{background:#275fb0d9}.zone-label[data-zone="D"]{background:#9b386fd9}
+    .zone-label{background:color-mix(in srgb,var(--zone-color,#2ca66f) 84%,#07131b);border-color:color-mix(in srgb,var(--zone-color,#2ca66f) 62%,#fff)}
+    .planning-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}.planning-overlay .plan-area{fill:#d6a92d29;stroke:#ffe07a;stroke-width:3;stroke-dasharray:9 6;filter:drop-shadow(0 0 7px #d6a92dbb)}.planning-overlay .plan-front-area{fill:var(--front);fill-opacity:.34;stroke:var(--front);stroke-width:1.5;stroke-opacity:.95}.planning-overlay .plan-centerline{fill:none;stroke:#fff4bc;stroke-width:3;stroke-dasharray:5 5}.planning-overlay .plan-front circle{stroke:#fff;stroke-width:2}.planning-overlay .plan-front text{fill:#fff;font-size:11px;font-weight:900;paint-order:stroke;stroke:#07131b;stroke-width:4px;stroke-linejoin:round}.planning-overlay .plan-zone-title rect{fill:#b98b12e8;stroke:#ffe899;stroke-width:1.5}.planning-overlay .plan-zone-title text{fill:#fff8d6;font-size:11px;font-weight:900;letter-spacing:.03em}
     @media(max-width:620px){.help{display:none}.state{max-width:190px}}
   </style>
 </head>
 <body>
   <div id="viewer">
     <canvas id="mapCanvas" aria-label="Isaac Sim pipeline construction site 3D viewer"></canvas>
-    <div class="zone-label-layer" id="zoneLabels" hidden aria-hidden="true">
-      <div class="zone-label" data-zone="A"><b>ZONE A</b><small>북서 구역</small></div>
-      <div class="zone-label" data-zone="B"><b>ZONE B</b><small>북동 구역</small></div>
-      <div class="zone-label" data-zone="C"><b>ZONE C</b><small>남서 구역</small></div>
-      <div class="zone-label" data-zone="D"><b>ZONE D</b><small>남동 구역</small></div>
-    </div>
+    <svg class="planning-overlay" id="planningOverlay" hidden aria-label="도면 작업 예정 구간"></svg>
+    <div class="zone-label-layer" id="zoneLabels" hidden aria-hidden="true"></div>
     <div class="state" id="viewerState"><b>Isaac Map 불러오는 중</b><span>Mesh manifest 확인</span></div>
     <div class="help">좌클릭 회전 · 우클릭 이동 · 휠 확대/축소 · 더블클릭 초기화</div>
     <div class="axis" aria-hidden="true"><i class="x">X</i><i class="y">Y</i><i class="z">Z</i></div>
   </div>
-  <script src="/static/isaac-map-viewer.js?v=20260819-dirt-only-v8"></script>
+  <script src="/static/isaac-map-viewer.js?v=20260820-front-masks-4"></script>
 </body>
 </html>

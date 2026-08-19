@@ -1,0 +1,157 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "SASANG-PIPE-DEMO-V1",
+  "project_id": "SASANG-001",
+  "revision": "A",
+  "title": "철거 현장 관로 공사 시나리오 도면",
+  "source_map": "construction-site-demolition",
+  "coordinate_system": {
+    "name": "SiteGit demolition site frame",
+    "up_axis": "Z",
+    "linear_unit": "m"
+  },
+  "work_area": {
+    "id": "PIPE-CORRIDOR-01",
+    "label": "기존 굴착부 되메움 관로 구간",
+    "aliases": [
+      "관로 구간",
+      "메워 놓은 흙 구간",
+      "채움 구간",
+      "이 구역",
+      "현재 구역"
+    ],
+    "station_range": "STA 0+000 ~ 0+079.2",
+    "total_length_m": 79.2,
+    "design_depth_m": 2.0,
+    "pipe": {
+      "type": "demo_concrete_pipe",
+      "outside_diameter_m": 1.2,
+      "design_length_m": 79.2,
+      "centerline_tolerance_mm": 100
+    },
+    "centerline": [
+      {"station_m": 0.0, "x": -7.0, "y": -46.0, "z": 0.1, "width_m": 10.0},
+      {"station_m": 16.0, "x": -6.0, "y": -30.0, "z": 0.1, "width_m": 8.0},
+      {"station_m": 24.4, "x": -8.5, "y": -22.0, "z": 0.1, "width_m": 8.5},
+      {"station_m": 32.7, "x": -10.5, "y": -14.0, "z": 0.1, "width_m": 9.0},
+      {"station_m": 41.0, "x": -12.5, "y": -6.0, "z": 0.1, "width_m": 10.0},
+      {"station_m": 49.2, "x": -14.5, "y": 2.0, "z": 0.1, "width_m": 11.0},
+      {"station_m": 57.3, "x": -16.0, "y": 10.0, "z": 0.1, "width_m": 12.0},
+      {"station_m": 65.5, "x": -14.0, "y": 18.0, "z": 0.1, "width_m": 18.0},
+      {"station_m": 79.2, "x": -7.5, "y": 30.0, "z": 0.1, "width_m": 18.0}
+    ],
+    "workfronts": [
+      {
+        "id": "EXC-FRONT-01",
+        "zone_id": "A",
+        "label": "터파기 작업전선 1 · 남측",
+        "station_start_m": 0.0,
+        "station_end_m": 32.7,
+        "equipment_id": "EXC-001",
+        "equipment_prim_path": "/World/Equipment/EXC_001",
+        "target_volume_m3": 571.2,
+        "target_prim_paths": [
+          "/World/Diggable/Pipeline/TrenchFill_01",
+          "/World/Diggable/Pipeline/TrenchFill_02",
+          "/World/Diggable/Pipeline/TrenchFill_03"
+        ],
+        "bounds": {"min_x": -15.5, "max_x": -1.0, "min_y": -46.5, "max_y": -13.5}
+      },
+      {
+        "id": "EXC-FRONT-02",
+        "zone_id": "A",
+        "label": "터파기 작업전선 2 · 중앙",
+        "station_start_m": 32.7,
+        "station_end_m": 57.3,
+        "equipment_id": "EXC-002",
+        "equipment_prim_path": "/World/Equipment/EXC_002",
+        "target_volume_m3": 517.1,
+        "target_prim_paths": [
+          "/World/Diggable/Pipeline/TrenchFill_04",
+          "/World/Diggable/Pipeline/TrenchFill_05",
+          "/World/Diggable/Pipeline/TrenchFill_06"
+        ],
+        "bounds": {"min_x": -22.0, "max_x": -4.5, "min_y": -14.5, "max_y": 10.5}
+      },
+      {
+        "id": "EXC-FRONT-03",
+        "zone_id": "A",
+        "label": "터파기 작업전선 3 · 북측",
+        "station_start_m": 57.3,
+        "station_end_m": 79.2,
+        "equipment_id": "EXC-003",
+        "equipment_prim_path": "/World/Equipment/EXC_003",
+        "target_volume_m3": 738.6,
+        "target_prim_paths": [
+          "/World/Diggable/Pipeline/TrenchFill_07",
+          "/World/Diggable/Pipeline/TrenchFill_08"
+        ],
+        "bounds": {"min_x": -25.0, "max_x": 1.5, "min_y": 9.5, "max_y": 31.0}
+      }
+    ]
+  },
+  "workflow": [
+    {
+      "id": "excavation",
+      "zone_id": "A",
+      "order": 1,
+      "title": "터파기",
+      "work_type": "pipeline_excavation",
+      "description": "굴착기 3대가 세 작업전선에서 기존 채움 토사를 제거합니다.",
+      "target_amount": 1826.9,
+      "target_unit": "m3",
+      "estimated_hours": 10.2,
+      "equipment": ["EXC-001", "EXC-002", "EXC-003"],
+      "depends_on": [],
+      "acceptance_criteria": [
+        "설계 굴착 저면 대비 ±50mm",
+        "미굴착 토사 체적 2% 이하",
+        "카메라·LiDAR·IMU Evidence 완전성 90% 이상"
+      ]
+    },
+    {
+      "id": "pipe_installation",
+      "zone_id": "B",
+      "order": 2,
+      "title": "관로 설치",
+      "work_type": "pipe_installation",
+      "description": "승인된 굴착 저면의 설계 중심선에 관로를 설치합니다.",
+      "target_amount": 79.2,
+      "target_unit": "m",
+      "estimated_hours": 7.9,
+      "equipment": ["PIPE-CREW-01", "LIFT-001"],
+      "depends_on": ["excavation"],
+      "acceptance_criteria": [
+        "관 중심선 수평 편차 ±100mm",
+        "관저고 설계 편차 ±50mm",
+        "이음부 누락 0건"
+      ]
+    },
+    {
+      "id": "backfill",
+      "zone_id": "C",
+      "order": 3,
+      "title": "되메우기",
+      "work_type": "pipeline_backfill",
+      "description": "관로 승인 후 굴착부를 층별 되메우고 다짐합니다.",
+      "target_amount": 1737.4,
+      "target_unit": "m3",
+      "estimated_hours": 9.7,
+      "equipment": ["EXC-001", "DOZER-001", "ROLLER-001"],
+      "depends_on": ["pipe_installation"],
+      "acceptance_criteria": [
+        "층별 다짐도 90% 이상",
+        "최종 표면 편차 ±50mm",
+        "관로 보호층 최소 두께 300mm"
+      ]
+    }
+  ],
+  "planning_assumptions": [
+    "Zone은 장비별 구역이 아니라 공정 단위이며 A=터파기, B=관로 설치, C=되메우기입니다.",
+    "Zone A의 굴착기 3대는 작업전선 1~3에서 개별 Commit을 생성하고 Zone A Timeline에 함께 집계됩니다.",
+    "초기 채움 토사는 Isaac의 TrenchFill_01~08 Prim과 동일한 형상입니다.",
+    "굴착 생산성은 굴착기 1대당 시간당 60m3인 데모 가정입니다.",
+    "관로 설치와 되메우기는 선행 공정의 관리자 승인 후에만 시작합니다.",
+    "실제 수량은 작업 전 Stage Mesh와 작업 후 LiDAR Height Map으로 다시 산정합니다."
+  ]
+}

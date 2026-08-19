@@ -13,6 +13,8 @@
   var canvas = document.getElementById("mapCanvas");
   var state = document.getElementById("viewerState");
   var zoneLabels = document.getElementById("zoneLabels");
+  var planningOverlay = document.getElementById("planningOverlay");
+  var embedded = window.self !== window.top;
   var gl = canvas.getContext("webgl", { antialias: true, alpha: false });
   var groups = [];
   var mapObjectsRaw = [];
@@ -40,11 +42,15 @@
   var lastX = 0;
   var lastY = 0;
   var zonesVisible = false;
+  var zoneDefinitions = [];
   var activeLayer = "work";
   var timelineEnabled = false;
   var timelineApprovedAt = null;
   var timelineCommitId = null;
+  var timelineFeatureStartAt = null;
+  var timelineInstructionIds = [];
   var timelineBaselineObjectsRaw = [];
+  var planningPlan = null;
 
   function loadCameraState() {
     try {
@@ -82,7 +88,13 @@
   function setState(title, detail, isError) {
     state.className = "state" + (isError ? " error" : "");
     state.innerHTML = "<b>" + title + "</b><span>" + detail + "</span>";
+    // The parent dashboard already renders its own Work/Zone caption in the
+    // same corner. Keep this diagnostic card only for actionable viewer errors
+    // when the map is embedded, while retaining it in standalone debug mode.
+    state.hidden = embedded && !isError;
   }
+
+  if (embedded) state.hidden = true;
 
   if (!gl) {
     setState("WebGL을 사용할 수 없습니다", "Chrome 또는 Edge에서 확인하세요.", true);
@@ -120,7 +132,10 @@
     "precision mediump float;",
     "uniform sampler2D uTexture;",
     "uniform int uZonesVisible;",
-    "uniform vec2 uZoneMid;",
+    "uniform int uZoneCount;",
+    "uniform vec2 uZoneCenters[16];",
+    "uniform vec2 uZoneHalfSizes[16];",
+    "uniform vec3 uZoneColors[16];",
     "uniform int uRemovalCount;",
     "uniform vec3 uRemovalCenters[16];",
     "uniform vec3 uRemovalHalfSizes[16];",
@@ -133,12 +148,17 @@
     " }",
     " vec3 c=texture2D(uTexture,vUv).rgb;",
     " if(uZonesVisible==1){",
-    "  vec3 zoneColor;",
-    "  if(vWorld.z<uZoneMid.y){ zoneColor=vWorld.x<uZoneMid.x?vec3(0.93,0.62,0.12):vec3(0.12,0.66,0.35); }",
-    "  else{ zoneColor=vWorld.x<uZoneMid.x?vec3(0.16,0.40,0.86):vec3(0.72,0.20,0.49); }",
-    "  c=mix(c,zoneColor,0.36);",
-    "  float boundary=1.0-smoothstep(0.0,0.85,min(abs(vWorld.x-uZoneMid.x),abs(vWorld.z-uZoneMid.y)));",
-    "  c=mix(c,vec3(1.0),boundary*0.72);",
+    "  for(int i=0;i<16;i++){",
+    "   if(i<uZoneCount){",
+    "    vec2 delta=abs(vWorld.xz-uZoneCenters[i]);",
+    "    if(all(lessThanEqual(delta,uZoneHalfSizes[i]))){",
+    "     float edge=min(uZoneHalfSizes[i].x-delta.x,uZoneHalfSizes[i].y-delta.y);",
+    "     float boundary=1.0-smoothstep(0.0,0.65,edge);",
+    "     c=mix(c,uZoneColors[i],0.38);",
+    "     c=mix(c,vec3(1.0),boundary*0.72);",
+    "    }",
+    "   }",
+    "  }",
     " }",
     " float fog=clamp((vDepth-120.0)/520.0,0.0,0.34);",
     " gl_FragColor=vec4(mix(c*0.98,vec3(0.07,0.12,0.14),fog),1.0);",
@@ -222,7 +242,10 @@
   var meshUniforms = cameraUniforms(meshProgram);
   meshUniforms.texture = gl.getUniformLocation(meshProgram, "uTexture");
   meshUniforms.zonesVisible = gl.getUniformLocation(meshProgram, "uZonesVisible");
-  meshUniforms.zoneMid = gl.getUniformLocation(meshProgram, "uZoneMid");
+  meshUniforms.zoneCount = gl.getUniformLocation(meshProgram, "uZoneCount");
+  meshUniforms.zoneCenters = gl.getUniformLocation(meshProgram, "uZoneCenters[0]");
+  meshUniforms.zoneHalfSizes = gl.getUniformLocation(meshProgram, "uZoneHalfSizes[0]");
+  meshUniforms.zoneColors = gl.getUniformLocation(meshProgram, "uZoneColors[0]");
   meshUniforms.removalCount = gl.getUniformLocation(meshProgram, "uRemovalCount");
   meshUniforms.removalCenters = gl.getUniformLocation(meshProgram, "uRemovalCenters[0]");
   meshUniforms.removalHalfSizes = gl.getUniformLocation(meshProgram, "uRemovalHalfSizes[0]");
@@ -365,11 +388,21 @@
     gl.enableVertexAttribArray(meshUniforms.position);
     gl.enableVertexAttribArray(meshUniforms.uv);
     gl.uniform1i(meshUniforms.zonesVisible, zonesVisible ? 1 : 0);
-    gl.uniform2f(
-      meshUniforms.zoneMid,
-      (bounds.min[0] + bounds.max[0]) * 0.5,
-      (bounds.min[2] + bounds.max[2]) * 0.5
-    );
+    var visibleZones = zoneDefinitions.slice(0, 16);
+    gl.uniform1i(meshUniforms.zoneCount, visibleZones.length);
+    if (visibleZones.length) {
+      gl.uniform2fv(meshUniforms.zoneCenters, new Float32Array(visibleZones.flatMap(function (zone) {
+        var center = siteToMesh(zone.position || {});
+        return [center[0], center[2]];
+      })));
+      gl.uniform2fv(meshUniforms.zoneHalfSizes, new Float32Array(visibleZones.flatMap(function (zone) {
+        var size = zone.size || {};
+        return [Math.max(.25, Math.abs(Number(size.x) || 1) * .5), Math.max(.25, Math.abs(Number(size.y) || 1) * .5)];
+      })));
+      gl.uniform3fv(meshUniforms.zoneColors, new Float32Array(visibleZones.flatMap(function (zone) {
+        return hexToRgb(zone.color || "#2ca66f");
+      })));
+    }
     var clipped = removalObjects.slice(0, 16);
     gl.uniform1i(meshUniforms.removalCount, clipped.length);
     if (clipped.length) {
@@ -447,6 +480,7 @@
     if (groups.length) drawMesh(view);
     if (mapObjects.length || diggableObjects.length || (activeLayer === "constraint" && conflictObjects.length)) drawObjects(view);
     updateZoneLabels(view);
+    updatePlanningOverlay(view);
   }
 
   function dot(a, b) {
@@ -471,28 +505,121 @@
     ];
   }
 
+  function escapeOverlayText(value) {
+    return String(value || "").replace(/[&<>"']/g, function (character) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character];
+    });
+  }
+
+  function planningCorridorSides(centerline) {
+    var left = [];
+    var right = [];
+    centerline.forEach(function (point, index) {
+      var previous = centerline[Math.max(0, index - 1)];
+      var next = centerline[Math.min(centerline.length - 1, index + 1)];
+      var dx = Number(next.x) - Number(previous.x);
+      var dy = Number(next.y) - Number(previous.y);
+      var length = Math.hypot(dx, dy) || 1;
+      var normalX = -dy / length;
+      var normalY = dx / length;
+      var halfWidth = Math.max(.5, Number(point.width_m) * .5 || .5);
+      var base = { x: Number(point.x) || 0, y: Number(point.y) || 0, z: Number(point.z) || .1 };
+      left.push({ x: base.x + normalX * halfWidth, y: base.y + normalY * halfWidth, z: base.z });
+      right.push({ x: base.x - normalX * halfWidth, y: base.y - normalY * halfWidth, z: base.z });
+    });
+    return { left: left, right: right };
+  }
+
+  function planningCorridorPoints(centerline) {
+    var sides = planningCorridorSides(centerline);
+    return sides.left.concat(sides.right.slice().reverse());
+  }
+
+  function updatePlanningOverlay(view) {
+    if (!planningOverlay) return;
+    var centerline = Array.isArray(planningPlan && planningPlan.centerline)
+      ? planningPlan.centerline
+      : [];
+    planningOverlay.hidden = centerline.length < 2;
+    if (centerline.length < 2) {
+      planningOverlay.innerHTML = "";
+      return;
+    }
+    planningOverlay.setAttribute("viewBox", "0 0 " + canvas.clientWidth + " " + canvas.clientHeight);
+    var corridor = planningCorridorPoints(centerline).map(function (point) {
+      return projectToScreen(siteToMesh(point), view);
+    });
+    var line = centerline.map(function (point) {
+      return projectToScreen(siteToMesh(point), view);
+    });
+    if (corridor.some(function (point) { return !point; }) || line.some(function (point) { return !point; })) {
+      planningOverlay.innerHTML = "";
+      return;
+    }
+    var polygonPoints = corridor.map(function (point) { return point[0].toFixed(1) + "," + point[1].toFixed(1); }).join(" ");
+    var linePoints = line.map(function (point) { return point[0].toFixed(1) + "," + point[1].toFixed(1); }).join(" ");
+    var fronts = Array.isArray(planningPlan.workfronts) ? planningPlan.workfronts : [];
+    var frontColors = ["#2f96bd", "#9b68cc", "#35aa83"];
+    var corridorSides = planningCorridorSides(centerline);
+    var frontMasks = fronts.map(function (front, index) {
+      var startStation = Number(front.station_start_m);
+      var endStation = Number(front.station_end_m);
+      var startIndex = centerline.findIndex(function (point) { return Number(point.station_m) >= startStation - .01; });
+      var endIndex = -1;
+      centerline.forEach(function (point, pointIndex) {
+        if (Number(point.station_m) <= endStation + .01) endIndex = pointIndex;
+      });
+      if (startIndex < 0 || endIndex <= startIndex) return "";
+      var maskWorld = corridorSides.left.slice(startIndex, endIndex + 1)
+        .concat(corridorSides.right.slice(startIndex, endIndex + 1).reverse());
+      var mask = maskWorld.map(function (point) { return projectToScreen(siteToMesh(point), view); });
+      if (mask.some(function (point) { return !point; })) return "";
+      var points = mask.map(function (point) { return point[0].toFixed(1) + "," + point[1].toFixed(1); }).join(" ");
+      return '<polygon class="plan-front-area" points="' + points + '" style="--front:' + frontColors[index % frontColors.length] + '"></polygon>';
+    }).join("");
+    var labels = fronts.map(function (front, index) {
+      var box = front.bounds || {};
+      var projected = projectToScreen(siteToMesh({
+        x: (Number(box.min_x) + Number(box.max_x)) * .5,
+        y: (Number(box.min_y) + Number(box.max_y)) * .5,
+        z: 2.5
+      }), view);
+      if (!projected) return "";
+      var color = frontColors[index % frontColors.length];
+      return '<g class="plan-front"><circle cx="' + projected[0].toFixed(1) + '" cy="' + projected[1].toFixed(1) + '" r="10" fill="' + color + '"></circle><text x="' + (projected[0] + 14).toFixed(1) + '" y="' + (projected[1] + 4).toFixed(1) + '">Zone A · 작업전선 ' + (index + 1) + ' · ' + escapeOverlayText(front.equipment_id) + '</text></g>';
+    }).join("");
+    planningOverlay.innerHTML = '<polygon class="plan-area" points="' + polygonPoints + '"></polygon>' + frontMasks + '<polyline class="plan-centerline" points="' + linePoints + '"></polyline><g class="plan-zone-title" transform="translate(18 18)"><rect width="142" height="29" rx="7"></rect><text x="12" y="19">ZONE A · 터파기 전체</text></g>' + labels;
+  }
+
   function updateZoneLabels(view) {
     if (!zoneLabels) return;
     zoneLabels.hidden = !zonesVisible;
     if (!zonesVisible || !bounds) return;
-    var minX = bounds.min[0];
-    var maxX = bounds.max[0];
-    var minZ = bounds.min[2];
-    var maxZ = bounds.max[2];
-    var labelY = bounds.max[1] + Math.max(1.5, (bounds.max[1] - bounds.min[1]) * 0.08);
-    var positions = {
-      A: [minX * 0.75 + maxX * 0.25, labelY, minZ * 0.75 + maxZ * 0.25],
-      B: [minX * 0.25 + maxX * 0.75, labelY, minZ * 0.75 + maxZ * 0.25],
-      C: [minX * 0.75 + maxX * 0.25, labelY, minZ * 0.25 + maxZ * 0.75],
-      D: [minX * 0.25 + maxX * 0.75, labelY, minZ * 0.25 + maxZ * 0.75]
-    };
     Array.prototype.forEach.call(zoneLabels.querySelectorAll("[data-zone]"), function (label) {
-      var projected = projectToScreen(positions[label.dataset.zone], view);
+      var zone = zoneDefinitions.find(function (item) { return String(item.id) === label.dataset.zone; });
+      if (!zone) { label.hidden = true; return; }
+      var position = zone.position || {};
+      var size = zone.size || {};
+      var projected = projectToScreen(siteToMesh({
+        x: Number(position.x) || 0,
+        y: Number(position.y) || 0,
+        z: (Number(position.z) || 0) + Math.max(1.5, (Number(size.z) || 1) * .5 + 1)
+      }), view);
       label.hidden = !projected;
       if (!projected) return;
       label.style.left = projected[0] + "px";
       label.style.top = projected[1] + "px";
     });
+  }
+
+  function renderZoneLabels() {
+    if (!zoneLabels) return;
+    zoneLabels.innerHTML = zoneDefinitions.map(function (zone) {
+      var color = String(zone.color || "#2ca66f").replace(/[^#a-fA-F0-9]/g, "");
+      return '<div class="zone-label" data-zone="' + String(zone.id).replace(/[^A-Za-z0-9_-]/g, "") + '" style="--zone-color:' + color + ';background:' + color + 'd9"><b>' +
+        String(zone.label || ("ZONE " + zone.id)).replace(/[<>&]/g, "") + '</b><small>' +
+        String(zone.title || "현장 작업").replace(/[<>&]/g, "") + '</small></div>';
+    }).join("");
   }
 
   function resize() {
@@ -583,6 +710,7 @@
         ? " · Timeline " + String(timelineCommitId || "").slice(0, 8)
         : " · Timeline Baseline";
     }
+    if (zonesVisible) objectPart += zoneDefinitions.length ? " · 작업 Zone " + zoneDefinitions.length + "개" : " · 작업 Zone 없음";
     if (mapConflictsRaw.length) objectPart += " · Conflict " + mapConflictsRaw.length + "건";
     if (meshStatus === "ready") {
       setState(
@@ -770,24 +898,38 @@
     publishedGeometryBuffers = [];
     var visibleMapObjectsRaw = mapObjectsRaw;
     if (timelineEnabled) {
-      if (!timelineApprovedAt) {
-        visibleMapObjectsRaw = [];
-      } else {
-        var objectsByPrim = {};
-        var cutoff = Date.parse(timelineApprovedAt || "");
-        mapTimelineStepsRaw.some(function (step) {
-          var stepTime = Date.parse(step.approved_at || "");
-          if (!timelineCommitId && Number.isFinite(cutoff) && stepTime > cutoff) return true;
-          (step.objects || []).forEach(function (item) {
-            var key = String(item.prim_path || item.id);
-            objectsByPrim[key] = item;
-          });
-          return Boolean(timelineCommitId && step.commit_id === timelineCommitId);
-        });
-        visibleMapObjectsRaw = Object.keys(objectsByPrim).map(function (key) {
-          return objectsByPrim[key];
+      var objectsByPrim = {};
+      var featureStart = Date.parse(timelineFeatureStartAt || "");
+      var selectedTime = Date.parse(timelineApprovedAt || "");
+      var allowedInstructions = {};
+      timelineInstructionIds.forEach(function (id) { allowedInstructions[id] = true; });
+      function applyTimelineObjects(items) {
+        (items || []).forEach(function (item) {
+          var key = String(item.prim_path || item.id);
+          objectsByPrim[key] = item;
         });
       }
+      if (mapTimelineStepsRaw.length) {
+        mapTimelineStepsRaw.forEach(function (step) {
+          var stepTime = Date.parse(step.approved_at || "");
+          var isBaselineStep = Number.isFinite(featureStart) && Number.isFinite(stepTime) && stepTime < featureStart;
+          if (isBaselineStep) { applyTimelineObjects(step.objects); return; }
+          if (!timelineApprovedAt || !allowedInstructions[step.instruction_id]) return;
+          if (timelineCommitId) {
+            if (Number.isFinite(selectedTime) && stepTime <= selectedTime) applyTimelineObjects(step.objects);
+            return;
+          }
+          if (!Number.isFinite(selectedTime) || stepTime <= selectedTime) applyTimelineObjects(step.objects);
+        });
+      } else {
+        mapObjectsRaw.forEach(function (item) {
+          var itemTime = Date.parse(item.approved_at || "");
+          var isBaselineItem = Number.isFinite(featureStart) && Number.isFinite(itemTime) && itemTime < featureStart;
+          var isSelectedItem = Boolean(timelineApprovedAt && allowedInstructions[item.instruction_id] && (!Number.isFinite(selectedTime) || itemTime <= selectedTime));
+          if (isBaselineItem || isSelectedItem) applyTimelineObjects([item]);
+        });
+      }
+      visibleMapObjectsRaw = Object.keys(objectsByPrim).map(function (key) { return objectsByPrim[key]; });
     }
     var rendered = visibleMapObjectsRaw.map(toRenderable);
     var changedPaths = {};
@@ -986,18 +1128,35 @@
       draw();
       describeState();
     }
+    if (event.data.type === "sitegit.isaac-map.zones") {
+      zoneDefinitions = Array.isArray(event.data.zones) ? event.data.zones.slice(0, 16) : [];
+      if (event.data.featureStartAt) timelineFeatureStartAt = event.data.featureStartAt;
+      renderZoneLabels();
+      draw();
+      describeState();
+    }
     if (event.data.type === "sitegit.isaac-map.timeline") {
       timelineEnabled = true;
       activeLayer = "timeline";
       zonesVisible = false;
       timelineApprovedAt = event.data.baseline ? null : (event.data.approvedAt || null);
       timelineCommitId = event.data.baseline ? null : (event.data.commitId || null);
+      timelineFeatureStartAt = event.data.featureStartAt || timelineFeatureStartAt;
+      timelineInstructionIds = Array.isArray(event.data.instructionIds) ? event.data.instructionIds : [];
       timelineBaselineObjectsRaw = Array.isArray(event.data.baselineObjects)
         ? event.data.baselineObjects
         : [];
       rebuildMapObjects();
       draw();
       describeState();
+    }
+    if (event.data.type === "sitegit.isaac-map.plan") {
+      planningPlan = event.data.plan || null;
+      draw();
+    }
+    if (event.data.type === "sitegit.isaac-map.plan-clear") {
+      planningPlan = null;
+      draw();
     }
     // 관리자가 승인하면 부모 창이 이 메시지를 보냅니다.
     if (event.data.type === "sitegit.isaac-map.reload-objects") loadMapObjects();

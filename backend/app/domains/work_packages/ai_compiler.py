@@ -31,7 +31,11 @@ from ...schemas.work_package_ai import (
 )
 
 
-def compile_planning_work_package(message: str, settings: Settings) -> PlanningWorkPackagePlan:
+def compile_planning_work_package(
+    message: str,
+    settings: Settings,
+    drawing_context: str = "",
+) -> PlanningWorkPackagePlan:
     """실행과 분리된 관리자 검토용 작업지시 초안을 만듭니다."""
     schema = PlanningWorkPackagePlan.model_json_schema()
     system_prompt = """당신은 건설 현장 관리자용 SiteGit Planning Assistant입니다.
@@ -39,7 +43,11 @@ def compile_planning_work_package(message: str, settings: Settings) -> PlanningW
 장비 제어 명령은 절대 만들지 않습니다. 불명확한 핵심 값은 추측하지 말고
 clarification_question에 질문하며 ready=false로 반환하세요. Zone은 A-D 중 하나이며,
 공종, 제목, 목표량/단위, 구간, 권장 장비, 후속 작업을 간결하게 작성하세요.
-target_unit은 m, m3, ea 중 하나입니다."""
+target_unit은 m, m3, ea 중 하나입니다. 승인된 현장 도면 문맥이 제공되면 사용자의
+짧은 지시를 그 도면에 연결하고, 수량·구간·장비·공정 순서는 반드시 도면 값을
+사용하세요. 도면에 있는 값은 다시 계산하거나 추측하지 마세요."""
+    if drawing_context:
+        system_prompt = f"{system_prompt}\n\n{drawing_context}"
     try:
         endpoint = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
         with httpx.Client(timeout=settings.ollama_timeout_seconds) as client:
