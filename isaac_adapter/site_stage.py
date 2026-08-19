@@ -16,17 +16,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 SITE_PRIM_PATH = "/World/Site"
 DIGGABLE_ROOT_PATH = "/World/Diggable"
-DEFAULT_SOIL_PILE_PRIM_PATH = f"{DIGGABLE_ROOT_PATH}/ZoneA_SoilPile_01"
+DEFAULT_SOIL_PILE_PRIM_PATH = f"{DIGGABLE_ROOT_PATH}/ZoneC_SoilPile_01"
 # USD Prim names must be valid identifiers. Keep the business-facing equipment
 # ID as ``EXC-001``, but use an underscore in the Stage path.
 DEFAULT_EQUIPMENT_PRIM_PATH = "/World/Equipment/EXC_001"
 
 # 기본 현장 에셋. 대용량이라 Git이 아니라 SSD 데이터 루트에 둡니다.
-DEFAULT_SITE_ASSET = "isaac/assets/construction_site_mud.usdz"
+DEFAULT_SITE_ASSET = "isaac/assets/construction_site_demolition.usdz"
 
 
 def resolved_data_root(data_root: str | Path | None = None) -> Path:
@@ -48,7 +48,10 @@ def resolved_data_root(data_root: str | Path | None = None) -> Path:
 
 def default_site_asset(data_root: str | Path | None = None) -> Path | None:
     """SITEGIT_DATA_ROOT 아래의 기본 현장 에셋 경로를 돌려줍니다."""
-    candidate = resolved_data_root(data_root) / DEFAULT_SITE_ASSET
+    configured = os.getenv("SITEGIT_SITE_ASSET", DEFAULT_SITE_ASSET).strip()
+    candidate = Path(configured).expanduser()
+    if not candidate.is_absolute():
+        candidate = resolved_data_root(data_root) / candidate
     return candidate if candidate.is_file() else None
 
 
@@ -292,10 +295,13 @@ def create_diggable_soil_pile(
     stage: Any,
     *,
     prim_path: str = DEFAULT_SOIL_PILE_PRIM_PATH,
-    position_xy: tuple[float, float] = (-12.0, 12.0),
+    position_xy: tuple[float, float] = (-26.5, -40.5),
     size: tuple[float, float, float] = (6.0, 5.0, 2.5),
-    zone_id: str = "A",
+    zone_id: str = "C",
+    diggable_id: str = "ZoneC-SoilPile-01",
+    display_color: str = "#6B4F2A",
     simulation_app: Any = None,
+    surface_height: Callable[[float, float, float], float] | None = None,
 ) -> dict[str, Any]:
     """Create one small, semantic and independently removable soil Mesh Prim."""
 
@@ -322,7 +328,11 @@ def create_diggable_soil_pile(
             "existing": True,
         }
 
-    base_z = site_surface_height(stage, float(position_xy[0]), float(position_xy[1]))
+    base_z = (
+        surface_height(float(position_xy[0]), float(position_xy[1]), 0.0)
+        if surface_height is not None
+        else site_surface_height(stage, float(position_xy[0]), float(position_xy[1]))
+    )
     radius_x, radius_y, height = size[0] * 0.5, size[1] * 0.5, size[2]
     segments = 24
     # Center peak plus three rings produces a rounded mound without relying on
@@ -364,7 +374,18 @@ def create_diggable_soil_pile(
     mesh.CreateFaceVertexIndicesAttr(faces)
     mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
     mesh.CreateDoubleSidedAttr(True)
-    mesh.CreateDisplayColorAttr([Gf.Vec3f(0.34, 0.21, 0.10)])
+    color_text = str(display_color).lstrip("#")
+    if len(color_text) != 6:
+        raise ValueError("토사 색상은 #RRGGBB 형식이어야 합니다.")
+    try:
+        color_value = Gf.Vec3f(
+            int(color_text[0:2], 16) / 255.0,
+            int(color_text[2:4], 16) / 255.0,
+            int(color_text[4:6], 16) / 255.0,
+        )
+    except ValueError as error:
+        raise ValueError("토사 색상은 #RRGGBB 형식이어야 합니다.") from error
+    mesh.CreateDisplayColorAttr([color_value])
     mesh.CreateExtentAttr(
         [
             Gf.Vec3f(float(-radius_x * 1.05), float(-radius_y * 1.05), 0.0),
@@ -376,8 +397,9 @@ def create_diggable_soil_pile(
     )
     prim = mesh.GetPrim()
     prim.SetCustomDataByKey("sitegitDiggable", True)
-    prim.SetCustomDataByKey("sitegitDiggableId", "ZoneA-SoilPile-01")
+    prim.SetCustomDataByKey("sitegitDiggableId", str(diggable_id))
     prim.SetCustomDataByKey("sitegitZoneId", zone_id)
+    prim.SetCustomDataByKey("sitegitDisplayColor", f"#{color_text.upper()}")
     UsdPhysics.CollisionAPI.Apply(prim)
 
     if simulation_app is not None:
@@ -407,6 +429,7 @@ def load_equipment(
     position: tuple[float, float, float] = (0.0, 0.0, 0.0),
     simulation_app: Any = None,
     settle_frames: int = 180,
+    surface_height: Callable[[float, float, float], float] | None = None,
 ) -> dict[str, Any]:
     """Reference one excavator asset, normalize units/up-axis, and place it on site ground."""
     from pxr import Gf, Sdf, Usd, UsdGeom
@@ -437,11 +460,21 @@ def load_equipment(
     if world_range is None or world_range.IsEmpty():
         raise RuntimeError("장비 메시의 bounds를 계산하지 못했습니다.")
     minimum, maximum = world_range.GetMin(), world_range.GetMax()
+    # ``position.z`` is a clearance above the local terrain, not an absolute
+    # world Z. The mud site is uneven, so a fixed Z=0 can bury the machine.
+    ground_z = float(position[2])
+    if stage.GetPrimAtPath(SITE_PRIM_PATH).IsValid():
+        sampled_surface = (
+            surface_height(float(position[0]), float(position[1]), 0.0)
+            if surface_height is not None
+            else site_surface_height(stage, float(position[0]), float(position[1]))
+        )
+        ground_z = float(sampled_surface) + float(position[2])
     xform.SetTranslate(
         Gf.Vec3d(
             position[0] - float((minimum[0] + maximum[0]) * 0.5),
             position[1] - float((minimum[1] + maximum[1]) * 0.5),
-            position[2] - float(minimum[2]),
+            ground_z - float(minimum[2]),
         )
     )
     if simulation_app is not None:
@@ -449,6 +482,19 @@ def load_equipment(
             simulation_app.update()
     equipment_prim = stage.GetPrimAtPath(prim_path)
     equipment_prim.SetCustomDataByKey("sitegitEquipmentId", "EXC-001")
+    equipment_prim.SetCustomDataByKey("sitegitAssetPath", str(asset))
+    equipment_prim.SetCustomDataByKey(
+        "sitegitAssetMetersPerUnit", asset_meters_per_unit
+    )
+    equipment_prim.SetCustomDataByKey("sitegitAssetUpAxis", asset_up_axis)
+    equipment_prim.SetCustomDataByKey(
+        "sitegitEquipmentAnchor",
+        {
+            "x": float(position[0]),
+            "y": float(position[1]),
+            "z": ground_z,
+        },
+    )
     skeleton_paths: list[str] = []
     animation_paths: list[str] = []
     for descendant in Usd.PrimRange(equipment_prim):
@@ -459,7 +505,8 @@ def load_equipment(
     return {
         "asset": str(asset),
         "prim_path": prim_path,
-        "position": list(position),
+        "position": [float(position[0]), float(position[1]), ground_z],
+        "ground_surface_z": ground_z - float(position[2]),
         "meters_per_unit": 1.0,
         "skeleton_paths": skeleton_paths,
         "animation_paths": animation_paths,

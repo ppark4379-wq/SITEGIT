@@ -15,6 +15,170 @@ from typing import Any, Callable
 SITEGIT_ROOT_PATH = "/World/SiteGit"
 
 
+def grounded_equipment_center_z(
+    surface_z: float,
+    equipment_height: float,
+    clearance_m: float = 0.03,
+) -> float:
+    """Return a bounds-center Z that keeps equipment above the terrain."""
+
+    if equipment_height <= 0:
+        raise ValueError("equipment height must be positive")
+    return float(surface_z) + float(equipment_height) * 0.5 + max(0.0, float(clearance_m))
+
+
+def zone_id_for_world_position(
+    position: dict[str, float],
+    terrain_center: dict[str, float],
+    terrain_size: dict[str, float],
+    fallback: str | None = None,
+) -> str | None:
+    """Return the A-D work zone that contains one SiteGit XY position."""
+
+    size_x = float(terrain_size.get("x", 0.0))
+    size_y = float(terrain_size.get("y", 0.0))
+    if size_x <= 0.0 or size_y <= 0.0:
+        return fallback
+    x = float(position.get("x", 0.0))
+    y = float(position.get("y", 0.0))
+    center_x = float(terrain_center.get("x", 0.0))
+    center_y = float(terrain_center.get("y", 0.0))
+    half_x = size_x * 0.5
+    half_y = size_y * 0.5
+    if not (
+        center_x - half_x <= x <= center_x + half_x
+        and center_y - half_y <= y <= center_y + half_y
+    ):
+        return fallback
+    if y >= center_y:
+        return "A" if x <= center_x else "B"
+    return "C" if x <= center_x else "D"
+
+
+def excavation_approach_plan(
+    equipment_position: dict[str, float],
+    target_position: dict[str, float],
+    target_size: dict[str, float],
+    track_size: dict[str, float],
+    requested_clearance_m: float,
+    safety_margin_m: float = 0.75,
+) -> dict[str, Any]:
+    """Plan a target-facing stop outside both the soil and track footprints."""
+
+    import math
+
+    dx = float(target_position["x"]) - float(equipment_position["x"])
+    dy = float(target_position["y"]) - float(equipment_position["y"])
+    distance = math.hypot(dx, dy)
+    if distance <= 1e-6:
+        # The imported excavator initially faces site -Y.  When a malformed
+        # scene starts at the target center, place it on the +Y side so the
+        # retained -Y working direction still faces the target.
+        direction_x, direction_y = 0.0, -1.0
+    else:
+        direction_x, direction_y = dx / distance, dy / distance
+    target_radius = (
+        abs(direction_x) * max(0.0, float(target_size.get("x", 0.0))) * 0.5
+        + abs(direction_y) * max(0.0, float(target_size.get("y", 0.0))) * 0.5
+    )
+    track_radius = max(
+        max(0.0, float(track_size.get("x", 0.0))),
+        max(0.0, float(track_size.get("y", 0.0))),
+    ) * 0.5
+    edge_clearance = max(
+        max(0.5, float(requested_clearance_m)),
+        track_radius + max(0.1, float(safety_margin_m)),
+    )
+    center_standoff = target_radius + edge_clearance
+    return {
+        "destination_xy": [
+            float(target_position["x"]) - direction_x * center_standoff,
+            float(target_position["y"]) - direction_y * center_standoff,
+        ],
+        "target_xy": [float(target_position["x"]), float(target_position["y"])],
+        "approach_direction_xy": [direction_x, direction_y],
+        "target_radius_m": float(target_radius),
+        "track_radius_m": float(track_radius),
+        "edge_clearance_m": float(edge_clearance),
+        "center_standoff_m": float(center_standoff),
+    }
+
+
+def projected_mesh_volume(
+    points: list[tuple[float, float, float]],
+    face_vertex_counts: list[int],
+    face_vertex_indices: list[int],
+    *,
+    face_limit: int | None = None,
+) -> float:
+    """Estimate soil volume above the lowest vertex using XY triangle projection."""
+
+    if not points:
+        return 0.0
+    base_z = min(point[2] for point in points)
+    volume = 0.0
+    offset = 0
+    for face_number, raw_count in enumerate(face_vertex_counts):
+        if face_limit is not None and face_number >= face_limit:
+            break
+        count = int(raw_count)
+        face = [int(value) for value in face_vertex_indices[offset : offset + count]]
+        offset += count
+        if count < 3 or any(index < 0 or index >= len(points) for index in face):
+            continue
+        first = points[face[0]]
+        for face_index in range(1, count - 1):
+            second = points[face[face_index]]
+            third = points[face[face_index + 1]]
+            twice_area = abs(
+                (second[0] - first[0]) * (third[1] - first[1])
+                - (second[1] - first[1]) * (third[0] - first[0])
+            )
+            average_height = sum(
+                max(0.0, point[2] - base_z) for point in (first, second, third)
+            ) / 3.0
+            volume += 0.5 * twice_area * average_height
+    return float(volume)
+
+
+def sculpt_soil_mesh_points(
+    points: list[tuple[float, float, float]],
+    *,
+    cut_ratio: float = 0.9,
+    base_z_override: float | None = None,
+) -> list[tuple[float, float, float]]:
+    """Carve a smooth bucket-shaped depression into a standalone soil mesh."""
+
+    if len(points) < 4:
+        raise ValueError("soil mesh needs at least four points")
+    minimum_x = min(point[0] for point in points)
+    maximum_x = max(point[0] for point in points)
+    minimum_y = min(point[1] for point in points)
+    maximum_y = max(point[1] for point in points)
+    base_z = (
+        float(base_z_override)
+        if base_z_override is not None
+        else min(point[2] for point in points)
+    )
+    center_x = (minimum_x + maximum_x) * 0.5
+    center_y = (minimum_y + maximum_y) * 0.5
+    radius_x = max((maximum_x - minimum_x) * 0.5, 1e-6)
+    radius_y = max((maximum_y - minimum_y) * 0.5, 1e-6)
+    ratio = max(0.05, min(0.98, float(cut_ratio)))
+    sculpted: list[tuple[float, float, float]] = []
+    for x, y, z in points:
+        normalized_radius = (
+            ((x - center_x) / radius_x) ** 2
+            + ((y - center_y) / radius_y) ** 2
+        ) ** 0.5
+        # Preserve the outside rim and lower the central surface most. This
+        # creates an actual crater rather than deleting or uniformly scaling.
+        influence = max(0.0, 1.0 - normalized_radius / 0.82) ** 1.35
+        height = max(0.0, z - base_z)
+        sculpted.append((x, y, base_z + height * (1.0 - ratio * influence)))
+    return sculpted
+
+
 class IsaacBridge:
     """실제 Isaac Sim Stage에 작업을 반영합니다.
 
@@ -27,6 +191,30 @@ class IsaacBridge:
         self._stage = stage
         self._update_callback = update_callback
         self._known_diggable_records: dict[str, dict[str, Any]] = {}
+        self._terrain_ray_limits: dict[str, tuple[float, float]] = {}
+        self._rigid_prim_controllers: dict[str, Any] = {}
+        self._excavation_prepared_callback: Callable[[dict[str, Any]], None] | None = None
+
+    def set_excavation_prepared_callback(
+        self,
+        callback: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        """Set a one-shot callback fired after approach and before arm motion.
+
+        The execution runner uses this boundary to capture the true ``before``
+        evidence: the excavator has reached and faced the target, but the soil
+        and the boom/bucket pose have not been changed yet.
+        """
+
+        self._excavation_prepared_callback = callback
+
+    def _notify_excavation_prepared(self, details: dict[str, Any]) -> None:
+        """Consume the pending callback exactly once for one excavation."""
+
+        callback = self._excavation_prepared_callback
+        self._excavation_prepared_callback = None
+        if callback is not None:
+            callback(details)
 
     @property
     def stage(self) -> Any:
@@ -96,6 +284,9 @@ class IsaacBridge:
 
         cube = UsdGeom.Cube.Define(self.stage, prim_path)
         cube.GetSizeAttr().Set(1.0)  # 단위 큐브로 두고 크기는 Scale로 표현합니다.
+        cube_prim = cube.GetPrim()
+        cube_prim.SetCustomDataByKey("sitegitSceneObject", True)
+        cube_prim.SetCustomDataByKey("sitegitObjectLabel", str(params.get("label") or cube_prim.GetName()))
         xform = UsdGeom.XformCommonAPI(cube)
         xform.SetTranslate(
             Gf.Vec3d(float(position.get("x", 0)), float(position.get("y", 0)), float(position.get("z", 0)))
@@ -107,6 +298,7 @@ class IsaacBridge:
         color = params.get("color")
         if color:
             cube.GetDisplayColorAttr().Set([_hex_to_gf_color(color)])
+            cube_prim.SetCustomDataByKey("sitegitDisplayColor", str(color).upper())
 
         placed_position, placed_size = self._read_world_transform(prim_path)
         return {
@@ -138,21 +330,299 @@ class IsaacBridge:
         }
         return position, size
 
+    def _mesh_geometry_snapshot(self, prim: Any) -> dict[str, Any] | None:
+        """Serialize one small USD Mesh as world-space triangles for web merge."""
+
+        from pxr import Gf, Usd, UsdGeom
+
+        if not prim.IsValid() or not prim.IsA(UsdGeom.Mesh):
+            return None
+        mesh = UsdGeom.Mesh(prim)
+        authored_points = mesh.GetPointsAttr().Get() or []
+        counts = [int(value) for value in (mesh.GetFaceVertexCountsAttr().Get() or [])]
+        indices = [int(value) for value in (mesh.GetFaceVertexIndicesAttr().Get() or [])]
+        if not authored_points or not counts or not indices:
+            return None
+        if len(authored_points) > 20_000 or len(indices) > 120_000:
+            return None
+        matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        world_points: list[list[float]] = []
+        for point in authored_points:
+            world = matrix.Transform(Gf.Vec3d(float(point[0]), float(point[1]), float(point[2])))
+            world_points.append([float(world[0]), float(world[1]), float(world[2])])
+        geometry = {
+            "format": "sitegit-triangle-mesh-v1",
+            "points": world_points,
+            "face_vertex_counts": counts,
+            "face_vertex_indices": indices,
+        }
+        top_face_count = prim.GetCustomDataByKey("sitegitTopFaceCount")
+        if top_face_count is not None:
+            geometry["top_face_count"] = max(
+                0, min(int(top_face_count), len(counts))
+            )
+        st = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st")
+        interpolation = str(st.GetInterpolation()) if st and st.HasValue() else ""
+        if st and st.HasValue() and interpolation in {"vertex", "varying", "faceVarying"}:
+            uv_values = st.Get(Usd.TimeCode.Default()) or []
+            uv_indices = st.GetIndices(Usd.TimeCode.Default()) if st.IsIndexed() else []
+            expanded = (
+                [uv_values[int(index)] for index in uv_indices]
+                if uv_indices
+                else uv_values
+            )
+            if len(expanded) == len(authored_points):
+                geometry["uvs"] = [
+                    [float(value[0]), float(value[1])] for value in expanded
+                ]
+            elif interpolation == "faceVarying" and len(expanded) == len(indices):
+                geometry["face_uvs"] = [
+                    [float(value[0]), float(value[1])] for value in expanded
+                ]
+        return geometry
+
+    def _deform_diggable_mesh(self, target: Any) -> dict[str, Any]:
+        """Carve the target Mesh in place and refresh its collision shape."""
+
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        if not target.IsA(UsdGeom.Mesh):
+            return {
+                "available": False,
+                "reason": "target Prim is not a USD Mesh",
+            }
+        mesh = UsdGeom.Mesh(target)
+        authored = mesh.GetPointsAttr().Get() or []
+        counts = [int(value) for value in (mesh.GetFaceVertexCountsAttr().Get() or [])]
+        indices = [int(value) for value in (mesh.GetFaceVertexIndicesAttr().Get() or [])]
+        local_points = [
+            (float(point[0]), float(point[1]), float(point[2])) for point in authored
+        ]
+        if not local_points or not counts or not indices:
+            return {
+                "available": False,
+                "reason": "target Mesh has no editable topology",
+            }
+        raw_top_vertex_count = target.GetCustomDataByKey("sitegitTopVertexCount")
+        raw_top_face_count = target.GetCustomDataByKey("sitegitTopFaceCount")
+        top_vertex_count = (
+            int(raw_top_vertex_count)
+            if raw_top_vertex_count is not None
+            else len(local_points)
+        )
+        top_face_count = (
+            int(raw_top_face_count)
+            if raw_top_face_count is not None
+            else None
+        )
+        top_vertex_count = max(1, min(top_vertex_count, len(local_points)))
+        base_z = min(point[2] for point in local_points)
+        before_volume = projected_mesh_volume(
+            local_points,
+            counts,
+            indices,
+            face_limit=top_face_count,
+        )
+        sculpted_surface = sculpt_soil_mesh_points(
+            local_points[:top_vertex_count],
+            cut_ratio=float(os.getenv("SITEGIT_EXCAVATION_CUT_RATIO", "0.9")),
+            base_z_override=base_z,
+        )
+        after_points = sculpted_surface + local_points[top_vertex_count:]
+        after_volume = projected_mesh_volume(
+            after_points,
+            counts,
+            indices,
+            face_limit=top_face_count,
+        )
+        mesh.GetPointsAttr().Set([Gf.Vec3f(*point) for point in after_points])
+        extent = UsdGeom.PointBased.ComputeExtent([Gf.Vec3f(*point) for point in after_points])
+        mesh.GetExtentAttr().Set(extent)
+        collision = UsdPhysics.CollisionAPI(target)
+        if not collision:
+            collision = UsdPhysics.CollisionAPI.Apply(target)
+        enabled = collision.GetCollisionEnabledAttr()
+        enabled.Set(False)
+        if self._update_callback:
+            self._update_callback()
+        enabled.Set(True)
+        if self._update_callback:
+            for _ in range(8):
+                self._update_callback()
+        revision = int(target.GetCustomDataByKey("sitegitTerrainRevision") or 0) + 1
+        target.SetCustomDataByKey("sitegitTerrainRevision", revision)
+        position, size = self._world_bounds(target)
+        removed_volume = max(0.0, before_volume - after_volume)
+        return {
+            "available": True,
+            "method": "usd_mesh_vertex_sculpt",
+            "before_volume_m3": float(before_volume),
+            "after_volume_m3": float(after_volume),
+            "removed_volume_m3": float(removed_volume),
+            "revision": revision,
+            "position": position,
+            "size": size,
+            "geometry": self._mesh_geometry_snapshot(target),
+        }
+
+    def _create_moved_soil_pile(
+        self,
+        *,
+        target: Any,
+        target_size: dict[str, float],
+        equipment_position: dict[str, float],
+        approach_plan: dict[str, Any],
+        removed_volume_m3: float,
+    ) -> dict[str, Any] | None:
+        """Create a second physical soil mound representing excavated material."""
+
+        import re
+
+        try:
+            from .site_stage import create_diggable_soil_pile
+        except ImportError:
+            from site_stage import create_diggable_soil_pile
+
+        if removed_volume_m3 <= 1e-6:
+            return None
+        direction = approach_plan.get("approach_direction_xy") or [0.0, -1.0]
+        right_x, right_y = -float(direction[1]), float(direction[0])
+        source_volume = max(
+            1e-6,
+            float(target_size["x"]) * float(target_size["y"]) * float(target_size["z"]) * 0.45,
+        )
+        scale = max(0.3, min(0.9, (removed_volume_m3 / source_volume) ** (1.0 / 3.0)))
+        moved_size = (
+            max(1.0, float(target_size["x"]) * scale),
+            max(1.0, float(target_size["y"]) * scale),
+            max(0.35, float(target_size["z"]) * scale),
+        )
+        offset = (
+            float(approach_plan.get("track_radius_m") or 2.0)
+            + max(moved_size[0], moved_size[1]) * 0.5
+            + 1.0
+        )
+        position_xy = (
+            float(equipment_position["x"]) + right_x * offset,
+            float(equipment_position["y"]) + right_y * offset,
+        )
+        source_name = re.sub(r"[^A-Za-z0-9_]", "_", str(target.GetName()))
+        suffix = int(target.GetCustomDataByKey("sitegitTerrainRevision") or 1)
+        prim_path = f"/World/Diggable/{source_name}_MovedSoil_{suffix:02d}"
+        while self.stage.GetPrimAtPath(prim_path).IsValid():
+            suffix += 1
+            prim_path = f"/World/Diggable/{source_name}_MovedSoil_{suffix:02d}"
+        zone_id = str(target.GetCustomDataByKey("sitegitZoneId") or "C")
+        display_color = str(target.GetCustomDataByKey("sitegitDisplayColor") or "#6B4F2A")
+        info = create_diggable_soil_pile(
+            self.stage,
+            prim_path=prim_path,
+            position_xy=position_xy,
+            size=moved_size,
+            zone_id=zone_id,
+            diggable_id=f"{source_name}-Moved-{suffix:02d}",
+            display_color=display_color,
+            surface_height=lambda x, y, fallback: self._terrain_surface_z(x, y, fallback),
+        )
+        if self._update_callback:
+            for _ in range(10):
+                self._update_callback()
+        moved_prim = self.stage.GetPrimAtPath(prim_path)
+        moved_volume = self._match_mesh_volume(moved_prim, removed_volume_m3)
+        position, size = self._world_bounds(moved_prim)
+        return {
+            **info,
+            "position": position,
+            "size": size,
+            "geometry": self._mesh_geometry_snapshot(moved_prim),
+            "source_removed_volume_m3": float(removed_volume_m3),
+            "deposited_volume_m3": float(moved_volume),
+        }
+
+    def _match_mesh_volume(self, prim: Any, desired_volume_m3: float) -> float:
+        """Scale mound vertex heights so deposited volume matches excavation."""
+
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        if not prim.IsValid() or not prim.IsA(UsdGeom.Mesh):
+            return 0.0
+        mesh = UsdGeom.Mesh(prim)
+        values = mesh.GetPointsAttr().Get() or []
+        counts = [int(value) for value in (mesh.GetFaceVertexCountsAttr().Get() or [])]
+        indices = [int(value) for value in (mesh.GetFaceVertexIndicesAttr().Get() or [])]
+        points = [(float(value[0]), float(value[1]), float(value[2])) for value in values]
+        current_volume = projected_mesh_volume(points, counts, indices)
+        if current_volume <= 1e-9 or desired_volume_m3 <= 1e-9:
+            return current_volume
+        base_z = min(point[2] for point in points)
+        factor = float(desired_volume_m3) / current_volume
+        adjusted = [
+            (x, y, base_z + max(0.0, z - base_z) * factor) for x, y, z in points
+        ]
+        mesh.GetPointsAttr().Set([Gf.Vec3f(*point) for point in adjusted])
+        mesh.GetExtentAttr().Set(
+            UsdGeom.PointBased.ComputeExtent([Gf.Vec3f(*point) for point in adjusted])
+        )
+        collision = UsdPhysics.CollisionAPI(prim)
+        if not collision:
+            collision = UsdPhysics.CollisionAPI.Apply(prim)
+        collision.GetCollisionEnabledAttr().Set(False)
+        if self._update_callback:
+            self._update_callback()
+        collision.GetCollisionEnabledAttr().Set(True)
+        if self._update_callback:
+            for _ in range(6):
+                self._update_callback()
+        return projected_mesh_volume(adjusted, counts, indices)
+
     def stage_inventory(
         self,
         *,
         equipment_paths: list[str],
         diggable_roots: list[str],
+        scene_object_roots: list[str] | None = None,
     ) -> dict[str, Any]:
         """Read exact executable Prim paths and transforms from the live Stage."""
         from pxr import Usd, UsdGeom
 
+        terrain_center: dict[str, float] | None = None
+        terrain_size: dict[str, float] | None = None
+        terrain_path = os.getenv("SITEGIT_TERRAIN_PRIM_PATH", "/World/Site")
+        terrain = self.stage.GetPrimAtPath(terrain_path)
+        if terrain.IsValid() and terrain.IsActive():
+            terrain_center, terrain_size = self._world_bounds(terrain)
+
         def record(prim: Any, role: str) -> dict[str, Any]:
             position, size = self._world_bounds(prim)
-            custom_name = (
-                prim.GetCustomDataByKey("sitegitEquipmentId")
-                if role == "equipment"
-                else prim.GetCustomDataByKey("sitegitDiggableId")
+            if role == "equipment":
+                custom_name = prim.GetCustomDataByKey("sitegitEquipmentId")
+                anchor = prim.GetCustomDataByKey("sitegitEquipmentAnchor")
+                if isinstance(anchor, dict) and all(
+                    axis in anchor for axis in ("x", "y", "z")
+                ):
+                    position = {axis: float(anchor[axis]) for axis in ("x", "y", "z")}
+            elif role == "diggable":
+                custom_name = prim.GetCustomDataByKey("sitegitDiggableId")
+            else:
+                custom_name = prim.GetCustomDataByKey("sitegitObjectLabel")
+            display_color = prim.GetCustomDataByKey("sitegitDisplayColor")
+            if not display_color and prim.IsA(UsdGeom.Gprim):
+                colors = UsdGeom.Gprim(prim).GetDisplayColorAttr().Get() or []
+                if colors:
+                    rgb = colors[0]
+                    display_color = "#{:02X}{:02X}{:02X}".format(
+                        *[max(0, min(255, round(float(channel) * 255))) for channel in rgb]
+                    )
+            authored_zone = str(prim.GetCustomDataByKey("sitegitZoneId") or "") or None
+            physical_zone = (
+                zone_id_for_world_position(
+                    position,
+                    terrain_center,
+                    terrain_size,
+                    fallback=authored_zone,
+                )
+                if terrain_center is not None and terrain_size is not None
+                else authored_zone
             )
             return {
                 "path": str(prim.GetPath()),
@@ -162,6 +632,18 @@ class IsaacBridge:
                 "world_position": position,
                 "bounds_size": size,
                 "active": bool(prim.IsActive()),
+                "zone_id": physical_zone,
+                "capabilities": (
+                    ["move_equipment", "play_animation", "excavate_prim"]
+                    if role == "equipment"
+                    else ["excavate_prim"] if role == "diggable" else []
+                ),
+                "display_color": str(display_color) if display_color else None,
+                "geometry": (
+                    self._mesh_geometry_snapshot(prim)
+                    if role == "diggable"
+                    else None
+                ),
             }
 
         equipment: list[dict[str, Any]] = []
@@ -197,11 +679,32 @@ class IsaacBridge:
                 inactive["active"] = False
                 targets.append(inactive)
         targets.sort(key=lambda item: item["path"])
+
+        scene_objects: list[dict[str, Any]] = []
+        scene_seen: set[str] = set()
+        for root_path in scene_object_roots or []:
+            root = self.stage.GetPrimAtPath(root_path)
+            if not root.IsValid() or not root.IsActive():
+                continue
+            # SiteGit-created objects are direct children of this scope.  Using
+            # the roots explicitly avoids publishing the full terrain mesh as
+            # hundreds of duplicate live overlays.
+            for prim in root.GetChildren():
+                path = str(prim.GetPath())
+                if path in scene_seen or not prim.IsActive():
+                    continue
+                position, size = self._world_bounds(prim)
+                if max(size.values(), default=0.0) <= 0.0:
+                    continue
+                scene_seen.add(path)
+                scene_objects.append(record(prim, "scene_object"))
+        scene_objects.sort(key=lambda item: item["path"])
         layer = self.stage.GetRootLayer()
         return {
             "stage_identifier": layer.realPath or layer.identifier or "anonymous-stage",
             "equipment": equipment,
             "diggable_targets": targets,
+            "scene_objects": scene_objects,
         }
 
     def _set_world_translation(self, prim: Any, world_position: list[float]) -> None:
@@ -233,6 +736,102 @@ class IsaacBridge:
         current_value = translate_op.Get() or Gf.Vec3d(0.0, 0.0, 0.0)
         translate_op.Set(Gf.Vec3d(current_value) + delta)
 
+    def _terrain_surface_z(self, x: float, y: float, fallback: float) -> float:
+        """Read the highest terrain collision at XY, with a mesh fallback."""
+
+        terrain_root = os.getenv("SITEGIT_TERRAIN_PRIM", "/World/Site").rstrip("/")
+        terrain = self.stage.GetPrimAtPath(terrain_root)
+        if not terrain.IsValid() or not terrain.IsActive():
+            return float(fallback)
+
+        try:
+            import omni.physx
+            from pxr import Gf
+
+            limits = self._terrain_ray_limits.get(terrain_root)
+            if limits is None:
+                center, size = self._world_bounds(terrain)
+                limits = (
+                    center["z"] + size["z"] * 0.5 + 10.0,
+                    center["z"] - size["z"] * 0.5 - 10.0,
+                )
+                self._terrain_ray_limits[terrain_root] = limits
+            top, bottom = limits
+            hits: list[Any] = []
+
+            def collect_hit(hit: Any) -> bool:
+                hits.append(hit)
+                return True
+
+            omni.physx.get_physx_scene_query_interface().raycast_all(
+                Gf.Vec3f(float(x), float(y), float(top)),
+                Gf.Vec3f(0.0, 0.0, -1.0),
+                float(top - bottom),
+                collect_hit,
+                True,
+            )
+            terrain_hits = [
+                hit
+                for hit in hits
+                if str(hit.collision or hit.rigid_body) == terrain_root
+                or str(hit.collision or hit.rigid_body).startswith(f"{terrain_root}/")
+            ]
+            if terrain_hits:
+                return max(float(hit.position.z) for hit in terrain_hits)
+        except Exception:
+            # Collision cooking can still be finishing during startup.
+            pass
+
+        try:
+            from site_stage import site_surface_height
+
+            return float(site_surface_height(self.stage, float(x), float(y)))
+        except Exception:
+            return float(fallback)
+
+    def _grounded_equipment_position(
+        self,
+        x: float,
+        y: float,
+        equipment_height: float,
+        fallback_center_z: float,
+    ) -> list[float]:
+        """Build one terrain-following equipment center position."""
+
+        fallback_surface = float(fallback_center_z) - float(equipment_height) * 0.5
+        surface_z = self._terrain_surface_z(float(x), float(y), fallback_surface)
+        clearance = float(os.getenv("SITEGIT_EQUIPMENT_GROUND_CLEARANCE_M", "0.03"))
+        return [
+            float(x),
+            float(y),
+            grounded_equipment_center_z(surface_z, equipment_height, clearance),
+        ]
+
+    def snap_equipment_to_terrain(self, equipment_prim_path: str) -> dict[str, Any]:
+        """Place an existing equipment Prim on the current terrain surface."""
+
+        equipment = self.stage.GetPrimAtPath(equipment_prim_path)
+        if not equipment.IsValid() or not equipment.IsActive():
+            raise RuntimeError(f"장비 Prim이 Stage에 없습니다: {equipment_prim_path}")
+        before, size = self._world_bounds(equipment)
+        desired = self._grounded_equipment_position(
+            before["x"], before["y"], size["z"], before["z"]
+        )
+        self._set_world_translation(equipment, desired)
+        after, _ = self._world_bounds(equipment)
+        surface_z = after["z"] - size["z"] * 0.5
+        equipment.SetCustomDataByKey(
+            "sitegitEquipmentAnchor",
+            {"x": after["x"], "y": after["y"], "z": surface_z},
+        )
+        return {
+            "equipment_prim_path": equipment_prim_path,
+            "before": before,
+            "after": after,
+            "bounds_size": size,
+            "surface_z": surface_z,
+        }
+
     def _play_skeletal_animation(
         self,
         equipment: Any,
@@ -243,9 +842,9 @@ class IsaacBridge:
         """Bind and play one authored animation below an equipment root.
 
         The PBR excavator stores its clips as ``SkelAnimation`` siblings and
-        switches them through ``Skeleton.skel:animationSource``. The Kit
-        timeline is driven explicitly so referenced clips also play while the
-        main simulation timeline is paused.
+        switches them through ``Skeleton.skel:animationSource``.  Clip samples
+        are copied onto the current live timeline so animation playback never
+        pauses gravity or contact solving for the physical carrier.
         """
         from pxr import Usd
         import omni.timeline
@@ -267,10 +866,16 @@ class IsaacBridge:
             relationship = skeleton.CreateRelationship("skel:animationSource")
         relationship.SetTargets([animation.GetPath()])
 
+        animated_attributes = [
+            attribute
+            for attribute in animation.GetAttributes()
+            if attribute.GetName() in {"translations", "rotations", "scales"}
+            and attribute.GetNumTimeSamples() > 0
+        ]
         samples = sorted(
             {
                 sample
-                for attribute in animation.GetAttributes()
+                for attribute in animated_attributes
                 for sample in attribute.GetTimeSamples()
             }
         )
@@ -278,23 +883,376 @@ class IsaacBridge:
             return str(animation.GetPath())
 
         timeline = omni.timeline.get_timeline_interface()
-        timeline.pause()
         time_codes_per_second = float(self.stage.GetTimeCodesPerSecond() or 24.0)
-        frames = max(2, min(180, round(max(0.25, duration_seconds) * 30.0)))
-        first, last = float(samples[0]), float(samples[-1])
-        if self.stage.GetStartTimeCode() > first:
-            self.stage.SetStartTimeCode(first)
-        if self.stage.GetEndTimeCode() < last:
-            self.stage.SetEndTimeCode(last)
-        for index in range(frames):
-            ratio = index / (frames - 1)
-            timeline.set_current_time((first + (last - first) * ratio) / time_codes_per_second)
+        start = float(timeline.get_current_time()) * time_codes_per_second
+        frames = max(2, min(240, round(max(0.25, duration_seconds) * time_codes_per_second)))
+        source_values = {
+            attribute.GetName(): [attribute.Get(Usd.TimeCode(sample)) for sample in samples]
+            for attribute in animated_attributes
+        }
+        for frame in range(frames + 1):
+            ratio = frame / frames
+            source_index = min(len(samples) - 1, round(ratio * (len(samples) - 1)))
+            destination_time = Usd.TimeCode(start + frame)
+            for attribute in animated_attributes:
+                value = source_values[attribute.GetName()][source_index]
+                if value is not None:
+                    attribute.Set(value, destination_time)
+        self.stage.SetEndTimeCode(max(float(self.stage.GetEndTimeCode()), start + frames + 1))
+        timeline.play()
+        for _ in range(frames):
             if self._update_callback:
                 self._update_callback()
         return str(animation.GetPath())
 
+    def _bind_looping_skeletal_animation(
+        self,
+        equipment: Any,
+        animation_name: str,
+        *,
+        duration_seconds: float,
+    ) -> str | None:
+        """Bind an authored clip and extend its samples across live physics time."""
+
+        from pxr import Usd
+        import omni.timeline
+
+        skeleton = None
+        animation = None
+        wanted = animation_name.lower()
+        for prim in Usd.PrimRange(equipment):
+            if prim.GetTypeName() == "Skeleton" and skeleton is None:
+                skeleton = prim
+            if prim.GetTypeName() == "SkelAnimation" and wanted in prim.GetName().lower():
+                animation = prim
+        if skeleton is None or animation is None:
+            return None
+        relationship = skeleton.GetRelationship("skel:animationSource")
+        if not relationship:
+            relationship = skeleton.CreateRelationship("skel:animationSource")
+        relationship.SetTargets([animation.GetPath()])
+
+        animated_attributes = [
+            attribute
+            for attribute in animation.GetAttributes()
+            if attribute.GetName() in {"translations", "rotations", "scales"}
+            and attribute.GetNumTimeSamples() > 0
+        ]
+        samples = sorted(
+            {
+                sample
+                for attribute in animated_attributes
+                for sample in attribute.GetTimeSamples()
+            }
+        )
+        if not samples:
+            return str(animation.GetPath())
+
+        # Capture referenced values before authoring local repeated samples.
+        source_values = {
+            attribute.GetName(): [attribute.Get(Usd.TimeCode(sample)) for sample in samples]
+            for attribute in animated_attributes
+        }
+        timeline = omni.timeline.get_timeline_interface()
+        time_codes_per_second = float(self.stage.GetTimeCodesPerSecond() or 24.0)
+        start = float(timeline.get_current_time()) * time_codes_per_second
+        frame_count = max(2, round(max(0.25, duration_seconds) * time_codes_per_second))
+        for frame in range(frame_count + 1):
+            source_index = frame % len(samples)
+            destination_time = Usd.TimeCode(start + frame)
+            for attribute in animated_attributes:
+                value = source_values[attribute.GetName()][source_index]
+                if value is not None:
+                    attribute.Set(value, destination_time)
+        self.stage.SetEndTimeCode(max(float(self.stage.GetEndTimeCode()), start + frame_count + 1))
+        return str(animation.GetPath())
+
+    def drive_equipment_to(
+        self,
+        equipment_prim_path: str,
+        destination_xy: list[float],
+        *,
+        requested_seconds: float,
+    ) -> dict[str, Any]:
+        """Drive a dynamic excavator using PhysX velocities and track animation."""
+
+        import math
+        import omni.timeline
+        import numpy as np
+        from isaacsim.core.prims import SingleRigidPrim
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        try:
+            from .equipment_physics import is_physical_equipment, track_contact_pose
+        except ImportError:
+            from equipment_physics import is_physical_equipment, track_contact_pose
+
+        equipment = self.stage.GetPrimAtPath(equipment_prim_path)
+        if not equipment.IsValid() or not equipment.IsActive():
+            raise RuntimeError(f"장비 Prim이 Stage에 없습니다: {equipment_prim_path}")
+        if not is_physical_equipment(self.stage, equipment_prim_path):
+            raise RuntimeError(
+                "굴착기에 물리 궤도 충돌체가 없습니다. isaac_runner.py를 다시 시작해 "
+                "장비 물리 초기화를 완료하세요."
+            )
+        if self._update_callback is None:
+            raise RuntimeError("PhysX World step callback is not configured")
+
+        start = track_contact_pose(self.stage, equipment_prim_path)
+        max_speed = max(0.2, float(os.getenv("SITEGIT_EQUIPMENT_DRIVE_SPEED_MPS", "1.8")))
+        rigid = UsdPhysics.RigidBodyAPI(equipment)
+        rigid.CreateKinematicEnabledAttr(False).Set(False)
+        controller = self._rigid_prim_controllers.get(equipment_prim_path)
+        if controller is None:
+            controller = SingleRigidPrim(
+                prim_path=equipment_prim_path,
+                name=f"sitegit_{equipment.GetName()}_rigid",
+                reset_xform_properties=False,
+            )
+            controller.initialize()
+            self._rigid_prim_controllers[equipment_prim_path] = controller
+        if not controller._rigid_prim_view.is_physics_handle_valid():
+            raise RuntimeError(f"PhysX rigid-body handle is unavailable: {equipment_prim_path}")
+        root_start, _ = controller.get_world_pose()
+        track_offset = np.asarray(
+            [
+                start["x"] - float(root_start[0]),
+                start["y"] - float(root_start[1]),
+                start["z"] - float(root_start[2]),
+            ],
+            dtype=np.float64,
+        )
+        destination_root = np.asarray(
+            [
+                float(destination_xy[0]) - track_offset[0],
+                float(destination_xy[1]) - track_offset[1],
+            ],
+            dtype=np.float64,
+        )
+        initial_distance = math.hypot(
+            float(destination_root[0]) - float(root_start[0]),
+            float(destination_root[1]) - float(root_start[1]),
+        )
+        timeout = max(
+            max(1.0, float(requested_seconds)),
+            initial_distance / max_speed + 4.0,
+        )
+        timeout = min(timeout, float(os.getenv("SITEGIT_EQUIPMENT_DRIVE_TIMEOUT_S", "45")))
+        track_animation = self._bind_looping_skeletal_animation(
+            equipment, "TrackAnimation", duration_seconds=timeout
+        )
+
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        update_hz = 60.0
+        tolerance = max(0.15, float(os.getenv("SITEGIT_EQUIPMENT_ARRIVAL_TOLERANCE_M", "0.35")))
+        max_turn_rate = max(5.0, float(os.getenv("SITEGIT_EQUIPMENT_TURN_RATE_DPS", "38")))
+        max_steps = max(1, round(timeout * update_hz))
+        reached = False
+        steps = 0
+        for steps in range(1, max_steps + 1):
+            root_position, root_orientation = controller.get_world_pose()
+            to_x = float(destination_root[0]) - float(root_position[0])
+            to_y = float(destination_root[1]) - float(root_position[1])
+            distance = math.hypot(to_x, to_y)
+            if distance <= tolerance:
+                reached = True
+                break
+            target_x, target_y = to_x / distance, to_y / distance
+
+            quaternion = Gf.Quatd(
+                float(root_orientation[0]),
+                Gf.Vec3d(
+                    float(root_orientation[1]),
+                    float(root_orientation[2]),
+                    float(root_orientation[3]),
+                ),
+            )
+            # The source asset's boom/front direction is local +Z.  The root's
+            # Y-up to Z-up normalization maps it to site -Y at startup.
+            forward = quaternion.Transform(Gf.Vec3d(0.0, 0.0, 1.0))
+            forward_length = math.hypot(float(forward[0]), float(forward[1]))
+            if forward_length <= 1e-6:
+                forward_x, forward_y = target_x, target_y
+            else:
+                forward_x = float(forward[0]) / forward_length
+                forward_y = float(forward[1]) / forward_length
+            cross = forward_x * target_y - forward_y * target_x
+            dot = max(-1.0, min(1.0, forward_x * target_x + forward_y * target_y))
+            heading_error = math.atan2(cross, dot)
+            angular_speed = max(
+                -max_turn_rate,
+                min(max_turn_rate, math.degrees(heading_error) * 2.2),
+            )
+            alignment = max(0.0, math.cos(heading_error))
+            speed = min(max_speed, max(0.15, distance * 1.2)) * max(0.12, alignment)
+            previous_velocity = controller.get_linear_velocity()
+            controller.set_linear_velocity(
+                np.asarray(
+                    [
+                        float(forward_x * speed),
+                        float(forward_y * speed),
+                        float(previous_velocity[2]),
+                    ],
+                    dtype=np.float32,
+                )
+            )
+            controller.set_angular_velocity(
+                np.asarray([0.0, 0.0, math.radians(angular_speed)], dtype=np.float32)
+            )
+            self._update_callback()
+
+        controller.set_linear_velocity(np.zeros(3, dtype=np.float32))
+        controller.set_angular_velocity(np.zeros(3, dtype=np.float32))
+        for _ in range(12):
+            self._update_callback()
+        root_end, root_end_orientation = controller.get_world_pose()
+        end = {
+            "x": float(root_end[0] + track_offset[0]),
+            "y": float(root_end[1] + track_offset[1]),
+            "z": float(root_end[2] + track_offset[2]),
+        }
+        remaining = math.hypot(
+            float(destination_xy[0]) - end["x"],
+            float(destination_xy[1]) - end["y"],
+        )
+        blocked_distance = max(
+            tolerance,
+            float(os.getenv("SITEGIT_EQUIPMENT_BLOCKED_DISTANCE_M", "1.0")),
+        )
+        if not reached and remaining > blocked_distance:
+            raise RuntimeError(
+                f"굴착기가 물리 이동 중 목표 {remaining:.2f}m 앞에서 멈췄습니다. "
+                "지형 경사나 충돌 장애물을 확인하세요."
+            )
+        equipment.SetCustomDataByKey("sitegitEquipmentAnchor", dict(end))
+        return {
+            "mode": "physx-track-drive",
+            "start_track_pose": start,
+            "end_track_pose": end,
+            "destination_xy": [float(destination_xy[0]), float(destination_xy[1])],
+            "remaining_distance_m": float(remaining),
+            "arrival_tolerance_m": float(tolerance),
+            "blocked_distance_m": float(blocked_distance),
+            "arrived_within_working_range": bool(remaining <= blocked_distance),
+            "steps": steps,
+            "track_animation_prim_path": track_animation,
+            "root_start_position": [float(value) for value in root_start],
+            "root_end_position": [float(value) for value in root_end],
+            "root_end_orientation_wxyz": [float(value) for value in root_end_orientation],
+        }
+
+    def face_equipment_toward(
+        self,
+        equipment_prim_path: str,
+        target_xy: list[float],
+    ) -> dict[str, Any]:
+        """Rotate the physical carrier in place until its boom faces the target."""
+
+        import math
+        import omni.timeline
+        import numpy as np
+        from pxr import Gf
+
+        try:
+            from .equipment_physics import track_contact_pose
+        except ImportError:
+            from equipment_physics import track_contact_pose
+
+        if self._update_callback is None:
+            raise RuntimeError("PhysX World step callback is not configured")
+        controller = self._rigid_prim_controllers.get(equipment_prim_path)
+        if controller is None or not controller._rigid_prim_view.is_physics_handle_valid():
+            raise RuntimeError(
+                f"굴착기 물리 제어기가 준비되지 않았습니다: {equipment_prim_path}"
+            )
+
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        tolerance_degrees = max(
+            1.0, float(os.getenv("SITEGIT_EQUIPMENT_FACING_TOLERANCE_DEG", "3"))
+        )
+        max_turn_rate = max(
+            5.0, float(os.getenv("SITEGIT_EQUIPMENT_TURN_RATE_DPS", "38"))
+        )
+        timeout_seconds = max(
+            1.0, float(os.getenv("SITEGIT_EQUIPMENT_FACE_TIMEOUT_S", "8"))
+        )
+        aligned = False
+        heading_error_degrees = 180.0
+        steps = 0
+        for steps in range(1, round(timeout_seconds * 60.0) + 1):
+            root_position, root_orientation = controller.get_world_pose()
+            to_x = float(target_xy[0]) - float(root_position[0])
+            to_y = float(target_xy[1]) - float(root_position[1])
+            target_length = math.hypot(to_x, to_y)
+            if target_length <= 1e-6:
+                raise RuntimeError("굴착기와 굴착 대상의 XY 위치가 동일합니다.")
+            target_x, target_y = to_x / target_length, to_y / target_length
+            quaternion = Gf.Quatd(
+                float(root_orientation[0]),
+                Gf.Vec3d(
+                    float(root_orientation[1]),
+                    float(root_orientation[2]),
+                    float(root_orientation[3]),
+                ),
+            )
+            forward = quaternion.Transform(Gf.Vec3d(0.0, 0.0, 1.0))
+            forward_length = math.hypot(float(forward[0]), float(forward[1]))
+            if forward_length <= 1e-6:
+                raise RuntimeError("굴착기 전면 방향을 계산할 수 없습니다.")
+            forward_x = float(forward[0]) / forward_length
+            forward_y = float(forward[1]) / forward_length
+            cross = forward_x * target_y - forward_y * target_x
+            dot_value = max(
+                -1.0,
+                min(1.0, forward_x * target_x + forward_y * target_y),
+            )
+            heading_error = math.atan2(cross, dot_value)
+            heading_error_degrees = math.degrees(heading_error)
+            if abs(heading_error_degrees) <= tolerance_degrees:
+                aligned = True
+                break
+            angular_speed = max(
+                -max_turn_rate,
+                min(max_turn_rate, heading_error_degrees * 2.2),
+            )
+            previous_velocity = controller.get_linear_velocity()
+            controller.set_linear_velocity(
+                np.asarray([0.0, 0.0, float(previous_velocity[2])], dtype=np.float32)
+            )
+            controller.set_angular_velocity(
+                np.asarray([0.0, 0.0, math.radians(angular_speed)], dtype=np.float32)
+            )
+            self._update_callback()
+
+        controller.set_linear_velocity(np.zeros(3, dtype=np.float32))
+        controller.set_angular_velocity(np.zeros(3, dtype=np.float32))
+        for _ in range(12):
+            self._update_callback()
+        root_end, root_end_orientation = controller.get_world_pose()
+        end_track_pose = track_contact_pose(self.stage, equipment_prim_path)
+        if not aligned and abs(heading_error_degrees) > 12.0:
+            raise RuntimeError(
+                f"굴착기가 작업 대상을 바라보도록 회전하지 못했습니다: "
+                f"오차 {heading_error_degrees:.1f}°"
+            )
+        return {
+            "mode": "physx-face-target",
+            "target_xy": [float(target_xy[0]), float(target_xy[1])],
+            "aligned": bool(aligned or abs(heading_error_degrees) <= 12.0),
+            "heading_error_degrees": float(heading_error_degrees),
+            "tolerance_degrees": float(tolerance_degrees),
+            "steps": int(steps),
+            "end_track_pose": end_track_pose,
+            "root_end_position": [float(value) for value in root_end],
+            "root_end_orientation_wxyz": [
+                float(value) for value in root_end_orientation
+            ],
+        }
+
     def excavate_prim(self, instruction: dict[str, Any]) -> dict[str, Any]:
-        """Move the real excavator, play authored clips, and deactivate a target Prim."""
+        """Excavate a soil Mesh, move its volume, and return exact Stage changes."""
         from pxr import UsdGeom
 
         params = instruction.get("params") or {}
@@ -313,6 +1271,28 @@ class IsaacBridge:
             raise RuntimeError(f"등록된 굴착 대상 루트 밖의 Prim입니다: {target_path}")
 
         equipment_start, equipment_size = self._world_bounds(equipment)
+        try:
+            from .equipment_physics import (
+                is_physical_equipment,
+                track_contact_pose,
+                track_visual_bounds,
+            )
+        except ImportError:
+            from equipment_physics import (
+                is_physical_equipment,
+                track_contact_pose,
+                track_visual_bounds,
+            )
+
+        if is_physical_equipment(self.stage, equipment_path):
+            equipment_start = track_contact_pose(self.stage, equipment_path)
+            track_bounds = track_visual_bounds(self.stage, equipment_path)
+            track_size = {
+                axis: float(track_bounds["max"][index] - track_bounds["min"][index])
+                for index, axis in enumerate(("x", "y", "z"))
+            }
+        else:
+            track_size = dict(equipment_size)
         target_position, target_size = self._world_bounds(target)
         max_target_span = float(os.getenv("SITEGIT_MAX_EXCAVATION_TARGET_SPAN_M", "25"))
         target_span = max(float(target_size["x"]), float(target_size["y"]))
@@ -322,59 +1302,191 @@ class IsaacBridge:
                 f"전체 현장 Mesh 삭제를 막기 위해 {max_target_span:.0f}m 이하의 "
                 "독립된 토사 Prim만 실행할 수 있습니다."
             )
-        dx = target_position["x"] - equipment_start["x"]
-        dy = target_position["y"] - equipment_start["y"]
-        horizontal = max((dx * dx + dy * dy) ** 0.5, 1e-9)
         meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(self.stage) or 1.0)
-        offset = float(params.get("approach_distance_m", 3.0)) / meters_per_unit
-        destination = [
-            target_position["x"] - dx / horizontal * offset,
-            target_position["y"] - dy / horizontal * offset,
-            equipment_start["z"],
-        ]
+        approach_plan = excavation_approach_plan(
+            equipment_start,
+            target_position,
+            target_size,
+            track_size,
+            float(params.get("approach_distance_m", 3.0)) / meters_per_unit,
+            float(os.getenv("SITEGIT_EXCAVATION_TRACK_MARGIN_M", "0.75"))
+            / meters_per_unit,
+        )
+        destination_xy = list(approach_plan["destination_xy"])
         seconds = float(params.get("animation_seconds", 3.0))
         animation_paths: list[str] = []
-        track_animation = self._play_skeletal_animation(
-            equipment,
-            "TrackAnimation",
-            duration_seconds=min(1.0, seconds),
+        drive_result = self.drive_equipment_to(
+            equipment_path,
+            destination_xy,
+            requested_seconds=seconds,
         )
+        track_animation = drive_result.get("track_animation_prim_path")
         if track_animation:
-            animation_paths.append(track_animation)
-        # Bounds read-back is intentionally used while moving, so 20 Hz keeps
-        # the GUI smooth without recooking the full excavator bounds 60 times/s.
-        steps = max(1, min(180, round(seconds * 20)))
-        start = [equipment_start[axis] for axis in ("x", "y", "z")]
-        for index in range(1, steps + 1):
-            ratio = index / steps
-            current = [
-                start[axis] + (destination[axis] - start[axis]) * ratio
-                for axis in range(3)
-            ]
-            self._set_world_translation(equipment, current)
-            if self._update_callback:
-                self._update_callback()
+            animation_paths.append(str(track_animation))
 
-        dig_animation = self._play_skeletal_animation(
-            equipment,
-            "ArmDig",
-            duration_seconds=seconds,
+        facing_result = self.face_equipment_toward(
+            equipment_path,
+            list(approach_plan["target_xy"]),
         )
-        if dig_animation:
-            animation_paths.append(dig_animation)
-        target.SetActive(False)
-        if self._update_callback:
-            for _ in range(5):
-                self._update_callback()
+        drive_result["facing"] = facing_result
+        drive_result["end_track_pose"] = dict(facing_result["end_track_pose"])
+        drive_result["root_end_position"] = list(facing_result["root_end_position"])
+        drive_result["root_end_orientation_wxyz"] = list(
+            facing_result["root_end_orientation_wxyz"]
+        )
+
+        self._notify_excavation_prepared(
+            {
+                "equipment_prim_path": equipment_path,
+                "target_prim_path": target_path,
+                "equipment_pose": dict(facing_result["end_track_pose"]),
+                "target_position": dict(target_position),
+                "target_bounds_size": dict(target_size),
+                "approach_plan": dict(approach_plan),
+                "locomotion": dict(drive_result),
+                "facing": dict(facing_result),
+            }
+        )
+
+        animation_phase_seconds = max(0.5, seconds / 3.0)
+        for animation_name, duration in (
+            ("ArmOut", animation_phase_seconds),
+            ("ArmDig", max(0.75, seconds)),
+            ("ArmInDig", animation_phase_seconds),
+        ):
+            animation_path = self._play_skeletal_animation(
+                equipment,
+                animation_name,
+                duration_seconds=duration,
+            )
+            if animation_path:
+                animation_paths.append(animation_path)
+        terrain_deformation = self._deform_diggable_mesh(target)
+        target_removed = not bool(terrain_deformation.get("available"))
+        if target_removed:
+            # Compatibility fallback for an old non-Mesh diggable target.
+            target.SetActive(False)
+
         dump_animation = self._play_skeletal_animation(
             equipment,
             "ArmDump",
-            duration_seconds=seconds,
+            duration_seconds=max(0.75, animation_phase_seconds),
         )
         if dump_animation:
             animation_paths.append(dump_animation)
-        equipment_end, _ = self._world_bounds(equipment)
+
+        moved_soil = None
+        if terrain_deformation.get("available"):
+            moved_soil = self._create_moved_soil_pile(
+                target=target,
+                target_size=target_size,
+                equipment_position=dict(drive_result["end_track_pose"]),
+                approach_plan=approach_plan,
+                removed_volume_m3=float(
+                    terrain_deformation.get("removed_volume_m3") or 0.0
+                ),
+            )
+
+        # Removing a supporting soil Prim does not automatically wake a rigid
+        # body that PhysX has put to sleep.  Wake it with a tiny downward
+        # velocity and continue the live timeline until it reaches the terrain
+        # below instead of leaving the excavator frozen in mid-air.
+        import numpy as np
+        import omni.timeline
+
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        controller = self._rigid_prim_controllers.get(equipment_path)
+        if controller is not None and target_removed:
+            velocity = controller.get_linear_velocity()
+            controller.set_linear_velocity(
+                np.asarray(
+                    [float(velocity[0]), float(velocity[1]), min(-0.05, float(velocity[2]))],
+                    dtype=np.float32,
+                )
+            )
+        settle_limit = max(
+            30,
+            int(os.getenv("SITEGIT_POST_EXCAVATION_SETTLE_FRAMES", "180")),
+        )
+        stable_frames = 0
+        settle_frames = 0
+        if self._update_callback:
+            for settle_frames in range(1, settle_limit + 1):
+                self._update_callback()
+                if controller is None or settle_frames < 30:
+                    continue
+                vertical_speed = abs(float(controller.get_linear_velocity()[2]))
+                stable_frames = stable_frames + 1 if vertical_speed < 0.05 else 0
+                if stable_frames >= 12:
+                    break
+        equipment_end = dict(drive_result["end_track_pose"])
+        post_excavation_drop_m = 0.0
+        if controller is not None:
+            root_after, _ = controller.get_world_pose()
+            root_before = drive_result["root_end_position"]
+            contact_before = drive_result["end_track_pose"]
+            equipment_end = {
+                axis: float(root_after[index])
+                + float(contact_before[axis])
+                - float(root_before[index])
+                for index, axis in enumerate(("x", "y", "z"))
+            }
+            post_excavation_drop_m = max(
+                0.0,
+                float(contact_before["z"]) - float(equipment_end["z"]),
+            )
+            equipment.SetCustomDataByKey("sitegitEquipmentAnchor", dict(equipment_end))
         target_after = self.stage.GetPrimAtPath(target_path)
+        if target_after.IsValid() and target_after.IsActive():
+            target_after_position, target_after_size = self._world_bounds(target_after)
+        else:
+            target_after_position, target_after_size = target_position, target_size
+        map_changes: list[dict[str, Any]] = []
+        if terrain_deformation.get("available"):
+            map_changes.append(
+                {
+                    "action": "upsert",
+                    "type": "deformed_soil",
+                    "label": str(
+                        target.GetCustomDataByKey("sitegitDiggableId")
+                        or target.GetName()
+                    ),
+                    "color": str(
+                        target.GetCustomDataByKey("sitegitDisplayColor") or "#6B4F2A"
+                    ),
+                    "prim_path": target_path,
+                    "position": target_after_position,
+                    "size": target_after_size,
+                    "geometry": terrain_deformation.get("geometry"),
+                }
+            )
+            if moved_soil:
+                map_changes.append(
+                    {
+                        "action": "upsert",
+                        "type": "soil_deposit",
+                        "label": "굴착 이동 토사",
+                        "color": str(
+                            target.GetCustomDataByKey("sitegitDisplayColor") or "#6B4F2A"
+                        ),
+                        "prim_path": moved_soil["prim_path"],
+                        "position": moved_soil["position"],
+                        "size": moved_soil["size"],
+                        "geometry": moved_soil.get("geometry"),
+                    }
+                )
+        else:
+            map_changes.append(
+                {
+                    "action": "remove",
+                    "type": "removed_prim",
+                    "label": str(target.GetName()),
+                    "prim_path": target_path,
+                    "position": target_position,
+                    "size": target_size,
+                }
+            )
         return {
             "operation": "excavate_prim",
             "equipment_prim_path": equipment_path,
@@ -384,14 +1496,24 @@ class IsaacBridge:
             "equipment_bounds_size": equipment_size,
             "target_position": target_position,
             "target_bounds_size": target_size,
+            "target_after_position": target_after_position,
+            "target_after_bounds_size": target_after_size,
             "target_active_before": True,
             "target_active_after": bool(target_after.IsActive()) if target_after.IsValid() else False,
+            "terrain_deformation": terrain_deformation,
+            "moved_soil": moved_soil,
+            "map_changes": map_changes,
             "simulator": "isaac-sim",
             "source": "stage-readback",
             "animation": (
                 "authored-excavator-clips" if animation_paths else "equipment-root-approach"
             ),
             "animation_prim_paths": animation_paths,
+            "approach_plan": approach_plan,
+            "facing": facing_result,
+            "locomotion": drive_result,
+            "post_excavation_settle_frames": int(settle_frames),
+            "post_excavation_drop_m": float(post_excavation_drop_m),
         }
 
 

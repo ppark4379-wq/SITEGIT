@@ -400,9 +400,24 @@ python isaac_adapter/mock_adapter.py
 ⑥ 맵      승인된 결과만 렌더링
 ```
 
+실제 Isaac Runner는 각 작업 완료 Stage를 pending USD로 자동 저장합니다. 관리자가
+승인하면 해당 USD가 `main` Branch의 새 HEAD가 되고, 반려하면 기존 HEAD가 유지됩니다.
+Isaac Sim을 껐다 다시 실행해도 최신 승인 Stage를 자동으로 Checkout하므로 이전 작업이
+누적된 상태에서 다음 Work Package를 수행합니다.
+
+```text
+isaac/pending/<project>/main/.../stage.usda       # 승인 전 후보
+isaac/branches/<project>/main/commits/<id>/stage.usda
+isaac/branches/<project>/main/head.json           # 다음 실행이 여는 Stage
+```
+
+기본값은 `SITEGIT_BRANCH=main`, `SITEGIT_RESTORE_BRANCH_HEAD=true`입니다. 승인 대기
+중에는 다음 지시를 실행하지 않으며, 반려 시 Runner가 종료되므로 같은 명령으로 다시
+실행해 승인 HEAD 상태를 복원합니다.
+
 **⑤를 통과하지 않은 결과는 맵에 나타나지 않습니다.** 메인 맵 왼쪽의 Work Package
 패널은 실행 중인 Isaac Stage가 보고한 장비 Prim과 `sitegitDiggable=true`가 지정된
-독립 토사 Mesh Prim만 보여줍니다. Mud Map의 `Object_*`는 재질별 대형 메시 묶음이라
+독립 토사 Mesh Prim만 보여줍니다. Demolition 현장의 사진측량 Mesh는 재질별 대형 묶음이라
 굴착 대상으로 사용하지 않습니다.
 LLM이 임의의 Prim 경로를 만들 수 없으며, Backend가 최신 inventory와 정확히 일치하는
 경로만 `excavate_prim` 지시로 발행합니다.
@@ -419,20 +434,26 @@ E:\isaacsim\python.bat E:\SITEGIT\isaac_adapter\isaac_runner.py
 
 두 러너는 같은 지시를 두고 경쟁하므로 동시에 켜지 마세요. Commit의 `result.simulator`가 `isaac-sim`이면 Isaac Stage에서 실제로 읽어온 값이고, `simulated-cube-bridge`면 지시값을 되돌린 것뿐입니다.
 
-메인 맵 왼쪽 **Work Package** 패널에서 지시와 Commit을 확인합니다. 증거 버튼으로
-작업 전·후 Viewport 이미지, Stage 상태, LiDAR PLY를 검토하고 승인합니다. 승인 전에는
-맵이 바뀌지 않으며, 승인 후에는 실제 Target Prim의 Stage bounds가 브라우저 지형에서
-반영됩니다. `/World/Diggable` 아래의 독립 토사 Prim은 정적 Mud Map을 잘라내지 않고,
-웹의 토사 overlay가 승인 후 사라지는 방식으로 반영됩니다.
+Manager Action의 **Work Package** 목록에서 지시와 Commit을 확인합니다. 증거 버튼으로
+작업 전·후 장비 장착 카메라 이미지, Stage 상태, LiDAR PLY, IMU 상태, 장비 Pose, 작업 시간과
+형상 변화량을 검토하고 승인합니다. 승인 전에는
+맵이 바뀌지 않습니다. 승인하면 Commit의 실제 변경 삼각형 Mesh를 기준 맵 위에 Merge하고,
+반려하면 공식 맵은 유지한 채 반려 사유와 변경 범위를 Constraint 화면의 Conflict로
+기록합니다. `/World/Diggable` 아래 독립 토사는 굴착 시 삭제하지 않고 Mesh 정점을 깎으며,
+제거한 체적과 동일한 별도 성토 Mesh를 생성합니다. 실시간 Stage inventory는 장비·대상 선택과
+연결 상태에만 쓰고 공식 Work 맵의 형상 원본으로 사용하지 않습니다.
 
-지형 Mesh와 작업 결과는 저장 위치가 다릅니다. 승인 직후에는 Target Prim의 실제
-bounds로 정적 Mesh를 잘라 결과를 표시합니다. 구멍의 새 단면까지 포함한 완전한 지형
-Mesh가 필요하면 Isaac에서 후보 번들을 다시 내보내 `map_publisher.py`로 재게시해야
-합니다. 자세한 내용은 `docs/ISAAC_INTEGRATION.md`를 확인합니다.
+Runner는 작업마다 Evidence Bundle 1.0을 만들고 작업 전·후 장비 장착 카메라 PNG,
+Stage JSON, 장비 Pose JSON과 장착형 3D Raycast LiDAR의 월드 좌표 PLY를 Evidence 폴더에
+저장합니다. 각 시점의 Point Cloud는 동일 XY 높이 격자로 비교하여 절토·성토 체적을
+**추정값**으로 계산합니다. 격자 크기와 최소 높이
+변화는 `SITEGIT_HEIGHT_GRID_CELL_M`, `SITEGIT_MIN_HEIGHT_CHANGE_M`으로 조정합니다.
 
-Runner는 작업 전·후 Viewport PNG와 Stage JSON을 Evidence 폴더에 저장합니다.
-`SITEGIT_LIDAR_POINTS_PRIM`에 실제 `UsdGeom.Points` Prim이 있으면 각 시점의 Point
-Cloud도 PLY로 저장합니다. 센서가 없으면 Evidence에 누락 이유가 명시됩니다.
+`SITEGIT_IMU_PRIM`에 실제 Isaac IMU Prim을 지정하면 해당 센서 프레임을 저장합니다.
+IMU가 없을 때는 Pose를 IMU처럼 위장하지 않고 Evidence에 `미수집`으로 기록합니다.
+센서 완결성은 검토 정보이며 그 자체로 승인/반려를 자동 결정하지 않습니다. 각 Bundle은
+실행 시작·작업 전 수집·실행·작업 후 수집·완료/실패 이벤트와 실제 걸린 시간을 함께
+`work-packages/<instruction-id>/evidence-manifest.json`에 남깁니다.
 
 ### 자연어 실제 Prim 굴착 Work Package
 
@@ -470,28 +491,100 @@ E:\isaacsim\python.bat E:\SITEGIT\isaac_adapter\isaac_runner.py
 
 ```dotenv
 SITEGIT_EQUIPMENT_ASSET=E:\sitegit1\assets\construction_machinery\pbr-excavator-animated\source\Excavator\Excavator.usd
-SITEGIT_EQUIPMENT_POSITION=0,0,0
+SITEGIT_EQUIPMENT_POSITION=-26.5,-30.5,0
+SITEGIT_STAGE_SCENARIO_ID=pipeline-demolition-v12
+SITEGIT_SITE_ASSET=isaac/assets/construction_site_demolition.usdz
+SITEGIT_CREATE_PIPELINE_BACKFILL=true
+SITEGIT_PIPELINE_SOIL_BASECOLOR=E:\SiteGitData\isaac\assets\materials\demolition_soil_tile_diffuse.jpg
+SITEGIT_PIPELINE_SOIL_NORMAL=E:\SiteGitData\isaac\assets\materials\demolition_soil_tile_normal.jpg
+SITEGIT_EQUIPMENT_GROUND_CLEARANCE_M=0.03
 SITEGIT_EQUIPMENT_PRIMS=/World/Equipment/EXC_001,/World/Armature
 SITEGIT_DIGGABLE_ROOTS=/World/Diggable
-SITEGIT_LIDAR_POINTS_PRIM=/World/SiteGitLiveLidarPoints
+SITEGIT_SCENE_OBJECT_ROOTS=/World/SiteGit
+SITEGIT_SENSOR_MOUNT_OFFSET=0,1.64,1.93
+SITEGIT_CAMERA_RESOLUTION=960,540
+SITEGIT_CAMERA_PITCH_DEG=18
+SITEGIT_CAMERA_WARMUP_FRAMES=60
+SITEGIT_LIDAR_COLLISION_ROOTS=/World/Site,/World/Diggable,/World/SiteGit
+SITEGIT_LIDAR_HORIZONTAL_FOV_DEG=120
+SITEGIT_LIDAR_VERTICAL_MIN_DEG=-75
+SITEGIT_LIDAR_VERTICAL_MAX_DEG=15
+SITEGIT_LIDAR_HORIZONTAL_RAYS=81
+SITEGIT_LIDAR_VERTICAL_RAYS=25
+SITEGIT_LIDAR_MIN_RANGE_M=0.2
+SITEGIT_LIDAR_MAX_RANGE_M=20
 SITEGIT_MAX_EXCAVATION_TARGET_SPAN_M=25
-SITEGIT_CREATE_DEMO_SOIL_PILE=true
-SITEGIT_DEMO_SOIL_PILE_PRIM=/World/Diggable/ZoneA_SoilPile_01
-SITEGIT_DEMO_SOIL_PILE_POSITION=-12,12
-SITEGIT_DEMO_SOIL_PILE_SIZE=6,5,2.5
-SITEGIT_DEMO_SOIL_PILE_ZONE=A
+SITEGIT_CREATE_DEMO_SOIL_PILE=false
+SITEGIT_TERRAIN_COLLISION_PROXY=true
+SITEGIT_TERRAIN_COLLISION_RESOLUTION_M=2
+SITEGIT_PIPELINE_HEIGHT_RESOLUTION_M=0.5
+SITEGIT_COLLISION_COOKING_FRAMES=20
 ```
 
-기본 데모 설정은 실제 Mud Map 삼각형에서 `(-12m, 12m)`의 표면 높이를 계산하고,
-그 위에 `6×5×2.5m` 토사 Mesh와 Collision을 생성합니다. 위치와 크기는 위 환경변수로
-바꿀 수 있으며 `--no-demo-soil`로 자동 생성을 끌 수 있습니다. 가로·세로 최대 폭이
-25m를 넘는 Prim은 웹·Backend·승인 Gate·Isaac Adapter 모든 단계에서 거부됩니다.
+The v12 backfill surface uses a 640x512 dirt-only crop from the purchased map's
+original `tex_u2_v2_diffuse.jpg` and `tex_u2_v2_normal.jpg` pair. The crop is
+centred at source UV `(0.38, 0.67)` and contains only nearby compacted soil;
+pixels are neither generated nor colour-corrected. Keeping the crop as a
+standalone texture prevents a flipped texture-V convention from exposing a
+building, road or debris atlas island. Isaac uses an sRGB diffuse connection
+with a Stage-light attenuation multiplier and leaves the normal map
+disconnected. This avoids both the overexposed diffuse+normal result and the
+black converter-specific emissive graph; the browser keeps the unmodified tile.
+The fill is a closed soil volume down
+to the photographed trench floor; only its upper faces use this map-derived
+tile, while buried side and bottom faces use a neutral soil material.
+The route extends to intact ground at both ends and feathers its outside vertex
+bands into the sampled bank height, so the closed volume fills the complete
+excavation without exposing dark end walls or lateral gaps.
+The 2 m PhysX collision proxy remains the fast runtime surface, while a separate
+cached 0.5 m height field is used only when generating the visible backfill
+boundary. This keeps startup fast and aligns the terminal caps to the detailed
+photogrammetry terrain.
+
+Runner가 시작되면 `/World/Equipment/EXC_001/SiteGitSensors`를 굴착기 자식으로
+생성합니다. 이 Mount 아래의 Camera와 PhysX Raycast 3D LiDAR는 장비가 이동하거나
+회전할 때 같이 움직입니다. Work Package 실행 직전과 직후에 각각 장비 시점 PNG와
+월드 좌표 PLY를 저장하므로, 화면을 보기 위한 자유 카메라나 공중 Viewport는 Evidence에
+사용하지 않습니다. Stage에서는 최신 LiDAR 반환점을
+`/World/SiteGitSensors/EXC_001_LidarPoints`에서 확인할 수 있습니다.
+
+기본 Mount 오프셋 `(0, 1.64, 1.93)m`은 `+Y`가 굴착기 전방이고 `+Z`가 위인 현장
+좌표 기준입니다. 실제 장착 위치나 굴착기 전방축이 다르면
+`SITEGIT_SENSOR_MOUNT_OFFSET`과 카메라 pitch/FOV 설정을 조정한 뒤 Runner를 다시
+시작합니다. 현장 Mesh와 `/World/Diggable` 작업 대상에는 Runner가 LiDAR용 정적
+Collision을 자동 적용합니다.
+
+`SITEGIT_EQUIPMENT_POSITION`의 Z는 절대 월드 높이가 아니라 해당 XY 지표면 위 여유
+높이입니다. Runner는 시작 시 굴착기 bounds 바닥을 지표면에 맞추고, 작업 이동 중에도
+매 스텝 아래 방향 PhysX Raycast로 지면을 다시 읽어 Z를 갱신합니다. 현재 에셋은 트랙
+구동용 RigidBody/Articulation 모델이 아니므로 완전한 차량 동역학이 아니라 **지형 추종
+kinematic 이동**이지만, 고정 Z 이동으로 지형을 관통하는 현상은 방지합니다.
+
+기본 관로 시나리오는 `construction_site_demolition.usdz`의 파인 중앙 구간을 따라
+`/World/Diggable/Pipeline/TrenchFill_01`부터 `TrenchFill_08`까지 독립 토사 Mesh와
+Collision을 생성합니다. 각 구간은 실제 지형 높이 캐시에 맞춰 채워지고 현장 색감에 맞춘
+반복형 흙 BaseColor 재질을 공유합니다. 가로·세로 최대 폭이 25m를 넘는 Prim은
+웹·Backend·승인 Gate·Isaac Adapter 모든 단계에서 거부됩니다.
 
 예시 입력은 `선택한 굴착기로 Zone A의 선택한 Prim을 굴착해줘`입니다. Runner는
 장비 루트를 대상 앞으로 이동시키고, 에셋에 포함된 `TrackAnimation` → `ArmDig` →
-`ArmDump` 클립을 실제 Skeleton에 연결해 재생합니다. 정확한 Target Prim을 비활성화한
-뒤 Stage read-back 결과를 Commit합니다. 현재는 독립 토사 Mesh Prim 단위 제거이며, 버킷과
-토사의 연속 물리 변형은 최종 articulation/soil 시나리오에서 연결합니다.
+`ArmDump` 클립을 실제 Skeleton에 연결해 재생합니다. 정확한 Target 토사 Mesh에 굴착
+형상을 만들고 계산된 제거량만큼 옆에 성토 Mesh를 생성한 뒤 Stage read-back 결과를
+Commit합니다. 현재 구현은 독립 Mesh의 결정적 vertex sculpt 방식이며, 입자 기반 토질·버킷
+접촉 해석은 최종 articulation/soil 시나리오에서 이 인터페이스 뒤에 교체할 수 있습니다.
+
+### AI Code Work Package
+
+메인 화면의 **자연어 작업 지시**는 Stage 연결 여부와 관계없이 열립니다. Backend는 로컬
+LLM이 해석한 작업 의도를 최신 Stage inventory와 비교한 뒤, 정확한 Prim 경로만 사용하는
+제한 실행 코드 `execute(ctx)`를 생성합니다. 현재 코드 컨텍스트는 `ctx.excavate(...)`와
+`ctx.move_equipment(...)`를 지원하며 import, 파일 접근, 네트워크 호출, 임의 Python 실행은
+Backend와 Isaac Adapter 양쪽에서 거부합니다.
+
+장비, Zone 토사 또는 실행 기능이 없으면 요청을 삭제하지 않고 `blocked` 상태의 Work
+Package로 저장하며 웹의 Isaac 작업 큐에 부족한 자원을 표시합니다. 모든 조건이 충족되면
+`pending`으로 등록되고 Runner가 생성 코드를 실행한 뒤 기존과 동일한 Evidence → Commit →
+관리자 승인 흐름으로 들어갑니다.
 
 ---
 

@@ -52,6 +52,7 @@ REVIEW_REJECTED = "rejected"
 # 바뀌도록 kind를 문자열로 열어 둡니다.
 KIND_PLACE_CUBE = "place_cube"
 KIND_EXCAVATE_PRIM = "excavate_prim"
+KIND_GENERATED_SCRIPT = "generated_script"
 
 
 class WorkInstruction(Base):

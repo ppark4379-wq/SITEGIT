@@ -63,6 +63,48 @@ class SiteGitClient:
         response.raise_for_status()
         return response.json()
 
+    def list_instructions(
+        self,
+        project_id: str,
+        *,
+        statuses: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List work instructions without mutating their dispatch state."""
+
+        params: list[tuple[str, Any]] = [("project_id", project_id), ("limit", limit)]
+        params.extend(("status", value) for value in (statuses or []))
+        response = self.session.get(
+            f"{self.base_url}/api/v1/isaac/instructions",
+            params=params,
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_commit(self, commit_id: str) -> dict[str, Any]:
+        """Read the manager review status for one pending execution Commit."""
+
+        response = self.session.get(
+            f"{self.base_url}/api/v1/isaac/commits/{commit_id}",
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_branch_head(self, project_id: str, branch: str = "main") -> dict[str, Any] | None:
+        """Return the latest approved Stage snapshot manifest for a branch."""
+
+        response = self.session.get(
+            f"{self.base_url}/api/v1/isaac/branches/{branch}/head",
+            params={"project_id": project_id},
+            timeout=15,
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()
+
     def commit_execution(
         self,
         instruction_id: str,

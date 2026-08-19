@@ -96,7 +96,7 @@ Z-up · meter · XY 중심이 원점 · 지면이 Z = 0
 현장 지형은 기본으로 함께 올라옵니다. 에셋은 대용량이라 Git이 아니라 SSD에 둡니다.
 
 ```text
-SITEGIT_DATA_ROOT/isaac/assets/construction_site_mud.usdz   (302 MB)
+SITEGIT_DATA_ROOT/isaac/assets/construction_site_demolition.usdz   (168 MB)
 ```
 
 ```powershell

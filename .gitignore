@@ -57,3 +57,5 @@ build/
 .DS_Store
 Thumbs.db
 desktop.ini
+.tmp-tests/
+isaac_adapter/assets/demolition_soil_basecolor_v*.png

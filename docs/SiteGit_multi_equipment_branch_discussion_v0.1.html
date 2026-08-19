@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SiteGit 다중 장비 Branch·Commit 운영 구조 논의안 v0.1</title>
+  <style>
+    @page { size: A4; margin: 15mm 15mm 17mm; }
+    * { box-sizing: border-box; }
+    html { background: #dfe8ec; }
+    body { margin: 0; color: #172a35; background: #fff; font-family: "Malgun Gothic", "맑은 고딕", Arial, sans-serif; font-size: 10.3pt; line-height: 1.62; }
+    .page { min-height: 260mm; padding: 0; break-after: page; page-break-after: always; position: relative; }
+    .page:last-child { break-after: auto; page-break-after: auto; }
+    h1, h2, h3, h4, p { margin-top: 0; }
+    h1 { margin-bottom: 7mm; font-size: 28pt; line-height: 1.18; letter-spacing: -1.5px; }
+    h2 { margin: 0 0 5mm; font-size: 19pt; line-height: 1.3; letter-spacing: -0.8px; color: #0c405b; }
+    h3 { margin: 6mm 0 2.5mm; font-size: 12.5pt; color: #0c405b; }
+    h4 { margin: 0 0 1.5mm; font-size: 10.5pt; }
+    p { margin-bottom: 3.2mm; }
+    ul, ol { margin: 2mm 0 4mm; padding-left: 6mm; }
+    li { margin: 1.2mm 0; }
+    code { font-family: Consolas, "Malgun Gothic", monospace; }
+    .cover { display: flex; flex-direction: column; justify-content: space-between; min-height: 260mm; padding: 9mm 8mm 5mm; overflow: hidden; color: #fff; background: linear-gradient(145deg, #061d2a 0%, #0c405b 60%, #087f7a 120%); }
+    .cover::after { content: ""; position: absolute; right: -42mm; bottom: 18mm; width: 125mm; height: 125mm; border: 1px solid rgba(111, 225, 213, .2); border-radius: 50%; box-shadow: 0 0 0 18mm rgba(90, 214, 204, .04), 0 0 0 41mm rgba(90, 214, 204, .035); }
+    .brand { position: relative; z-index: 1; display: flex; align-items: center; gap: 4mm; font-weight: 800; letter-spacing: .5px; }
+    .brand-mark { display: grid; width: 13mm; height: 13mm; place-items: center; border-radius: 4mm; background: #2f7be5; font-size: 13pt; }
+    .brand small { display: block; margin-top: 1mm; color: #83c8ce; font-size: 7pt; letter-spacing: 1.5px; }
+    .cover-main { position: relative; z-index: 1; max-width: 155mm; }
+    .eyebrow { margin-bottom: 4mm; color: #65ddd2; font-size: 8pt; font-weight: 900; letter-spacing: 2.2px; }
+    .cover-subtitle { max-width: 140mm; color: #d4e8ec; font-size: 12pt; line-height: 1.7; }
+    .draft-badge { display: inline-flex; margin-top: 8mm; padding: 2.5mm 4mm; border: 1px solid rgba(255,255,255,.25); border-radius: 20mm; background: rgba(255,255,255,.08); color: #e7f5f6; font-size: 8pt; font-weight: 800; }
+    .cover-meta { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3mm; }
+    .cover-meta div { padding: 4mm; border: 1px solid rgba(255,255,255,.13); border-radius: 3mm; background: rgba(3,22,32,.35); }
+    .cover-meta span, .cover-meta strong { display: block; }
+    .cover-meta span { margin-bottom: 1mm; color: #85bdc5; font-size: 7pt; }
+    .cover-meta strong { font-size: 9pt; }
+    .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8mm; padding-bottom: 4mm; margin-bottom: 6mm; border-bottom: 1px solid #d8e4e9; }
+    .section-number { flex: 0 0 auto; padding: 2mm 3mm; border-radius: 2.5mm; background: #e8f5f3; color: #087f7a; font-size: 8pt; font-weight: 900; letter-spacing: 1px; }
+    .lead { font-size: 12pt; line-height: 1.72; color: #314d5b; }
+    .notice { padding: 4mm 5mm; margin: 5mm 0; border: 1px solid #f0d291; border-left: 4px solid #e2a21c; border-radius: 3mm; background: #fff9e9; }
+    .notice strong { display: block; margin-bottom: 1mm; color: #805600; }
+    .goal-grid, .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
+    .card { padding: 4.5mm; border: 1px solid #d8e4e9; border-radius: 4mm; background: #fbfdfe; break-inside: avoid; }
+    .card .tag { display: inline-block; margin-bottom: 2mm; padding: 1mm 2.2mm; border-radius: 9mm; background: #e7f3f7; color: #0c6680; font-size: 7pt; font-weight: 900; }
+    .card p:last-child { margin-bottom: 0; }
+    .compare { display: grid; grid-template-columns: 1fr 12mm 1fr; align-items: stretch; gap: 3mm; margin: 5mm 0; }
+    .compare > div { padding: 5mm; border-radius: 4mm; }
+    .compare .current { border: 1px solid #e7c7c4; background: #fff5f4; }
+    .compare .proposal { border: 1px solid #b8dfd3; background: #eef9f5; }
+    .compare .arrow { display: grid; padding: 0; place-items: center; color: #168d83; font-size: 20pt; font-weight: 900; }
+    .compare h3 { margin-top: 0; }
+    .diagram { padding: 5mm; margin: 4mm 0 6mm; border-radius: 4mm; color: #d7edf1; background: #071f2c; break-inside: avoid; }
+    .diagram-title { margin-bottom: 3mm; color: #5bd4c9; font-size: 8pt; font-weight: 900; letter-spacing: 1.4px; }
+    .branch-row { display: grid; grid-template-columns: 36mm 1fr; gap: 4mm; align-items: center; margin: 2mm 0; }
+    .branch-label { padding: 2.2mm 3mm; border-radius: 2mm; background: #12394b; font-family: Consolas, monospace; font-size: 8.5pt; font-weight: 800; }
+    .branch-line { position: relative; height: 1px; background: #2b6171; }
+    .branch-line::before, .branch-line::after { content: ""; position: absolute; top: -2mm; width: 4mm; height: 4mm; border-radius: 50%; background: #39c4b5; }
+    .branch-line::before { left: 12%; }.branch-line::after { right: 4%; }
+    .equipment-lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; margin: 4mm 0 2mm 40mm; }
+    .lane { padding: 3mm; border: 1px solid #285264; border-radius: 3mm; background: #0b2a39; }
+    .lane strong { color: #fff; font-size: 8.5pt; }.lane span { display: block; margin-top: 2mm; color: #83b7c1; font-size: 7pt; }
+    .commit-dots { display: flex; gap: 2mm; margin-top: 2.5mm; }.commit-dots i { width: 4mm; height: 4mm; border-radius: 50%; background: #39c4b5; }
+    .flow { display: grid; gap: 2.2mm; counter-reset: flow; }
+    .flow-item { position: relative; display: grid; grid-template-columns: 11mm 1fr 35mm; gap: 4mm; align-items: center; padding: 3.5mm; border: 1px solid #d9e5ea; border-radius: 3mm; background: #fff; break-inside: avoid; }
+    .flow-item::before { counter-increment: flow; content: counter(flow); display: grid; width: 9mm; height: 9mm; place-items: center; border-radius: 50%; background: #0c405b; color: #fff; font-weight: 900; }
+    .flow-item strong, .flow-item small { display: block; }.flow-item small { margin-top: 1mm; color: #6e8793; font-size: 7.5pt; }
+    .flow-state { padding: 1.5mm 2mm; border-radius: 9mm; background: #eaf5f7; color: #0c6680; font-size: 7pt; font-weight: 900; text-align: center; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; margin: 3mm 0 5mm; border: 1px solid #d8e4e9; border-radius: 3mm; overflow: hidden; break-inside: avoid; }
+    th, td { padding: 2.5mm 3mm; border-right: 1px solid #e0e9ed; border-bottom: 1px solid #e0e9ed; vertical-align: top; text-align: left; }
+    th:last-child, td:last-child { border-right: 0; } tr:last-child td { border-bottom: 0; }
+    th { color: #0c405b; background: #edf5f7; font-size: 8pt; }
+    td { font-size: 8pt; }
+    .status { display: inline-block; min-width: 17mm; padding: 1mm 2mm; border-radius: 9mm; font-size: 7pt; font-weight: 900; text-align: center; }
+    .clean { color: #147754; background: #e5f6ed; }.warning { color: #966000; background: #fff3d6; }.conflict { color: #b6413a; background: #fde9e7; }
+    .timeline { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); gap: 3mm; padding-top: 9mm; margin: 5mm 0; }
+    .timeline::before { content: ""; position: absolute; top: 4mm; left: 8%; right: 8%; height: 1.5mm; border-radius: 4mm; background: linear-gradient(90deg,#0c405b,#28b6a9); }
+    .timeline-item { position: relative; padding: 4mm 2.5mm; border: 1px solid #d7e4e8; border-radius: 3mm; background: #fff; text-align: center; }
+    .timeline-item::before { content: ""; position: absolute; top: -7mm; left: 50%; width: 4mm; height: 4mm; margin-left: -2mm; border: 1.5mm solid #fff; border-radius: 50%; background: #169d92; box-shadow: 0 0 0 1px #169d92; }
+    .timeline-item strong { display: block; font-size: 8pt; }.timeline-item small { display: block; margin-top: 1mm; color: #6f8792; font-size: 6.8pt; }
+    .decision-list { display: grid; gap: 2.5mm; }
+    .decision { display: grid; grid-template-columns: 9mm 1fr 57mm; gap: 3mm; align-items: start; padding: 3.5mm; border: 1px solid #dbe6ea; border-radius: 3mm; background: #fff; break-inside: avoid; }
+    .decision > b:first-child { display: grid; width: 8mm; height: 8mm; place-items: center; border-radius: 2mm; background: #0c405b; color: #fff; }
+    .decision strong, .decision small { display: block; }.decision small { margin-top: 1mm; color: #6f8792; font-size: 7.5pt; }
+    .recommend { padding: 2.5mm 3mm; border-radius: 2mm; background: #eaf7f3; color: #176e62; font-size: 7.5pt; font-weight: 800; }
+    .roadmap { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin-top: 4mm; }
+    .phase { min-height: 46mm; padding: 4mm; border-top: 3px solid #159f96; border-radius: 2mm 2mm 4mm 4mm; background: #f5fafb; }
+    .phase span { color: #159f96; font-size: 7pt; font-weight: 900; }.phase h4 { margin-top: 2mm; }.phase ul { padding-left: 4mm; font-size: 7.5pt; }
+    .footer { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; padding-top: 3mm; border-top: 1px solid #e0e8ec; color: #8499a3; font-size: 7pt; }
+    .final-box { padding: 7mm; margin-top: 5mm; border-radius: 5mm; color: #fff; background: linear-gradient(135deg,#0c405b,#087f7a); }
+    .final-box h3 { margin-top: 0; color: #fff; }.final-box p:last-child { margin-bottom: 0; }
+    @media print {
+      body { zoom: .78; }
+      .page, .cover { min-height: 332mm; }
+    }
+  </style>
+</head>
+<body>
+  <section class="page cover">
+    <div class="brand"><span class="brand-mark">SG</span><div>SiteGit<small>FIELD VERSION CONTROL</small></div></div>
+    <div class="cover-main">
+      <div class="eyebrow">TEAM DISCUSSION DRAFT · v0.1</div>
+      <h1>다중 건설장비 작업을 위한<br>Branch·Commit·Merge 운영 구조</h1>
+      <p class="cover-subtitle">여러 굴착기가 동일 공정을 나누어 수행하고, 장비별 작업 Commit을 센서 Evidence로 검증한 뒤 하나의 작업 Branch로 통합하여 공식 현장 상태인 Main에 반영하는 구조에 대한 팀 논의안</p>
+      <span class="draft-badge">구현 확정안 아님 · 팀 합의 후 계약과 데이터 모델 확정</span>
+    </div>
+    <div class="cover-meta">
+      <div><span>문서 목적</span><strong>구조 합의 및 구현 범위 결정</strong></div>
+      <div><span>대상</span><strong>Backend · Frontend · Isaac Adapter</strong></div>
+      <div><span>작성일</span><strong>2026.08.18</strong></div>
+    </div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div><h2>1. 논의 배경과 공통 전제</h2><p class="lead">SiteGit의 핵심은 작업 결과를 바로 공식 현장 상태로 덮어쓰지 않고, 검증 가능한 Commit으로 남긴 뒤 관리자가 승인한 결과만 Main에 Merge하는 것이다.</p></div><span class="section-number">01 · CONTEXT</span></div>
+    <div class="notice"><strong>데이터 전제</strong>현재 화면에 표시된 사상구 정비사업 목표량·잔여량·진척률은 UI 확인을 위한 임시값이다. 실제 데이터 계약과 산정 방법은 추후 교체하며, 이번 논의에서는 작업 Version 구조와 승인 흐름에 집중한다.</div>
+    <div class="goal-grid">
+      <div class="card"><span class="tag">CURRENT FOUNDATION</span><h3>현재 확보된 기반</h3><ul><li>웹 자연어 Work Package 생성</li><li>Backend 작업지시와 Isaac Adapter 실행</li><li>카메라·LiDAR·IMU 작업 전후 Evidence</li><li>Execution Commit 및 관리자 승인·반려</li><li>승인된 Commit만 공식 웹 맵에 반영</li></ul></div>
+      <div class="card"><span class="tag">CURRENT LIMIT</span><h3>현재 구조의 한계</h3><ul><li>장비 한 대의 Commit이 곧바로 Main 승인 대상</li><li>동일 공정을 여러 장비가 나누는 개념이 없음</li><li>장비별 부분 작업량과 공간 중첩 검증 부족</li><li>작업 단계별 Branch와 최종 통합 Merge가 없음</li><li>Commit 기준 현장 타임라인 재생 기능이 없음</li></ul></div>
+    </div>
+    <div class="compare">
+      <div class="current"><h3>현재</h3><p><b>Work Instruction → 장비 실행 → Commit → 관리자 승인 → Main</b></p><p>단일 장비 데모에는 적합하지만 다중 장비 협업과 공정 단위 인수에는 부족하다.</p></div>
+      <div class="arrow">→</div>
+      <div class="proposal"><h3>제안</h3><p><b>Task Branch → 장비별 Commit → 통합 검증 → Branch 승인 → Main</b></p><p>장비별 책임과 Evidence를 보존하면서 공정 전체를 하나의 결과로 인수한다.</p></div>
+    </div>
+    <h3>이번 구조가 해결해야 하는 질문</h3>
+    <ol><li>같은 구역을 여러 굴착기가 작업할 때 각 결과를 어떻게 구분하고 합칠 것인가?</li><li>각 장비 Commit은 언제 Clean, Warning, Conflict인가?</li><li>공정 전체가 어느 상태일 때 Main에 Merge할 수 있는가?</li><li>굴착·관로 설치·되메우기처럼 순서가 있는 공정을 어떻게 Version으로 연결할 것인가?</li></ol>
+    <div class="footer"><span>SiteGit · 다중 장비 Branch/Commit 논의안 v0.1</span><span>팀 논의용</span></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div><h2>2. 제안하는 Branch 계층</h2><p class="lead">Main은 공식 승인 현장 상태이며, 공정 단위 Task Branch 아래에서 장비별 실행 흐름이 독립적인 Commit을 생성한다.</p></div><span class="section-number">02 · BRANCH</span></div>
+    <div class="diagram">
+      <div class="diagram-title">CONCEPTUAL BRANCH GRAPH</div>
+      <div class="branch-row"><div class="branch-label">main</div><div class="branch-line"></div></div>
+      <div class="branch-row"><div class="branch-label">task/zone-c-excavation</div><div class="branch-line"></div></div>
+      <div class="equipment-lanes">
+        <div class="lane"><strong>equipment/EXC-001</strong><span>20㎥ · 15㎥</span><div class="commit-dots"><i></i><i></i></div></div>
+        <div class="lane"><strong>equipment/EXC-002</strong><span>18㎥ · 22㎥</span><div class="commit-dots"><i></i><i></i></div></div>
+        <div class="lane"><strong>equipment/EXC-003</strong><span>25㎥</span><div class="commit-dots"><i></i></div></div>
+      </div>
+      <div class="branch-row"><div class="branch-label">task merge commit</div><div class="branch-line"></div></div>
+      <div class="branch-row"><div class="branch-label">main merge</div><div class="branch-line"></div></div>
+    </div>
+    <div class="card-grid">
+      <div class="card"><span class="tag">MAIN</span><h3>공식 현장 상태</h3><p>관리자가 최종 인수한 작업만 존재한다. 웹의 기본 3D 맵과 공식 타임라인은 Main을 기준으로 렌더링한다.</p></div>
+      <div class="card"><span class="tag">TASK BRANCH</span><h3>공정 단위 변경 집합</h3><p>예: Zone C 토사 굴착. Work Package 목표, 공간 경계, 허용오차, 총작업량과 완료 조건을 소유한다.</p></div>
+      <div class="card"><span class="tag">EQUIPMENT LANE</span><h3>장비별 실행 흐름</h3><p>각 굴착기가 생성한 Commit을 장비 ID별로 묶어 보여주는 실행 단위다. 실제 Git 구현에서는 별도 Branch ref 또는 Commit metadata로 표현할 수 있다.</p></div>
+      <div class="card"><span class="tag">TASK MERGE COMMIT</span><h3>통합 작업 결과</h3><p>모든 장비 Commit을 합성하고 충돌을 해소한 공정 결과다. 관리자는 이 통합 Diff와 Evidence를 보고 Main Merge를 결정한다.</p></div>
+    </div>
+    <div class="notice"><strong>용어 주의</strong>“Branch 안의 Branch”는 사용자 화면의 계층 표현이다. 저장 계층에서는 모든 Commit을 하나의 DAG로 관리하고 <code>task_branch_id</code>, <code>equipment_id</code>, <code>parent_commit_ids</code>로 관계를 표현할 수 있다.</div>
+    <h3>제안 기본 원칙</h3>
+    <ul><li>장비 Commit은 Main을 직접 변경하지 않는다.</li><li>장비 Commit 검토와 Task Branch 최종 Merge 검토는 서로 다른 단계다.</li><li>반려된 Commit은 삭제하지 않고 해당 장비 흐름의 Conflict로 보존한다.</li><li>Task Branch가 완료되기 전에도 통합 예상 Diff는 미리 볼 수 있어야 한다.</li></ul>
+    <div class="footer"><span>SiteGit · 다중 장비 Branch/Commit 논의안 v0.1</span><span>Branch model</span></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div><h2>3. 다중 장비 작업 폐루프</h2><p class="lead">작업 발행부터 Main Merge까지 모든 단계는 같은 Work Package·Branch·Commit 식별자로 추적한다.</p></div><span class="section-number">03 · WORKFLOW</span></div>
+    <div class="flow">
+      <div class="flow-item"><div><strong>공정 Work Package 생성</strong><small>관리자가 Zone, 작업 종류, 목표 형상·물량, 완료 조건을 입력</small></div><span class="flow-state">DRAFT</span></div>
+      <div class="flow-item"><div><strong>Task Branch 생성</strong><small>Main의 특정 Commit을 기준점으로 <code>task/zone-c-excavation</code> 생성</small></div><span class="flow-state">PLANNED</span></div>
+      <div class="flow-item"><div><strong>장비·공간·물량 배분</strong><small>EXC-001/002/003에 서로 다른 작업 Polygon과 목표량 할당</small></div><span class="flow-state">ASSIGNED</span></div>
+      <div class="flow-item"><div><strong>Isaac Sim 실행</strong><small>각 장비가 할당 구역에서 작업하고 Stage 결과를 실제로 읽음</small></div><span class="flow-state">EXECUTING</span></div>
+      <div class="flow-item"><div><strong>장비별 Execution Commit</strong><small>카메라·LiDAR·IMU, 수행시간, 작업량, Height Map·Mesh Diff 저장</small></div><span class="flow-state">COMMITTED</span></div>
+      <div class="flow-item"><div><strong>Commit 검증·Branch 통합</strong><small>공간 중첩, 물량 중복, 경계 초과, Evidence 누락을 판정</small></div><span class="flow-state">INTEGRATING</span></div>
+      <div class="flow-item"><div><strong>Task Merge Request</strong><small>전체 장비 결과를 합친 통합 지형 Diff와 공정 완료 조건 생성</small></div><span class="flow-state">REVIEW</span></div>
+      <div class="flow-item"><div><strong>관리자 Main Merge</strong><small>승인 시 공식 맵·Version Timeline 갱신, 반려 시 Conflict 유지</small></div><span class="flow-state">MERGED</span></div>
+    </div>
+    <h3>Commit 하나에 포함할 최소 정보</h3>
+    <table><thead><tr><th>구분</th><th>필수 데이터</th><th>저장 목적</th></tr></thead><tbody>
+      <tr><td>식별</td><td>Task Branch, Work Package, 장비, Parent Commit</td><td>책임과 계보 추적</td></tr>
+      <tr><td>작업</td><td>작업 종류, 구역, 시간, 수행량, 장비·Tool Pose</td><td>실행 내용 검증</td></tr>
+      <tr><td>지형</td><td>작업 전후 Height Map, Point Cloud, Mesh/voxel delta</td><td>절토·성토와 형상 Diff</td></tr>
+      <tr><td>센서</td><td>카메라, LiDAR, IMU, 타임스탬프, 품질 지표</td><td>관리자 Evidence</td></tr>
+      <tr><td>판정</td><td>Clean/Warning/Conflict, 규칙 결과, 검토자 의견</td><td>Merge Gate와 감사 이력</td></tr>
+    </tbody></table>
+    <div class="notice"><strong>현재 데모 범위</strong>Isaac Sim 재시작 시 Stage가 원본 USD로 돌아가는 것은 현재 단계에서 허용한다. Version Timeline과 공식 맵은 저장된 Commit 자료로 구성하며, 승인 상태를 Isaac Stage에 재적용하는 기능은 실제 상태 저장 단계에서 별도로 논의한다.</div>
+    <div class="footer"><span>SiteGit · 다중 장비 Branch/Commit 논의안 v0.1</span><span>Execution loop</span></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div><h2>4. Merge 및 Conflict 판정 제안</h2><p class="lead">개별 Commit이 정상이어도 여러 장비 결과를 합쳤을 때 충돌할 수 있으므로, 장비 Commit Gate와 Task Branch Gate를 분리한다.</p></div><span class="section-number">04 · MERGE</span></div>
+    <table><thead><tr><th>판정</th><th>예시 조건</th><th>시스템 동작</th></tr></thead><tbody>
+      <tr><td><span class="status clean">Clean</span></td><td>할당 Polygon 내부, 다른 장비 결과와 비중첩, 필수 Evidence 완비, 목표 오차 이내</td><td>Task Branch에 자동 통합 가능</td></tr>
+      <tr><td><span class="status warning">Warning</span></td><td>경계 인접, 일부 센서 품질 저하, 작업량 편차, 연결부 Height 차이</td><td>통합 후보로 유지하고 관리자 확인 요청</td></tr>
+      <tr><td><span class="status conflict">Conflict</span></td><td>동일 토사 중복 계산, 공간 중첩, 계획 경계 초과, 공정 순서 위반, Evidence 필수값 누락</td><td>Branch Merge 차단, 재작업 Commit 요구</td></tr>
+    </tbody></table>
+    <h3>필수 Merge 검사 항목</h3>
+    <div class="card-grid">
+      <div class="card"><h4>① 공간 충돌</h4><p>장비별 작업 Polygon, 안전반경, 작업 후 지형 영역이 겹치는지 검사한다.</p></div>
+      <div class="card"><h4>② 물량 중복</h4><p>같은 voxel/height cell의 절토량이 장비별 Commit에서 중복 집계되는지 확인한다.</p></div>
+      <div class="card"><h4>③ 형상 연속성</h4><p>장비 구역 경계에서 높이·경사·관로 연결부가 허용오차 내인지 확인한다.</p></div>
+      <div class="card"><h4>④ 공정 의존성</h4><p>굴착 완료 전 관로 설치, 관로 승인 전 되메우기 같은 순서 위반을 차단한다.</p></div>
+      <div class="card"><h4>⑤ Evidence 품질</h4><p>카메라 전후, LiDAR Point Cloud, IMU, 시간 순서와 좌표계 일치 여부를 검사한다.</p></div>
+      <div class="card"><h4>⑥ 목표 충족</h4><p>Task Branch 전체 작업량과 최종 형상이 Work Package의 완료 조건을 만족하는지 검사한다.</p></div>
+    </div>
+    <h3>권장 2단계 승인</h3>
+    <table><thead><tr><th>단계</th><th>검토 대상</th><th>결과</th></tr></thead><tbody>
+      <tr><td>장비 Commit 검토</td><td>해당 장비의 작업 전후 Evidence와 부분 Diff</td><td>Task Branch 통합 / 재작업 / Conflict</td></tr>
+      <tr><td>Task Branch 검토</td><td>모든 장비를 합친 최종 지형, 총작업량, 통합 Conflict</td><td>Main Merge / Branch 반려</td></tr>
+    </tbody></table>
+    <div class="notice"><strong>구현 원칙</strong>판정 규칙은 코드에 고정하지 않고 프로젝트별 정책으로 분리한다. 같은 공간 중첩도 측량 오차인지 실제 충돌인지에 따라 기준이 달라질 수 있으므로 허용오차와 필수 센서 목록은 Work Package 또는 Merge Rule Version에 귀속한다.</div>
+    <div class="footer"><span>SiteGit · 다중 장비 Branch/Commit 논의안 v0.1</span><span>Merge policy</span></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div><h2>5. 공식 맵 Timeline과 Diff UX</h2><p class="lead">Main에 Merge된 공정 Branch를 큰 단계로 보여주고, 각 단계 내부에서 장비별 Commit을 세부 이력으로 탐색한다.</p></div><span class="section-number">05 · TIMELINE</span></div>
+    <div class="timeline">
+      <div class="timeline-item"><strong>Baseline</strong><small>원본 현장</small></div>
+      <div class="timeline-item"><strong>토사 굴착</strong><small>Task Merge #1</small></div>
+      <div class="timeline-item"><strong>관로 설치</strong><small>Task Merge #2</small></div>
+      <div class="timeline-item"><strong>되메우기</strong><small>Task Merge #3</small></div>
+      <div class="timeline-item"><strong>다짐·정지</strong><small>Task Merge #4</small></div>
+    </div>
+    <div class="card-grid">
+      <div class="card"><span class="tag">CURRENT MODE</span><h3>현재 맵</h3><p>Main의 최신 승인 상태를 표시한다. 운영자가 기본으로 보는 화면이다.</p></div>
+      <div class="card"><span class="tag">TIMELINE MODE</span><h3>변화 재생</h3><p>슬라이더를 움직이면 Baseline부터 선택 Commit까지의 변경을 재구성한다.</p></div>
+      <div class="card"><span class="tag">DIFF MODE</span><h3>두 Version 비교</h3><p>기준 Commit과 비교 Commit 사이의 절토·성토·객체 변경만 강조한다.</p></div>
+      <div class="card"><span class="tag">BRANCH MODE</span><h3>승인 전 미리보기</h3><p>Main과 Task Branch의 예상 결과를 비교하지만 공식 맵에는 적용하지 않는다.</p></div>
+    </div>
+    <h3>성능을 위한 저장 전략</h3>
+    <ul><li><b>Baseline + Delta:</b> 각 Commit에는 전체 맵 대신 추가·삭제·이동 Prim과 지형 변화량을 저장한다.</li><li><b>주기적 Snapshot:</b> 일정 Commit 또는 공정 Merge마다 전체 Height Map/Mesh Snapshot을 생성한다.</li><li><b>근접 Snapshot 재생:</b> 슬라이더 이동 시 가장 가까운 Snapshot부터 필요한 Delta만 적용한다.</li><li><b>대용량 Evidence 분리:</b> Point Cloud·이미지·Mesh 파일은 SSD에 저장하고 DB에는 storage key와 metadata만 둔다.</li></ul>
+    <h3>화면에서 Commit 선택 시 보여줄 정보</h3>
+    <table><thead><tr><th>요약</th><th>지형·객체</th><th>작업 Evidence</th><th>판정</th></tr></thead><tbody>
+      <tr><td>Branch, Commit, 장비, 작업자, 시간</td><td>절토·성토량, 변경 영역, 관로·토사 객체</td><td>카메라 전후, LiDAR, IMU, 수행시간</td><td>Clean/Warning/Conflict와 관리자 의견</td></tr>
+    </tbody></table>
+    <div class="notice"><strong>공식 Timeline 규칙</strong>승인 전 장비 Commit은 Main Timeline에 포함하지 않는다. Task Branch가 최종 승인된 시점에 하나의 Main Merge Commit으로 들어가며, 세부 화면에서 포함된 장비 Commit을 펼쳐본다.</div>
+    <div class="footer"><span>SiteGit · 다중 장비 Branch/Commit 논의안 v0.1</span><span>Timeline UX</span></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div><h2>6. 팀에서 결정해야 할 항목</h2><p class="lead">아래 항목을 먼저 합의한 뒤 API 계약과 DB 모델을 확정해야 Frontend, Backend, Isaac Adapter를 병렬 개발할 수 있다.</p></div><span class="section-number">06 · DECISIONS</span></div>
+    <div class="decision-list">
+      <div class="decision"><b>1</b><div><strong>Task Branch의 생성 단위</strong><small>Zone 전체, 공정 단계, 또는 Work Package 하나 중 무엇을 Branch로 볼 것인가?</small></div><div class="recommend">권장: Zone + 공정 단계</div></div>
+      <div class="decision"><b>2</b><div><strong>장비 Commit 생성 주기</strong><small>버킷 1회, 일정 물량, 일정 시간, 작업 세션 종료 중 어느 단위를 사용할 것인가?</small></div><div class="recommend">권장: 의미 있는 작업 Chunk 또는 세션 종료</div></div>
+      <div class="decision"><b>3</b><div><strong>장비 흐름의 저장 방식</strong><small>실제 하위 Branch ref로 만들지, Task Branch 내부 equipment lane metadata로 표현할지 결정</small></div><div class="recommend">권장: 초기에는 lane metadata</div></div>
+      <div class="decision"><b>4</b><div><strong>2단계 승인 권한</strong><small>장비 Commit 통합 승인자와 최종 Main Merge 승인자를 같은 역할로 둘 것인가?</small></div><div class="recommend">권장: 데모는 동일 관리자, 이후 역할 분리</div></div>
+      <div class="decision"><b>5</b><div><strong>지형 Version 표현</strong><small>Height Map, voxel, full mesh, vertex delta 중 공식 Diff와 재생의 기준을 무엇으로 할 것인가?</small></div><div class="recommend">권장: Height Map + Mesh artifact 병행</div></div>
+      <div class="decision"><b>6</b><div><strong>Conflict 허용오차</strong><small>공간 중첩, 높이 차, 작업량 편차, 센서 누락 기준을 프로젝트별로 어떻게 Version화할 것인가?</small></div><div class="recommend">권장: Merge Rule YAML/JSON</div></div>
+      <div class="decision"><b>7</b><div><strong>Main Timeline 표시 단위</strong><small>모든 장비 Commit을 노출할지, Task Merge만 기본 표시하고 세부 펼침을 제공할지 결정</small></div><div class="recommend">권장: Task Merge 기본 + 장비 Commit 펼침</div></div>
+      <div class="decision"><b>8</b><div><strong>Isaac 재시작 상태</strong><small>현 단계처럼 원본 USD로 시작할지, 마지막 Main 상태를 Stage에 복원할지 결정</small></div><div class="recommend">권장: 현재는 초기화, 운영 단계에서 복원</div></div>
+    </div>
+    <h3>논의 시 확인할 예시 시나리오</h3>
+    <div class="final-box"><h3>Zone C 토사 굴착 — 굴착기 3대</h3><p>EXC-001, 002, 003이 서로 다른 작업 영역과 물량을 배정받는다. 각 장비가 1~2개의 Commit을 제출하고, EXC-002의 한 Commit은 EXC-001 영역과 중첩되어 Conflict가 된다. 재작업 Commit으로 충돌을 해소한 뒤 모든 장비 결과를 Task Branch에서 통합하고, 관리자가 통합 Height Map·센서 Evidence를 확인하여 Main에 Merge한다.</p></div>
+    <div class="footer"><span>SiteGit · 다중 장비 Branch/Commit 논의안 v0.1</span><span>Decision checklist</span></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div><h2>7. 단계별 구현 제안</h2><p class="lead">팀 합의 전에 전체 구조를 한 번에 구현하지 않고, 계약 → 다중 장비 Commit → Merge Engine → Timeline 순서로 확장한다.</p></div><span class="section-number">07 · ROADMAP</span></div>
+    <div class="roadmap">
+      <div class="phase"><span>PHASE 1</span><h4>계약·모델</h4><ul><li>Branch/Commit/Merge Request 스키마</li><li>상태 전이</li><li>API 계약 테스트</li></ul></div>
+      <div class="phase"><span>PHASE 2</span><h4>다중 장비</h4><ul><li>장비별 할당 영역</li><li>개별 Evidence Commit</li><li>Task Branch UI</li></ul></div>
+      <div class="phase"><span>PHASE 3</span><h4>Merge Engine</h4><ul><li>공간·물량 충돌</li><li>2단계 승인</li><li>통합 Diff</li></ul></div>
+      <div class="phase"><span>PHASE 4</span><h4>Timeline</h4><ul><li>Snapshot + Delta</li><li>Commit Slider</li><li>Branch Diff</li></ul></div>
+    </div>
+    <h3>현재 코드에서 재사용할 수 있는 요소</h3>
+    <table><thead><tr><th>현재 요소</th><th>확장 방향</th></tr></thead><tbody>
+      <tr><td><code>WorkInstruction</code></td><td>Task Branch와 장비 할당 정보를 참조하도록 확장</td></tr>
+      <tr><td><code>ExecutionCommit</code></td><td>Parent Commit, equipment_id, terrain delta, branch_id 추가</td></tr>
+      <tr><td>카메라·LiDAR·IMU Evidence</td><td>장비 Commit의 필수 Artifact와 품질 Gate로 재사용</td></tr>
+      <tr><td>Trust Gate 승인·반려</td><td>장비 Commit Gate와 Task Merge Gate로 분리</td></tr>
+      <tr><td><code>GET /isaac/map-objects</code></td><td>Main의 선택 Version 또는 Timeline Commit 기준 조회로 확장</td></tr>
+      <tr><td>3D Web Map</td><td>Current/Timeline/Diff/Branch 모드 추가</td></tr>
+    </tbody></table>
+    <h3>팀 합의 후 가장 먼저 만들 산출물</h3>
+    <ol><li><b>상태 전이 문서:</b> Task Branch, Equipment Commit, Merge Request 상태와 허용 전이</li><li><b>JSON Schema:</b> Branch, Commit, Terrain Delta, Merge Evaluation 계약</li><li><b>단일 통합 테스트:</b> 굴착기 2대가 Commit → 한 건 Conflict → 재작업 → Task Merge → Main 반영</li><li><b>UI Wireframe:</b> Branch 목록, 장비 Commit lane, 통합 Diff, Timeline Slider</li></ol>
+    <div class="final-box"><h3>제안 결론</h3><p>SiteGit은 장비 한 대의 작업 기록 시스템이 아니라, 여러 장비가 만든 물리적 변경을 Version으로 통합하고 사람이 Evidence를 근거로 공식 현장 상태에 Merge하는 시스템으로 정의한다. 구현의 핵심은 “장비 Commit은 Main을 직접 바꾸지 않는다”는 불변식을 유지하는 것이다.</p></div>
+    <div class="footer"><span>SiteGit · 다중 장비 Branch/Commit 논의안 v0.1</span><span>End of document</span></div>
+  </section>
+</body>
+</html>

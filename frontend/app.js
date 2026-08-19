@@ -23,12 +23,16 @@ let remoteSaveInFlight = false;
 let remoteSaveTimer = null;
 let remoteSocket = null;
 let remoteCanEdit = true;
+let lastSharedPayloadJson = null;
 let currentUser = null;
 // Isaac 지시·Commit은 DB 테이블이라 공동 state payload에 들어 있지 않습니다.
 // 별도로 받아 두고 대시보드 카드에서만 사용합니다.
 let isaacInstructions = [];
 let aiWorkPackageDraft = null;
-let stageInventory = {connected:false,equipment:[],diggable_targets:[],age_seconds:0};
+let stageInventory = {connected:false,equipment:[],diggable_targets:[],scene_objects:[],age_seconds:0};
+let activeMapLayer = 'work';
+let timelineStepIndex = null;
+let mapTimelineCommitRefs = null;
 
 const DEFAULT_STATE = {
   selectedPage: 'dashboard',
@@ -173,6 +177,27 @@ function mergeDefaults(base, saved){
   });
   return base;
 }
+function sharedStatePayload(){
+  const payload=deepClone(state);
+  // View/navigation state belongs to one browser tab. Broadcasting either
+  // field made every connected user jump to another manager's screen.
+  delete payload.selectedPage;
+  delete payload.selectedWpId;
+  return payload;
+}
+function localViewState(){
+  return {
+    selectedPage:state?.selectedPage||'dashboard',
+    selectedWpId:state?.selectedWpId||'',
+  };
+}
+function restoreLocalView(view){
+  state.selectedPage=view.selectedPage||'dashboard';
+  const workPackages=Array.isArray(state.workPackages)?state.workPackages:[];
+  state.selectedWpId=workPackages.some(item=>item.id===view.selectedWpId)
+    ?view.selectedWpId
+    :(workPackages[0]?.id||'');
+}
 function saveState(){
   safeSetItem(STORAGE_KEY,JSON.stringify(state));
   scheduleRemoteSave();
@@ -199,12 +224,17 @@ function scheduleRemoteSave(){
 }
 async function pushRemoteState(){
   if(remoteSaveInFlight||!remoteReady||remoteApplying||!remoteCanEdit)return;
+  const payload=sharedStatePayload();
+  const payloadJson=JSON.stringify(payload);
+  // renderAll also runs for local-only navigation. Do not create a shared DB
+  // revision or WebSocket event when no actual project data changed.
+  if(payloadJson===lastSharedPayloadJson)return;
   remoteSaveInFlight=true;
   updateSyncIndicator('저장 중','syncing');
   try{
     const response=await apiFetch(`/state/${PROJECT_ID}`,{
       method:'PUT',
-      body:JSON.stringify({payload:state,revision:remoteRevision,source:'web'}),
+      body:JSON.stringify({payload,revision:remoteRevision,source:'web'}),
     });
     if(response.status===403){
       remoteCanEdit=false;
@@ -220,6 +250,7 @@ async function pushRemoteState(){
     if(!response.ok)throw new Error(`SAVE_${response.status}`);
     const data=await response.json();
     remoteRevision=data.revision;
+    lastSharedPayloadJson=payloadJson;
     updateSyncIndicator(`공동 DB · r${remoteRevision}`,'online');
   }catch(error){
     if(error.message!=='AUTH_REQUIRED'){
@@ -231,11 +262,14 @@ async function pushRemoteState(){
   }
 }
 async function pullRemoteState(){
+  const view=localViewState();
   const response=await apiFetch(`/state/${PROJECT_ID}`);
   if(!response.ok)throw new Error(`LOAD_${response.status}`);
   const data=await response.json();
   remoteApplying=true;
   state=mergeDefaults(deepClone(DEFAULT_STATE),data.payload||{});
+  restoreLocalView(view);
+  lastSharedPayloadJson=JSON.stringify(sharedStatePayload());
   remoteRevision=data.revision;
   renderAll();
   remoteApplying=false;
@@ -303,8 +337,8 @@ function won(v){
 }
 function nowTime(){ return new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false}); }
 function esc(s=''){ return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
-function statusText(status){ return ({accepted:'결과 승인',executing:'작업 중',review:'검토 필요',ready:'배포 가능',draft:'초안',correction:'보완 작업','correction-issued':'보완 지시 발행',paused:'일시중지',dispatched:'배포됨','review-ready':'검토 가능','approval-ready':'승인 가능'}[status]||status); }
-function badgeClass(status){ return ({accepted:'accepted',executing:'progress',review:'warning',ready:'info',draft:'neutral',correction:'danger','correction-issued':'warning',paused:'warning',dispatched:'info','review-ready':'info','approval-ready':'ready'}[status]||'neutral'); }
+function statusText(status){ return ({blocked:'자원 대기',accepted:'결과 승인',executing:'작업 중',review:'검토 필요',ready:'배포 가능',draft:'초안',correction:'보완 작업','correction-issued':'보완 지시 발행',paused:'일시중지',dispatched:'배포됨','review-ready':'검토 가능','approval-ready':'승인 가능'}[status]||status); }
+function badgeClass(status){ return ({blocked:'warning',accepted:'accepted',executing:'progress',review:'warning',ready:'info',draft:'neutral',correction:'danger','correction-issued':'warning',paused:'warning',dispatched:'info','review-ready':'info','approval-ready':'ready'}[status]||'neutral'); }
 function sourceBadge(source){
   const s=String(source||'').toUpperCase();
   const cls=s.includes('PUBLIC')?'public':s.includes('MANUFACTURER')?'manufacturer':s.includes('ASSUMED')?'assumed':s.includes('SIMULATED')?'simulated':'user';
@@ -452,6 +486,144 @@ function applyPage(){
   $(`#page-${state.selectedPage}`)?.classList.add('active');
 }
 
+function timelineChangeSummary(instruction,commit){
+  const result=commit?.result||{};
+  const changes=Array.isArray(result.map_changes)?result.map_changes:[];
+  const removed=changes.filter(item=>item?.action==='remove').length;
+  const updated=changes.length-removed;
+  const operation=String(result.operation||instruction?.params?.operation||'').toLowerCase();
+  if(operation.includes('excavat')&&updated)return `흙더미 일부 굴착 · 토사 형상 ${updated}건 이동·생성`;
+  if(operation.includes('excavat')||removed)return `굴착 대상 ${Math.max(removed,1)}건 제거`;
+  if(changes.length)return `승인된 현장 형상 ${changes.length}건 변경`;
+  if(instruction?.kind==='place_cube')return '승인된 작업 객체 1건 배치';
+  return '승인된 Isaac 작업 결과 반영';
+}
+function approvedTimelineSteps(){
+  const commits=[];
+  isaacInstructions.forEach(instruction=>{
+    (instruction.commits||[]).forEach(commit=>{
+      if(commit.review_status!=='approved'||!commit.reviewed_at)return;
+      const params=instruction.params||{};
+      const result=commit.result||{};
+      const operation=String(result.operation||params.operation||'').toLowerCase();
+      const fallbackTitle=params.summary||params.target_name||params.label||instruction.note||instruction.kind;
+      const targetPath=result.target_prim_path||params.target_prim_path||null;
+      const changePaths=(result.map_changes||[])
+        .map(item=>item?.prim_path)
+        .filter(Boolean);
+      if(result.prim_path)changePaths.push(result.prim_path);
+      const beforeObjects=operation.includes('excavat')&&result.target_active_before!==false&&
+        targetPath&&result.target_position&&result.target_bounds_size
+        ?[{
+          path:targetPath,
+          name:params.target_name||params.label||'작업 전 흙더미',
+          world_position:result.target_position,
+          bounds_size:result.target_bounds_size,
+          display_color:params.color||'#76502d',
+          active:true,
+        }]
+        :[];
+      commits.push({
+        key:commit.id,
+        commitId:commit.id,
+        instructionId:instruction.id,
+        approvedAt:commit.reviewed_at,
+        approvedBy:commit.reviewed_by||'-',
+        title:operation.includes('excavat')&&Array.isArray(result.map_changes)&&result.map_changes.length>1
+          ?'흙더미 일부 굴착 및 토사 이동'
+          :fallbackTitle,
+        detail:timelineChangeSummary(instruction,commit),
+        beforeObjects,
+        changePaths:[...new Set(changePaths)],
+      });
+    });
+  });
+  const visibleCommits=Array.isArray(mapTimelineCommitRefs)
+    ?mapTimelineCommitRefs.map(ref=>commits.find(item=>
+      ref.commitId===item.commitId||(
+        ref.instructionId===item.instructionId&&ref.approvedAt===item.approvedAt
+      )
+    )||{
+      key:ref.commitId||`${ref.instructionId}@${ref.approvedAt}`,
+      commitId:ref.commitId,
+      instructionId:ref.instructionId,
+      approvedAt:ref.approvedAt,
+      approvedBy:'-',
+      title:`승인 Commit ${(ref.commitId||'').slice(0,8)}`,
+      detail:'승인된 현장 작업 결과 반영',
+      beforeObjects:[],
+      changePaths:[],
+    })
+    :commits;
+  visibleCommits.sort((a,b)=>new Date(a.approvedAt)-new Date(b.approvedAt)||a.commitId.localeCompare(b.commitId));
+  return [{
+    key:'baseline',commitId:null,instructionId:null,approvedAt:null,approvedBy:'SiteGit',
+    title:'초기 현장 Baseline',detail:'승인된 관로 작업을 적용하기 전 demolition 현장',
+  },...visibleCommits];
+}
+function timelineBaselineObjects(steps=approvedTimelineSteps()){
+  const objectsByPath=new Map();
+  const changedPaths=new Set();
+  steps.slice(1).forEach(step=>{
+    (step.beforeObjects||[]).forEach(item=>{
+      if(item?.path&&!changedPaths.has(item.path)&&!objectsByPath.has(item.path)){
+        objectsByPath.set(item.path,item);
+      }
+    });
+    (step.changePaths||[]).forEach(path=>changedPaths.add(path));
+  });
+  return [...objectsByPath.values()];
+}
+function normalizedTimelineIndex(steps=approvedTimelineSteps()){
+  if(timelineStepIndex===null||timelineStepIndex<0||timelineStepIndex>=steps.length){
+    timelineStepIndex=Math.max(0,steps.length-1);
+  }
+  return timelineStepIndex;
+}
+function formatTimelineTime(value){
+  if(!value)return '작업 전';
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?'-':date.toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+}
+function timelineControlMarkup(){
+  const steps=approvedTimelineSteps();
+  const index=normalizedTimelineIndex(steps);
+  const step=steps[index];
+  const progress=steps.length<=1?0:(index/(steps.length-1))*100;
+  return `<div class="timeline-head">
+    <div><span>APPROVED COMMIT TIMELINE</span><strong>${esc(step.title)}</strong><small>${esc(step.detail)}</small></div>
+    <div class="timeline-position"><b>${index}</b><span>/ ${Math.max(0,steps.length-1)} Commit</span></div>
+  </div>
+  <div class="timeline-range-row">
+    <span class="timeline-end-label">Baseline</span>
+    <div class="timeline-range-wrap" style="--timeline-progress:${progress}%">
+      <input type="range" min="0" max="${Math.max(0,steps.length-1)}" step="1" value="${index}" data-timeline-range aria-label="승인 Commit 타임라인">
+      <div class="timeline-ticks">${steps.map((item,itemIndex)=>`<i class="${itemIndex<=index?'passed':''} ${itemIndex===index?'current':''}" style="left:${steps.length<=1?0:(itemIndex/(steps.length-1))*100}%" title="${esc(item.title)}"></i>`).join('')}</div>
+    </div>
+    <span class="timeline-end-label">현재</span>
+  </div>
+  <div class="timeline-meta"><span>${step.commitId?`Commit ${esc(step.commitId.slice(0,8))}`:'BASELINE'}</span><span>${esc(formatTimelineTime(step.approvedAt))}</span><span>${esc(step.approvedBy)} 승인</span></div>`;
+}
+function mapInfoMarkup(wp){
+  if(activeMapLayer==='timeline'){
+    const steps=approvedTimelineSteps();
+    const index=normalizedTimelineIndex(steps);
+    const step=steps[index];
+    return `<div class="map-zone-title">Timeline · ${index}/${Math.max(0,steps.length-1)}</div>
+      <div class="map-zone-sub">${esc(step.title)}</div>
+      <div class="mini-progress"><span style="width:${steps.length<=1?0:(index/(steps.length-1))*100}%"></span></div>
+      <div class="map-stat-row"><span>시점</span><b>${esc(formatTimelineTime(step.approvedAt))}</b></div>
+      <div class="map-stat-row"><span>Version</span><b>${step.commitId?esc(step.commitId.slice(0,8)):'Baseline'}</b></div>
+      <div class="map-stat-row"><span>상태</span><b>승인 이력 재생</b></div>`;
+  }
+  return `<div class="map-zone-title">Zone ${esc(wp.zone)} · ${esc(wp.id)}</div>
+    <div class="map-zone-sub">${esc(wp.name)}</div>
+    <div class="mini-progress"><span style="width:${wp.qualified}%"></span></div>
+    <div class="map-stat-row"><span>Raw / Qualified</span><b>${wp.raw}% / ${wp.qualified}%</b></div>
+    <div class="map-stat-row"><span>잔여량</span><b>${num(wp.remaining)}㎥</b></div>
+    <div class="map-stat-row"><span>상태</span><b>${statusText(wp.status)}</b></div>`;
+}
+
 function renderDashboard(){
   const r=readinessResult();
   const qualified=totalQualified();
@@ -498,20 +670,14 @@ function renderDashboard(){
     <div class="dashboard-main">
       <article class="card map-card">
         <div class="card-header">
-          <div><h2>Site Work Map</h2><p>게시된 지형 Mesh 위에 관리자가 승인한 Isaac 작업 결과를 얹어 보여줍니다.</p></div>
-          <div class="map-toolbar"><div class="segmented"><button class="active">Work</button><button>Evidence</button><button>Constraint</button></div><button class="ghost-button button-sm" data-action="fit-map">화면 맞춤</button></div>
+          <div><h2>Site Work Map</h2><p>공식 기준 지형과 관리자 승인으로 Merge된 작업 결과만 보여줍니다.</p></div>
+          <div class="map-toolbar"><div class="segmented"><button class="${activeMapLayer==='work'?'active':''}" data-map-layer="work">Work</button><button class="${activeMapLayer==='zone'?'active':''}" data-map-layer="zone">Zone</button><button class="${activeMapLayer==='evidence'?'active':''}" data-map-layer="evidence">Evidence</button><button class="${activeMapLayer==='constraint'?'active':''}" data-map-layer="constraint">Constraint</button><button class="${activeMapLayer==='timeline'?'active':''}" data-map-layer="timeline">Timeline</button></div><button class="ghost-button button-sm" data-action="fit-map">화면 맞춤</button></div>
         </div>
         <div class="site-map-wrap isaac-map">
-          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html" title="Isaac Sim Mud Map 3D viewer" loading="eager"></iframe>
-          <div class="map-info-float">
-            <div class="map-zone-title">Zone ${esc(wp.zone)} · ${esc(wp.id)}</div>
-            <div class="map-zone-sub">${esc(wp.name)}</div>
-            <div class="mini-progress"><span style="width:${wp.qualified}%"></span></div>
-            <div class="map-stat-row"><span>Raw / Qualified</span><b>${wp.raw}% / ${wp.qualified}%</b></div>
-            <div class="map-stat-row"><span>잔여량</span><b>${num(wp.remaining)}㎥</b></div>
-            <div class="map-stat-row"><span>상태</span><b>${statusText(wp.status)}</b></div>
-          </div>
-          <div class="isaac-map-note">승인된 Isaac 작업 ${isaacInstructions.filter(i=>i.status==='approved').length}건 · 좌클릭 회전 · 우클릭 이동 · 휠 확대</div>
+          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html" title="Isaac Sim pipeline construction site 3D viewer" loading="eager"></iframe>
+          <div class="map-info-float">${mapInfoMarkup(wp)}</div>
+          <div class="isaac-map-note">${stageInventory.connected?`Isaac Stage 연결 · 객체 ${(stageInventory.scene_objects||[]).length}개 · 1초 갱신`:'Isaac Stage 연결 대기'} · 좌클릭 회전 · 우클릭 이동 · 휠 확대</div>
+          <div class="map-timeline-shell ${activeMapLayer==='timeline'?'active':''}" id="mapTimelineControl">${timelineControlMarkup()}</div>
         </div>
       </article>
 
@@ -522,9 +688,9 @@ function renderDashboard(){
         </div>
 
         <section class="manager-launch">
-          <div class="manager-section-title"><div><span>REAL ISAAC</span><strong>새 Work Package</strong></div><small>${activeDiggable?`굴착 가능 토사 ${activeDiggable}개`:'굴착 대상 없음'}</small></div>
-          <p class="map-work-status">${stageInventory.connected?`장비 ${stageInventory.equipment.length}대 · 활성 굴착 대상 ${activeDiggable}개`:'Isaac Runner를 실행하면 실제 Prim을 선택할 수 있습니다.'}</p>
-          <button class="primary-button map-work-create" data-action="create-wp" ${stageInventory.connected&&activeDiggable?'':'disabled'}>＋ 실제 작업 지시 생성</button>
+          <div class="manager-section-title"><div><span>AI CODE AGENT</span><strong>새 Work Package</strong></div><small>${activeDiggable?`실행 가능 토사 ${activeDiggable}개`:'자원 대기 가능'}</small></div>
+          <p class="map-work-status">${stageInventory.connected?`장비 ${stageInventory.equipment.length}대 · 활성 작업 대상 ${activeDiggable}개`:'Stage가 없어도 작업을 접수하고 자원 대기로 저장합니다.'}</p>
+          <button class="primary-button map-work-create" data-action="create-wp">＋ 자연어 작업 지시</button>
         </section>
 
         <div class="manager-live-metrics">
@@ -572,6 +738,9 @@ function renderDashboard(){
     </div>
 
     `;
+  const mapFrame=page.querySelector('.isaac-map-frame');
+  mapFrame?.addEventListener('load',()=>syncIsaacMapLayer(mapFrame));
+  requestAnimationFrame(()=>syncIsaacMapLayer(mapFrame));
 }
 function kpiCard(label,value,unit,delta,icon,tone){return `<article class="card kpi-card ${tone}"><div class="kpi-icon">${icon}</div><div class="kpi-label">${label}</div><div class="kpi-value">${value}<span class="kpi-unit">${unit}</span></div><div class="kpi-delta">${delta}</div></article>`}
 function renderSiteMap(selected){
@@ -629,11 +798,78 @@ function renderReadiness(){
 function ruleLine(color,title,desc){return `<div class="rule-line"><span class="rule-dot" style="background:${color}"></span><div><strong>${title}</strong><span>${desc}</span></div></div>`}
 function readinessItem(r){return `<article class="card readiness-item"><div class="readiness-grade grade-${r.grade.toLowerCase()}">${r.grade}</div><div><div class="readiness-title">${esc(r.name)} <span class="status-chip ${r.status}">${readinessStatusLabel(r.status)}</span></div><div class="readiness-desc">${esc(r.desc)}</div></div><div><div class="readiness-value">${esc(r.value)}</div><div style="margin-top:6px">${sourceBadge(r.source)}</div></div><div class="readiness-action"><b>${esc(r.action)}</b><br/>${esc(r.category)}</div><div><button class="ghost-button button-sm" data-edit-readiness="${r.id}">수정</button></div></article>`}
 
+function realWorkPackageId(instruction){
+  return instruction.params?.work_package_id||`WP-${String(instruction.id||'').slice(0,8).toUpperCase()}`;
+}
+function realWorkPackageStatus(status){
+  return ({
+    blocked:{label:'자원 대기',badge:'warning',tone:'#fff3dc'},
+    pending:{label:'실행 대기',badge:'info',tone:'#e9f4f7'},
+    dispatched:{label:'Isaac 실행 중',badge:'progress',tone:'#e7f4f8'},
+    committed:{label:'증거 검토',badge:'warning',tone:'#fff3dc'},
+    approved:{label:'승인·Merge',badge:'accepted',tone:'#e6f5ef'},
+    rejected:{label:'반려·Conflict',badge:'danger',tone:'#fdebea'},
+  })[status]||{label:status||'상태 미확인',badge:'neutral',tone:'#edf2f4'};
+}
+function realWorkPackageKind(instruction){
+  const operation=instruction.params?.operation;
+  if(operation==='excavate')return '굴착';
+  if(operation==='create_primitive')return 'Prim 생성';
+  return ({generated_script:'AI 생성 작업',excavate_prim:'Prim 굴착',place_cube:'객체 배치'})[instruction.kind]||instruction.kind||'Isaac 작업';
+}
+function primShortName(path){
+  const parts=String(path||'').split('/').filter(Boolean);
+  return parts.at(-1)||'-';
+}
+function realWorkPackageCard(instruction){
+  const params=instruction.params||{};
+  const bindings=params.resource_bindings||{};
+  const commit=isaacLatestCommit(instruction);
+  const evidence=commit?.evidence||{};
+  const quality=evidence.quality||{};
+  const completeness=Number(quality.completeness_ratio);
+  const status=realWorkPackageStatus(instruction.status);
+  const equipmentPath=params.equipment_prim_path||bindings.equipment||'';
+  const targetPath=params.target_prim_path||bindings.target||commit?.result?.target_prim_path||'';
+  const equipment=params.equipment_name||primShortName(equipmentPath);
+  const target=params.target_name||primShortName(targetPath);
+  const summary=params.summary||params.label||instruction.note||realWorkPackageKind(instruction);
+  const sourceText=params.source_text||instruction.note||'자연어 원문 미기록';
+  const commitLabel=commit?`${commit.status==='succeeded'?'완료':'실패'} · ${commit.attempt||1}차`:'아직 없음';
+  const evidenceLabel=commit
+    ?Number.isFinite(completeness)?`${Math.round(completeness*100)}%`:'기존 형식'
+    :'-';
+  const createdAt=instruction.created_at?new Date(instruction.created_at).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'-';
+  return `<article class="card wp-card real-work-package-card" style="--card-tint:${status.tone}">
+    <div class="wp-card-head">
+      <div><div class="wp-code">${esc(realWorkPackageId(instruction))} · BACKEND</div><h3>${esc(summary)}</h3><p>${esc(realWorkPackageKind(instruction))} · ${esc(sourceText)}</p></div>
+      <span class="badge ${status.badge}">${esc(status.label)}</span>
+    </div>
+    <div class="wp-card-body real-wp-metrics">
+      <div class="wp-metric"><span>배정 장비</span><b>${esc(equipment)}</b></div>
+      <div class="wp-metric"><span>작업 대상</span><b>${esc(target)}</b></div>
+      <div class="wp-metric"><span>실행 Commit</span><b>${esc(commitLabel)}</b></div>
+      <div class="wp-metric"><span>Evidence</span><b>${esc(evidenceLabel)}</b></div>
+    </div>
+    <div class="real-wp-bindings">
+      <div><span>장비 Prim</span><code>${esc(equipmentPath||'미배정')}</code></div>
+      <div><span>대상 Prim</span><code>${esc(targetPath||'미배정')}</code></div>
+    </div>
+    <div class="wp-card-actions">
+      <div class="real-wp-origin"><span>생성 ${esc(createdAt)}</span><small>${esc(instruction.created_by_username||'시스템')}</small></div>
+      <div class="button-row"><button class="ghost-button button-sm" data-real-wp-detail="${esc(instruction.id)}">작업 상세</button>${commit?`<button class="secondary-button button-sm" data-isaac-detail="${esc(instruction.id)}">Evidence 검토</button>`:''}</div>
+    </div>
+  </article>`;
+}
 function renderWorkPackages(){
+  const actual=isaacInstructions;
+  const executing=actual.filter(item=>['pending','dispatched'].includes(item.status)).length;
+  const review=actual.filter(item=>item.status==='committed').length;
+  const approved=actual.filter(item=>item.status==='approved').length;
   $('#page-workpackages').innerHTML=`
-    <div class="section-heading"><div><h2>Work Package Compiler</h2><p>자연어 지시를 검증 가능한 Work Package로 변환한 뒤 Isaac Sim 실행 대기열에 전달합니다.</p></div><div class="section-actions"><button class="ghost-button" data-action="check-all-compatibility">장비 적합성 일괄검사</button><button class="primary-button" data-action="create-wp">+ AI Work Package 생성</button></div></div>
-    <div class="filter-strip"><button class="filter-chip active">전체 ${state.workPackages.length}</button><button class="filter-chip">작업 중 ${state.workPackages.filter(w=>w.status==='executing').length}</button><button class="filter-chip">검토 필요 ${state.workPackages.filter(w=>w.status==='review').length}</button><button class="filter-chip">승인 완료 ${acceptedCount()}</button></div>
-    <div class="wp-grid">${state.workPackages.map(wpCard).join('')}</div>`;
+    <div class="section-heading"><div><h2>실제 Work Package</h2><p>Backend에 저장된 작업지시만 표시합니다. 자연어 지시부터 Isaac 실행, Evidence 검토와 Merge까지 동일한 작업 ID로 추적합니다.</p></div><div class="section-actions"><span class="backend-source-chip"><i></i>BACKEND LIVE</span><button class="primary-button" data-action="create-wp">+ AI Work Package 생성</button></div></div>
+    <div class="filter-strip real-wp-summary"><span class="filter-chip active">전체 ${actual.length}</span><span class="filter-chip">대기·실행 ${executing}</span><span class="filter-chip">증거 검토 ${review}</span><span class="filter-chip">승인·Merge ${approved}</span></div>
+    ${actual.length?`<div class="wp-grid">${actual.map(realWorkPackageCard).join('')}</div>`:`<div class="card real-wp-empty"><span>▤</span><h3>Backend에 저장된 실제 Work Package가 없습니다.</h3><p>AI Work Package를 생성하면 Isaac 실행 대기열과 이 화면에 동시에 등록됩니다.</p><button class="primary-button" data-action="create-wp">첫 Work Package 생성</button></div>`}`;
 }
 function wpCard(w){
   const ev=state.evidence[w.id]||{};const primary=primaryEquipment(w);const gate=approvalGate(w,ev);
@@ -749,7 +985,19 @@ document.addEventListener('click',e=>{
   const approveIsaac=e.target.closest('[data-isaac-approve]'); if(approveIsaac){reviewIsaacCommit(approveIsaac.dataset.isaacApprove,'approved');return}
   const rejectIsaac=e.target.closest('[data-isaac-reject]'); if(rejectIsaac){reviewIsaacCommit(rejectIsaac.dataset.isaacReject,'rejected');return}
   const detailIsaac=e.target.closest('[data-isaac-detail]'); if(detailIsaac){openIsaacEvidence(detailIsaac.dataset.isaacDetail);return}
+  const detailRealWp=e.target.closest('[data-real-wp-detail]'); if(detailRealWp){openRealWorkPackageDetail(detailRealWp.dataset.realWpDetail);return}
+  const mapLayer=e.target.closest('[data-map-layer]'); if(mapLayer){setIsaacMapLayer(mapLayer.dataset.mapLayer);return}
   const action=e.target.closest('[data-action]'); if(action){handleAction(action.dataset.action);return}
+});
+document.addEventListener('input',e=>{
+  const range=e.target.closest?.('[data-timeline-range]');
+  if(!range)return;
+  setTimelineStep(Number(range.value));
+});
+window.addEventListener('message',event=>{
+  if(event.origin!==window.location.origin||event.data?.type!=='sitegit.isaac-map.timeline-data')return;
+  mapTimelineCommitRefs=Array.isArray(event.data.commits)?event.data.commits:[];
+  if(activeMapLayer==='timeline')refreshTimelineControl();
 });
 document.addEventListener('keydown',event=>{
   const card=event.target.closest?.('.equipment-card[data-edit-equipment]');
@@ -766,13 +1014,55 @@ $('#openOnboardingBtn').addEventListener('click',openOnboarding);
 function navigate(page){
   state.selectedPage=page; $('.sidebar').classList.remove('open'); renderHeader(); applyPage(); saveState(); window.scrollTo({top:0,behavior:'smooth'});
 }
+function syncIsaacMapLayer(frame=document.querySelector('.isaac-map-frame')){
+  frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.layer',layer:activeMapLayer},window.location.origin);
+  if(activeMapLayer==='timeline')syncIsaacTimeline(frame);
+}
+function syncIsaacTimeline(frame=document.querySelector('.isaac-map-frame')){
+  const steps=approvedTimelineSteps();
+  const index=normalizedTimelineIndex(steps);
+  const step=steps[index];
+  frame?.contentWindow?.postMessage({
+    type:'sitegit.isaac-map.timeline',
+    baseline:index===0,
+    approvedAt:step.approvedAt,
+    commitId:step.commitId,
+    baselineObjects:timelineBaselineObjects(steps),
+  },window.location.origin);
+}
+function refreshTimelineControl({sync=true}={}){
+  const shell=$('#mapTimelineControl');
+  if(shell){
+    shell.classList.toggle('active',activeMapLayer==='timeline');
+    shell.innerHTML=timelineControlMarkup();
+  }
+  document.querySelector('.site-map-wrap')?.classList.toggle('timeline-active',activeMapLayer==='timeline');
+  const info=document.querySelector('.map-info-float');
+  if(info)info.innerHTML=mapInfoMarkup(selectedWp());
+  if(sync&&activeMapLayer==='timeline')syncIsaacTimeline();
+}
+function setTimelineStep(index){
+  const steps=approvedTimelineSteps();
+  timelineStepIndex=Math.max(0,Math.min(Number.isFinite(index)?Math.round(index):0,steps.length-1));
+  refreshTimelineControl();
+}
+function setIsaacMapLayer(layer){
+  const enteringTimeline=layer==='timeline'&&activeMapLayer!=='timeline';
+  activeMapLayer=layer;
+  if(enteringTimeline)timelineStepIndex=Math.max(0,approvedTimelineSteps().length-1);
+  $$('[data-map-layer]').forEach(button=>button.classList.toggle('active',button.dataset.mapLayer===layer));
+  refreshTimelineControl({sync:false});
+  syncIsaacMapLayer();
+  if(layer==='zone')toast('작업구역 표시','Zone A–D를 실제 Work Package 좌표 기준으로 표시합니다.','success');
+  if(layer==='timeline')toast('승인 이력 Timeline','슬라이더를 움직여 Baseline부터 승인 Commit까지 현장 변화를 확인하세요.','success');
+}
 function handleAction(action){
   const handlers={
     'run-demo':runSimulation,'add-evidence':addEvidence,'create-correction':createCorrection,'approve-result':approveResult,'pause-work':pauseWork,
     'edit-project':openProjectModal,'add-readiness':()=>openReadinessModal(null),'create-wp':openAiWorkPackageModal,'add-equipment':()=>openEquipmentModal(null),'edit-assignments':()=>openWpModal(selectedWp().id),
     'check-all-compatibility':()=>toast('장비 적합성 검사 완료','5개 장비의 작업 유형·범위·Evidence 반환 가능성을 다시 계산했습니다.','success'),
     'show-sources':showSourcesModal,'export-json':exportJson,'import-json':()=>$('#jsonImportInput').click(),'snapshot-version':snapshotVersion,
-    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'fit-map':()=>{const frame=document.querySelector('.isaac-map-frame');frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin);toast('현장 뷰 재정렬','Isaac Sim Mud Map을 화면에 맞췄습니다.','success')},
+    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'fit-map':()=>{const frame=document.querySelector('.isaac-map-frame');frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin);toast('현장 뷰 재정렬','Isaac Sim 관로 공사 현장을 화면에 맞췄습니다.','success')},
   };
   handlers[action]?.();
 }
@@ -850,8 +1140,8 @@ function snapshotVersion(){state.versions.push({type:'decision',code:`Snapshot $
 function addEvent(type,title,desc){state.events.unshift({time:nowTime(),type,title,desc});state.events=state.events.slice(0,30)}
 
 /* Isaac 폐루프 — 웹 지시 → Isaac 실행 → Commit → 관리자 승인 → 맵 반영 */
-const ISAAC_STATUS_TEXT={pending:'Isaac 대기',dispatched:'Isaac 실행 중',committed:'승인 대기',approved:'맵 반영됨',rejected:'반려됨'};
-const ISAAC_STATUS_BADGE={pending:'neutral',dispatched:'info',committed:'warning',approved:'accepted',rejected:'danger'};
+const ISAAC_STATUS_TEXT={blocked:'자원 대기',pending:'Isaac 대기',dispatched:'Isaac 실행 중',committed:'승인 대기',approved:'Merge 완료',rejected:'Conflict'};
+const ISAAC_STATUS_BADGE={blocked:'warning',pending:'neutral',dispatched:'info',committed:'warning',approved:'accepted',rejected:'danger'};
 function isaacLatestCommit(instruction){return (instruction.commits||[]).at(-1)||null}
 function isaacPositionText(instruction){
   const commit=isaacLatestCommit(instruction);
@@ -871,7 +1161,7 @@ async function loadStageInventory(){
     renderIsaacPanel();
   }catch(error){
     if(error.message!=='AUTH_REQUIRED')console.warn('Stage inventory load failed',error);
-    stageInventory={connected:false,equipment:[],diggable_targets:[],age_seconds:0};
+    stageInventory={connected:false,equipment:[],diggable_targets:[],scene_objects:[],age_seconds:0};
     updateStageInventoryUi();
   }
 }
@@ -884,28 +1174,54 @@ function updateStageInventoryUi(){
     ?`장비 ${stageInventory.equipment.length}대 · 활성 굴착 대상 ${activeTargets}개`
     :'Isaac Stage 연결 대기';
   const button=document.querySelector('.map-work-create');
-  if(button)button.disabled=!stageInventory.connected||activeTargets===0;
+  if(button)button.disabled=false;
 }
 async function loadIsaacInstructions(){
   try{
-    const response=await apiFetch(`/isaac/instructions?project_id=${encodeURIComponent(PROJECT_ID)}&limit=20`);
+    const response=await apiFetch(`/isaac/instructions?project_id=${encodeURIComponent(PROJECT_ID)}&limit=500`);
     if(!response.ok)throw new Error(`ISAAC_${response.status}`);
     isaacInstructions=await response.json();
     if(syncAiWorkPackageStatuses())renderAll();
-    else renderIsaacPanel();
+    else{
+      renderIsaacPanel();
+      refreshTimelineControl();
+    }
   }catch(error){
     if(error.message!=='AUTH_REQUIRED')console.warn('Isaac instruction load failed',error);
   }
 }
 function syncAiWorkPackageStatuses(){
-  const statusMap={pending:'dispatched',dispatched:'executing',committed:'review',approved:'accepted',rejected:'paused'};
+  const statusMap={blocked:'blocked',pending:'dispatched',dispatched:'executing',committed:'review',approved:'accepted',rejected:'paused'};
   let changed=false;
+  const liveInstructionIds=new Set(isaacInstructions.map(item=>item.id));
+  for(let index=state.workPackages.length-1;index>=0;index-=1){
+    const cached=state.workPackages[index];
+    if(cached.isaacInstructionId&&!liveInstructionIds.has(cached.isaacInstructionId)){
+      state.workPackages.splice(index,1);
+      delete state.evidence[cached.id];
+      changed=true;
+    }
+  }
   isaacInstructions.forEach(instruction=>{
     const workPackageId=instruction.params?.work_package_id;
     if(!workPackageId)return;
     let wp=state.workPackages.find(item=>item.id===workPackageId);
     if(!wp){
-      if(instruction.kind==='excavate_prim'){
+      if(instruction.kind==='generated_script'){
+        const bindings=instruction.params?.resource_bindings||{};
+        const missing=instruction.params?.missing_resources||[];
+        wp={
+          id:workPackageId,zone:instruction.params?.zone_id||'-',name:instruction.params?.summary||'AI Code Work Package',
+          task:'GENERATED_SCRIPT',length:0,target:1,raw:0,qualified:0,remaining:1,status:instruction.status,version:1,
+          eta:instruction.status==='blocked'?'자원 대기':'Isaac 대기',risk:instruction.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,color:'#d95757',
+          completionThreshold:100,observationThreshold:100,toleranceMm:0,assignments:[],
+          isaacInstructionId:instruction.id,sourceText:instruction.params?.source_text||instruction.note||'',
+          equipmentPrimPath:bindings.equipment||'',targetPrimPath:bindings.target||'',generatedCode:instruction.params?.generated_code||'',
+        };
+        state.workPackages.push(wp);
+        state.evidence[workPackageId]={rule:100,completeness:instruction.status==='blocked'?10:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:[...missing,'Isaac 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
+        changed=true;
+      }else if(instruction.kind==='excavate_prim'){
         wp={
           id:workPackageId,zone:instruction.params?.zone_id||'-',name:`Prim 굴착 — ${instruction.params?.target_name||workPackageId}`,
           task:'EXCAVATE_PRIM',length:0,target:1,raw:0,qualified:0,remaining:1,status:'dispatched',version:1,
@@ -955,13 +1271,18 @@ function renderIsaacPanel(){
 }
 function isaacInstructionRow(instruction){
   const commit=isaacLatestCommit(instruction);
-  const label=instruction.params?.label||instruction.kind;
-  const color=instruction.kind==='excavate_prim'?'#d95757':(instruction.params?.color||'#f0b429');
+  const generated=instruction.kind==='generated_script';
+  const label=instruction.params?.summary||instruction.params?.label||instruction.kind;
+  const color=instruction.kind==='excavate_prim'||generated?'#d95757':(instruction.params?.color||'#f0b429');
   const workPackageId=instruction.params?.work_package_id;
   const failed=commit&&commit.status==='failed';
   const pendingReview=instruction.status==='committed'&&commit&&commit.review_status==='pending';
   const detail=failed
     ?`실행 실패 · ${esc(commit.result?.error||'원인 미기록')}`
+    :generated
+      ?instruction.status==='blocked'
+        ?`실행 불가 · ${esc((instruction.params?.missing_resources||[])[0]||'Stage 자원 확인 필요')}`
+        :`${esc(instruction.params?.summary||instruction.params?.target_name||'Isaac 작업')} · ${esc(instruction.params?.operation||'generated_program')}`
     :instruction.kind==='excavate_prim'
       ?`${esc(instruction.params?.equipment_name||'장비')} → ${esc(instruction.params?.target_name||'대상 Prim')}`
       :`위치 ${esc(isaacPositionText(instruction))}${commit?.review_note?` · 사유 ${esc(commit.review_note)}`:''}`;
@@ -981,40 +1302,26 @@ function isaacInstructionRow(instruction){
   </div>`;
 }
 function openAiWorkPackageModal(){
-  if(!stageInventory.connected){
-    toast('Isaac Stage 연결 필요','Isaac Runner를 실행해 실제 장비와 굴착 대상 Prim을 먼저 등록하세요.','warning');
-    return;
-  }
   aiWorkPackageDraft=null;
-  const equipmentOptions=(stageInventory.equipment||[]).map(item=>`<option value="${esc(item.path)}">${esc(item.name)} · ${esc(item.path)}</option>`).join('');
-  const maxExcavationSpan=25;
-  const targetOptions=(stageInventory.diggable_targets||[]).map(item=>{
-    const size=item.bounds_size||{};
-    const span=Math.max(Number(size.x)||0,Number(size.y)||0);
-    const active=item.active!==false;
-    const safe=active&&span<=maxExcavationSpan;
-    const scope=`${(Number(size.x)||0).toFixed(1)}×${(Number(size.y)||0).toFixed(1)}m`;
-    const reason=!active?' · 굴착 완료 — 선택 불가':span>maxExcavationSpan?' · 전체 맵 Mesh 가능성 — 굴착 불가':'';
-    return `<option value="${safe?esc(item.path):''}" ${safe?'':'disabled'}>${esc(item.name)} · ${scope}${reason}</option>`;
-  }).join('');
+  const activeTargets=(stageInventory.diggable_targets||[]).filter(item=>item.active!==false).length;
   openModal({
-    eyebrow:'REAL ISAAC WORK PACKAGE',
-    title:'굴착 작업 지시 생성',
+    eyebrow:'AI ISAAC CODE AGENT',
+    title:'자연어 Work Package 생성',
     body:`<div class="wp-chat-shell">
       <div class="stage-binding-grid">
-        <label><span>실제 장비 Prim</span><select class="form-control" id="aiWpEquipment">${equipmentOptions||'<option value="">연결된 장비 없음</option>'}</select></label>
-        <label><span>실제 굴착 대상 Prim</span><select class="form-control" id="aiWpTarget">${targetOptions||'<option value="">굴착 대상 없음</option>'}</select></label>
+        <div class="stage-binding-status"><span>Isaac Stage</span><b>${stageInventory.connected?'연결됨':'연결 대기'}</b></div>
+        <div class="stage-binding-status"><span>현재 자원</span><b>장비 ${(stageInventory.equipment||[]).length}대 · 작업 대상 ${activeTargets}개</b></div>
       </div>
       <div class="wp-chat-messages" id="aiWpMessages">
-        <div class="wp-chat-message assistant"><span>SiteGit AI</span><p>위 목록은 현재 실행 중인 Isaac Stage에서 직접 읽은 Prim입니다. 장비와 굴착 대상을 선택하고 작업 내용을 입력하세요.</p><small>예: 선택한 굴착기로 Zone A의 선택 Prim을 굴착해줘.</small></div>
+        <div class="wp-chat-message assistant"><span>SiteGit Code Agent</span><p>Isaac Sim에서 바꾸고 싶은 내용을 자연어로 입력하세요. LLM이 안전한 Stage 작업 코드를 조합하고 실제 Prim을 검사합니다.</p><small>큐브·토사 생성, Prim 이동/상태 변경, 장비 이동·애니메이션·굴착을 한 지시 안에서 조합할 수 있습니다.</small></div>
       </div>
       <div class="wp-chat-compose">
-        <textarea class="form-control" id="aiWpPrompt" placeholder="실제 굴착 작업을 자연어로 입력하세요">선택한 굴착기로 Zone A의 선택한 Prim을 굴착해줘</textarea>
-        <button class="primary-button" id="aiWpAnalyzeBtn">LLM 지시 검증</button>
+        <textarea class="form-control" id="aiWpPrompt" placeholder="예: Zone A 중앙에 5m x 5m x 2m 토사를 만들어줘"></textarea>
+        <button class="primary-button" id="aiWpAnalyzeBtn">작업 해석</button>
       </div>
       <div class="ai-wp-preview hidden" id="aiWpPreview"></div>
     </div>`,
-    footer:`<button class="ghost-button" data-modal-close>취소</button><button class="secondary-button" id="dispatchAiWpBtn" disabled>검증 완료 후 실제 Isaac에 전송</button>`,
+    footer:`<button class="ghost-button" data-modal-close>취소</button><button class="secondary-button" id="dispatchAiWpBtn" disabled>분석 후 Work Package 저장</button>`,
   });
   $('#aiWpAnalyzeBtn').addEventListener('click',analyzeAiWorkPackage);
   $('#dispatchAiWpBtn').addEventListener('click',dispatchAiWorkPackage);
@@ -1024,10 +1331,7 @@ function openAiWorkPackageModal(){
 }
 async function analyzeAiWorkPackage(){
   const prompt=$('#aiWpPrompt').value.trim();
-  const equipmentPrimPath=$('#aiWpEquipment')?.value||'';
-  const targetPrimPath=$('#aiWpTarget')?.value||'';
-  if(prompt.length<3){toast('작업지시 필요','굴착 작업 내용을 입력해 주세요.','warning');return}
-  if(!equipmentPrimPath||!targetPrimPath){toast('Prim 선택 필요','실제 장비와 굴착 대상 Prim을 선택하세요.','warning');return}
+  if(prompt.length<3){toast('작업지시 필요','Isaac Sim에서 수행할 작업을 입력해 주세요.','warning');return}
   const button=$('#aiWpAnalyzeBtn');
   button.disabled=true;button.textContent='로컬 LLM 분석 중...';
   $('#dispatchAiWpBtn').disabled=true;
@@ -1035,8 +1339,8 @@ async function analyzeAiWorkPackage(){
   messages.insertAdjacentHTML('beforeend',`<div class="wp-chat-message user"><span>관리자</span><p>${esc(prompt)}</p></div><div class="wp-chat-message assistant pending" id="aiWpPending"><span>SiteGit AI</span><p>자연어 지시와 현재 Stage의 장비·대상 Prim을 교차 검증하고 있습니다…</p></div>`);
   messages.scrollTop=messages.scrollHeight;
   try{
-    const response=await apiFetch('/work-packages/ai/excavation/interpret',{
-      method:'POST',body:JSON.stringify({project_id:PROJECT_ID,message:prompt,equipment_prim_path:equipmentPrimPath,target_prim_path:targetPrimPath}),
+    const response=await apiFetch('/work-packages/ai/code/interpret',{
+      method:'POST',body:JSON.stringify({project_id:PROJECT_ID,message:prompt}),
     });
     const data=await response.json().catch(()=>({}));
     if(!response.ok){
@@ -1046,10 +1350,12 @@ async function analyzeAiWorkPackage(){
     }
     aiWorkPackageDraft=data;
     $('#aiWpPending')?.remove();
-    const assistantText=data.plan.ready
-      ?`${data.plan.summary} 실행 전 검증 결과를 확인해 주세요.`
+    const assistantText=data.executable
+      ?`${data.plan.summary} 실행 코드와 Stage 자원 검증이 완료됐습니다.`
+      :data.plan.ready
+        ?`${data.plan.summary} Work Package는 저장할 수 있지만 현재 실행 자원이 부족합니다.`
       :(data.plan.clarification_question||'작업지시를 실행하려면 추가 정보가 필요합니다.');
-    messages.insertAdjacentHTML('beforeend',`<div class="wp-chat-message assistant"><span>SiteGit AI · ${esc(data.model)}</span><p>${esc(assistantText)}</p></div>`);
+    messages.insertAdjacentHTML('beforeend',`<div class="wp-chat-message assistant"><span>SiteGit Code Agent · ${esc(data.model)}</span><p>${esc(assistantText)}</p></div>`);
     renderAiWorkPackageDraft();
   }catch(error){
     $('#aiWpPending')?.remove();
@@ -1059,7 +1365,7 @@ async function analyzeAiWorkPackage(){
     messages.insertAdjacentHTML('beforeend',`<div class="wp-chat-message assistant error"><span>SiteGit AI</span><p>${esc(message)}</p></div>`);
     toast('Work Package 생성 실패',message,'danger');
   }finally{
-    button.disabled=false;button.textContent='LLM 지시 검증';
+    button.disabled=false;button.textContent='작업 해석';
     messages.scrollTop=messages.scrollHeight;
   }
 }
@@ -1067,32 +1373,30 @@ function renderAiWorkPackageDraft(){
   const host=$('#aiWpPreview');
   if(!host||!aiWorkPackageDraft)return;
   const draft=aiWorkPackageDraft,plan=draft.plan;
-  const executable=Boolean(plan.ready&&draft.equipment&&draft.target&&(draft.checks||[]).every(check=>check.ok));
+  const executable=Boolean(draft.executable);
   host.classList.remove('hidden');
-  host.innerHTML=`<div class="ai-wp-preview-head"><div><span>실제 Stage 결합 초안</span><strong>${esc(plan.summary)}</strong></div><span class="badge ${executable?'ready':'warning'}">${executable?'실행 가능':'추가 입력 필요'}</span></div>
+  host.innerHTML=`<div class="ai-wp-preview-head"><div><span>AI 작업 계획</span><strong>${esc(plan.summary)}</strong></div><span class="badge ${executable?'ready':'warning'}">${executable?'실행 가능':'자원 대기'}</span></div>
     <div class="ai-wp-preview-grid">
       <div><span>장비</span><b>${esc(draft.equipment?.name||'미확정')}</b></div>
-      <div><span>작업 구역</span><b>${esc(plan.zone_id||'미지정')}</b></div>
+      <div><span>작업 종류 / 구역</span><b>${esc(plan.operation)} · Zone ${esc(plan.zone_id||'미지정')}</b></div>
       <div class="full"><span>장비 Prim</span><b class="prim-path-value">${esc(draft.equipment?.path||'미확정')}</b></div>
-      <div class="full"><span>굴착 대상 Prim</span><b class="prim-path-value">${esc(draft.target?.path||'미확정')}</b></div>
+      <div class="full"><span>작업 대상 / 생성 Prim</span><b class="prim-path-value">${esc(draft.target?.path||draft.execution_target_path||'해당 없음')}</b></div>
     </div>
     <div class="ai-wp-checks">${(draft.checks||[]).map(check=>`<div class="${check.ok?'pass':'fail'}"><span>${check.ok?'✓':'!'}</span><p>${esc(check.message)}</p></div>`).join('')}</div>
-    <div class="ai-wp-source">LLM은 지시를 구조화할 뿐입니다. 실행 경로는 최신 Isaac Stage inventory의 정확한 Prim path만 사용합니다.</div>`;
-  $('#dispatchAiWpBtn').disabled=!executable;
-  $('#dispatchAiWpBtn').textContent=executable?'Work Package 확정 · 실제 Isaac 전송':'검증 완료 후 Isaac에 전송';
+    <div class="ai-wp-source">기존 Prim은 Stage inventory와 일치할 때만 실행되며, 새 Prim은 SiteGit 작업 영역 안에서만 생성됩니다.</div>`;
+  $('#dispatchAiWpBtn').disabled=false;
+  $('#dispatchAiWpBtn').textContent=executable?'작업 지시 확정 · Isaac 전송':'자원 대기 Work Package 저장';
 }
 async function dispatchAiWorkPackage(){
   if(!aiWorkPackageDraft)return;
-  const button=$('#dispatchAiWpBtn');button.disabled=true;button.textContent='Isaac 대기열 전송 중...';
+  const button=$('#dispatchAiWpBtn');button.disabled=true;button.textContent='Work Package 저장 중...';
   try{
-    const response=await apiFetch('/work-packages/ai/excavation/dispatch',{
+    const response=await apiFetch('/work-packages/ai/code/dispatch',{
       method:'POST',
       body:JSON.stringify({
         project_id:PROJECT_ID,
         message:aiWorkPackageDraft.source_text,
         plan:aiWorkPackageDraft.plan,
-        equipment_prim_path:aiWorkPackageDraft.equipment?.path,
-        target_prim_path:aiWorkPackageDraft.target?.path,
       }),
     });
     const data=await response.json().catch(()=>({}));
@@ -1100,46 +1404,241 @@ async function dispatchAiWorkPackage(){
     const record=data.work_package;
     if(!state.workPackages.some(item=>item.id===record.id)){
       state.workPackages.push({
-        id:record.id,zone:record.zone_id||'-',name:`Prim 굴착 — ${record.target.name}`,task:'EXCAVATE_PRIM',length:0,
-        target:1,raw:0,qualified:0,remaining:1,status:'dispatched',version:1,
-        eta:'Isaac 대기',risk:'medium',start:'-',end:'-',x:0,y:0,width:0,
+        id:record.id,zone:record.zone_id||'-',name:record.summary,task:'GENERATED_SCRIPT',length:0,
+        target:1,raw:0,qualified:0,remaining:1,status:record.status,version:1,
+        eta:record.status==='blocked'?'자원 대기':'Isaac 대기',risk:record.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,
         color:'#d95757',completionThreshold:100,observationThreshold:100,toleranceMm:0,assignments:[],
         isaacInstructionId:data.instruction.id,sourceText:record.source_text,
-        equipmentPrimPath:record.equipment.path,targetPrimPath:record.target.path,
+        equipmentPrimPath:record.equipment?.path||'',targetPrimPath:record.target?.path||record.execution_target_path||'',generatedCode:record.generated_code,
       });
-      state.evidence[record.id]={rule:100,completeness:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:['Isaac 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
-      state.versions.push({type:'work',code:record.id,title:'실제 Prim 굴착 Work Package 발행',desc:`${record.equipment.name} → ${record.target.name}`,time:nowTime(),actor:currentUser?.full_name||state.manager.name,state:'current',branch:true});
+      state.evidence[record.id]={rule:100,completeness:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:[...(record.missing_resources||[]),'Isaac 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
+      state.versions.push({type:'work',code:record.id,title:'AI Code Work Package 발행',desc:record.summary,time:nowTime(),actor:currentUser?.full_name||state.manager.name,state:record.status==='blocked'?'warning':'current',branch:true});
     }
     state.selectedWpId=record.id;
-    addEvent('info','AI Work Package 발행',`${record.id} · 실제 Isaac Sim 실행 대기`);
+    addEvent(record.status==='blocked'?'warning':'info','AI Work Package 발행',`${record.id} · ${record.status==='blocked'?'자원 대기':'Isaac Sim 실행 대기'}`);
     closeModal();
     await loadIsaacInstructions();
     renderAll();navigate('dashboard');
-    toast('Work Package 전송 완료','Isaac Adapter가 실제 장비 Prim을 이동시키고 대상 Prim을 굴착 처리합니다.','success');
+    toast(record.status==='blocked'?'Work Package 자원 대기':'Work Package 전송 완료',record.status==='blocked'?(record.missing_resources||[]).join(' · '):'검증된 작업 지시가 Isaac Adapter 실행 대기열에 등록됐습니다.',record.status==='blocked'?'warning':'success');
   }catch(error){
-    button.disabled=false;button.textContent='Work Package 확정 · Isaac 전송';
+    button.disabled=false;button.textContent='Work Package 다시 저장';
     toast('Isaac 전송 실패',error.message||'서버 상태를 확인하세요.','danger');
   }
 }
 function evidenceUrl(storageKey){
   return `/evidence/${String(storageKey||'').split('/').map(encodeURIComponent).join('/')}`;
 }
+function evidenceImageKey(data){
+  const explicit=data?.image?.storage_key;
+  if(explicit)return explicit;
+  const stageKey=data?.stage?.storage_key||'';
+  // Older commits may say image.available=false even though Kit finished
+  // writing the asynchronous viewport capture a moment later.  The stage and
+  // viewport files share the same evidence directory, so recover that key.
+  return /-stage\.json$/i.test(stageKey)?stageKey.replace(/-stage\.json$/i,'-viewport.png'):'';
+}
+function sensorVector(value){
+  if(!Array.isArray(value)||value.length<3)return null;
+  const vector=value.slice(0,3).map(Number);
+  return vector.every(Number.isFinite)?vector:null;
+}
+function sensorVectorMagnitude(value){
+  const vector=sensorVector(value);
+  return vector?Math.sqrt(vector.reduce((sum,item)=>sum+item*item,0)):null;
+}
+function sensorVectorLabel(value,digits=3){
+  const vector=sensorVector(value);
+  return vector?vector.map(item=>item.toFixed(digits)).join(' · '):'측정값 없음';
+}
+function quaternionValue(value){
+  if(!Array.isArray(value)||value.length<4)return null;
+  const quaternion=value.slice(0,4).map(Number);
+  if(!quaternion.every(Number.isFinite))return null;
+  const length=Math.sqrt(quaternion.reduce((sum,item)=>sum+item*item,0));
+  return length>1e-9?quaternion.map(item=>item/length):null;
+}
+function quaternionEulerDegrees(value){
+  const quaternion=quaternionValue(value);
+  if(!quaternion)return null;
+  const [w,x,y,z]=quaternion;
+  const roll=Math.atan2(2*(w*x+y*z),1-2*(x*x+y*y));
+  const pitch=Math.asin(Math.max(-1,Math.min(1,2*(w*y-z*x))));
+  const yaw=Math.atan2(2*(w*z+x*y),1-2*(y*y+z*z));
+  return [roll,pitch,yaw].map(angle=>angle*180/Math.PI);
+}
+function quaternionDeltaDegrees(beforeValue,afterValue){
+  const before=quaternionValue(beforeValue),after=quaternionValue(afterValue);
+  if(!before||!after)return null;
+  const dot=Math.min(1,Math.abs(before.reduce((sum,item,index)=>sum+item*after[index],0)));
+  return 2*Math.acos(dot)*180/Math.PI;
+}
+function vectorDistance(beforeValue,afterValue){
+  const before=sensorVector(beforeValue),after=sensorVector(afterValue);
+  if(!before||!after)return null;
+  return Math.sqrt(before.reduce((sum,item,index)=>sum+(after[index]-item)**2,0));
+}
+function imuReading(data){
+  const imu=data?.imu||{};
+  const frame=imu.frame||{};
+  const acceleration=sensorVector(frame.lin_acc);
+  const angularVelocity=sensorVector(frame.ang_vel);
+  const orientation=quaternionValue(frame.orientation);
+  const physicsStep=Number(frame.physics_step);
+  const physicsTime=Number(frame.time);
+  return {
+    available:Boolean(imu.available&&acceleration&&angularVelocity&&orientation&&Number.isFinite(physicsStep)&&physicsStep>0),
+    imu,frame,acceleration,angularVelocity,orientation,physicsStep,physicsTime,
+    accelerationMagnitude:sensorVectorMagnitude(acceleration),
+    angularSpeed:sensorVectorMagnitude(angularVelocity),
+    euler:quaternionEulerDegrees(orientation),
+  };
+}
+function sensorMetric(label,value,unit='',tone=''){
+  return `<div class="sensor-metric ${tone}"><span>${esc(label)}</span><strong>${esc(value)}</strong>${unit?`<small>${esc(unit)}</small>`:''}</div>`;
+}
 function evidencePhaseCard(title,data){
   const image=data?.image||{};
-  const lidar=data?.lidar||{};
   const stage=data?.stage||{};
+  const telemetry=data?.telemetry||{};
+  const imageKey=evidenceImageKey(data);
   return `<section class="commit-evidence-phase">
     <h3>${title}</h3>
-    <div class="commit-evidence-image">${image.available&&image.storage_key
-      ?`<img src="${evidenceUrl(image.storage_key)}" alt="${title} Isaac viewport">`
-      :`<span>Viewport 이미지 없음<br><small>${esc(image.reason||'캡처되지 않음')}</small></span>`}</div>
-    <dl>
+    <div class="commit-evidence-image">${imageKey
+      ?`<img src="${evidenceUrl(imageKey)}" alt="${title} 장비 장착 카메라" data-evidence-image><span hidden data-evidence-image-fallback>장비 카메라 이미지 없음<br><small>${esc(image.reason||'캡처 파일을 찾을 수 없음')}</small></span>`
+      :`<span>장비 카메라 이미지 없음<br><small>${esc(image.reason||'캡처되지 않음')}</small></span>`}</div>
+    <dl class="camera-evidence-meta">
+      <div><dt>카메라</dt><dd class="${image.available?'evidence-ok':'evidence-missing'}">${image.available?'장비 장착 카메라':'이미지 없음'}</dd></div>
       <div><dt>대상 Prim 상태</dt><dd>${stage.target_active===false?'비활성화됨':stage.target_active===true?'활성':'확인 불가'}</dd></div>
-      <div><dt>LiDAR</dt><dd>${lidar.available&&lidar.storage_key
-        ?`<a href="${evidenceUrl(lidar.storage_key)}" target="_blank" rel="noopener">${num(lidar.point_count)} points · PLY 열기</a>`
-        :esc(lidar.reason||'데이터 없음')}</dd></div>
+      <div><dt>장비 Pose</dt><dd>${telemetry.available&&telemetry.storage_key
+        ?`<a href="${evidenceUrl(telemetry.storage_key)}" target="_blank" rel="noopener">위치·자세 열기</a>`
+        :esc(telemetry.reason||'데이터 없음')}</dd></div>
     </dl>
   </section>`;
+}
+function imuPhasePanel(title,data){
+  const reading=imuReading(data);
+  if(!reading.available){
+    return `<div class="imu-phase-card unavailable"><div class="sensor-card-title"><strong>${title}</strong><span class="sensor-state bad">미수집</span></div><p>${esc(reading.imu.reason||'유효한 PhysX IMU 프레임이 없습니다.')}</p></div>`;
+  }
+  const euler=reading.euler||[];
+  return `<div class="imu-phase-card">
+    <div class="sensor-card-title"><strong>${title}</strong><span class="sensor-state ok">실측</span></div>
+    <div class="imu-primary-value"><strong>${reading.accelerationMagnitude.toFixed(3)}</strong><span>m/s² · 가속도 크기</span></div>
+    <div class="imu-data-list">
+      <div><span>선형가속도 X · Y · Z</span><b>${sensorVectorLabel(reading.acceleration)} m/s²</b></div>
+      <div><span>각속도 X · Y · Z</span><b>${sensorVectorLabel(reading.angularVelocity,4)} rad/s</b></div>
+      <div><span>센서축 자세 R · P · Y</span><b>${euler.map(value=>`${value.toFixed(1)}°`).join(' · ')}</b></div>
+      <div><span>PhysX 시점</span><b>${Number.isFinite(reading.physicsTime)?reading.physicsTime.toFixed(3):'-'}s · step ${num(reading.physicsStep)}</b></div>
+    </div>
+    ${reading.imu.storage_key?`<a class="sensor-raw-link" href="${evidenceUrl(reading.imu.storage_key)}" target="_blank" rel="noopener">원본 IMU JSON 열기 ↗</a>`:''}
+  </div>`;
+}
+function imuComparisonPanel(beforeData,afterData){
+  const before=imuReading(beforeData),after=imuReading(afterData);
+  const orientationDelta=quaternionDeltaDegrees(before.orientation,after.orientation);
+  const accelerationDelta=before.accelerationMagnitude!=null&&after.accelerationMagnitude!=null
+    ?Math.abs(after.accelerationMagnitude-before.accelerationMagnitude):null;
+  const angularSpeedAfter=after.angularSpeed;
+  return `<section class="sensor-review-section">
+    <div class="sensor-review-heading"><div><span>PHYSICAL IMU</span><h3>굴착기 움직임·자세 비교</h3></div><small>굴착기 RigidBody 장착 센서 · 작업 전/후 정지 프레임</small></div>
+    <div class="imu-comparison-grid">${imuPhasePanel('작업 전',beforeData)}${imuPhasePanel('작업 후',afterData)}</div>
+    <div class="sensor-delta-strip">
+      ${sensorMetric('자세 변화',orientationDelta==null?'-':orientationDelta.toFixed(2),'deg',orientationDelta!=null&&orientationDelta>10?'warn':'')}
+      ${sensorMetric('가속도 크기 차이',accelerationDelta==null?'-':accelerationDelta.toFixed(3),'m/s²',accelerationDelta!=null&&accelerationDelta>3?'warn':'')}
+      ${sensorMetric('작업 후 각속도',angularSpeedAfter==null?'-':angularSpeedAfter.toFixed(4),'rad/s',angularSpeedAfter!=null&&angularSpeedAfter>.5?'warn':'')}
+      ${sensorMetric('프레임 진행',before.available&&after.available?num(after.physicsStep-before.physicsStep):'-','steps',before.available&&after.available&&after.physicsStep<=before.physicsStep?'bad':'')}
+    </div>
+  </section>`;
+}
+function lidarPhasePanel(title,data){
+  const lidar=data?.lidar||{};
+  if(!lidar.available){
+    return `<div class="lidar-phase-card unavailable"><div class="sensor-card-title"><strong>${title}</strong><span class="sensor-state bad">미수집</span></div><p>${esc(lidar.reason||'LiDAR 데이터가 없습니다.')}</p></div>`;
+  }
+  const ratio=Number(lidar.hit_ratio);
+  return `<div class="lidar-phase-card">
+    <div class="sensor-card-title"><strong>${title}</strong><span class="sensor-state ok">${num(lidar.point_count)} points</span></div>
+    <div class="lidar-bar"><span style="width:${Math.max(0,Math.min(100,(Number.isFinite(ratio)?ratio:0)*100))}%"></span></div>
+    <div class="lidar-data-row"><span>반환율</span><b>${Number.isFinite(ratio)?`${(ratio*100).toFixed(1)}%`:'-'}</b></div>
+    <div class="lidar-data-row"><span>센서 원점 XYZ</span><b>${sensorVectorLabel(lidar.origin_m,2)} m</b></div>
+    <div class="lidar-data-row"><span>범위</span><b>${Array.isArray(lidar.range_m)?`${lidar.range_m.map(value=>num(value)).join('–')} m`:'-'}</b></div>
+    ${lidar.storage_key?`<a class="sensor-raw-link" href="${evidenceUrl(lidar.storage_key)}" target="_blank" rel="noopener">Point Cloud PLY 열기 ↗</a>`:''}
+  </div>`;
+}
+function lidarComparisonPanel(beforeData,afterData,result){
+  const before=beforeData?.lidar||{},after=afterData?.lidar||{};
+  const geometry=result.geometry_change||{};
+  const originDelta=vectorDistance(before.origin_m,after.origin_m);
+  const pointDelta=before.available&&after.available?Number(after.point_count||0)-Number(before.point_count||0):null;
+  return `<section class="sensor-review-section">
+    <div class="sensor-review-heading"><div><span>3D RAYCAST LIDAR</span><h3>Point Cloud·지형 변화 비교</h3></div><small>동일 작업 위치의 작업 전/후 스캔</small></div>
+    <div class="lidar-comparison-grid">${lidarPhasePanel('작업 전',beforeData)}${lidarPhasePanel('작업 후',afterData)}</div>
+    <div class="sensor-delta-strip">
+      ${sensorMetric('절토',geometry.available?num(geometry.removed_volume_m3||0):'-','㎥')}
+      ${sensorMetric('성토',geometry.available?num(geometry.added_volume_m3||0):'-','㎥')}
+      ${sensorMetric('변경 격자',geometry.available?num(geometry.changed_cell_count||0):'-','cells')}
+      ${sensorMetric('센서 위치 차이',originDelta==null?'-':originDelta.toFixed(3),'m',originDelta!=null&&originDelta>.75?'warn':'')}
+      ${sensorMetric('반환점 증감',pointDelta==null?'-':`${pointDelta>=0?'+':''}${num(pointDelta)}`,'points')}
+    </div>
+  </section>`;
+}
+function evidenceDiagnostics(evidence,result){
+  const before=evidence.before||{},after=evidence.after||{};
+  const beforeImu=imuReading(before),afterImu=imuReading(after);
+  const quality=evidence.quality||{};
+  const warnings=[];
+  (quality.missing_sensor_types||[]).forEach(sensor=>warnings.push({tone:'bad',message:`필수 센서 미수집: ${sensor}`}));
+  if(quality.timestamps_valid===false)warnings.push({tone:'bad',message:'Evidence 시간 순서가 유효하지 않습니다.'});
+  for(const [phase,label] of [[before,'작업 전'],[after,'작업 후']]){
+    if(!phase?.image?.available)warnings.push({tone:'bad',message:`${label} 카메라 이미지가 없습니다.`});
+    if(!phase?.lidar?.available)warnings.push({tone:'bad',message:`${label} LiDAR Point Cloud가 없습니다.`});
+    if(!imuReading(phase).available)warnings.push({tone:'bad',message:`${label} IMU 물리 프레임이 없습니다.`});
+  }
+  if(beforeImu.available&&afterImu.available&&afterImu.physicsStep<=beforeImu.physicsStep){
+    warnings.push({tone:'bad',message:'작업 후 IMU 프레임이 작업 전보다 진행되지 않았습니다.'});
+  }
+  for(const [reading,label] of [[beforeImu,'작업 전'],[afterImu,'작업 후']]){
+    if(reading.available&&Math.abs(reading.accelerationMagnitude-9.81)>3){
+      warnings.push({tone:'warn',message:`${label} 캡처 시 가속도 크기가 정지 기준과 크게 다릅니다 (${reading.accelerationMagnitude.toFixed(2)} m/s²).`});
+    }
+    if(reading.available&&reading.angularSpeed>.5){
+      warnings.push({tone:'warn',message:`${label} 캡처 시 장비가 회전 중일 수 있습니다 (${reading.angularSpeed.toFixed(3)} rad/s).`});
+    }
+  }
+  const originDelta=vectorDistance(before?.lidar?.origin_m,after?.lidar?.origin_m);
+  if(originDelta!=null&&originDelta>.75)warnings.push({tone:'warn',message:`전·후 LiDAR 센서 위치가 ${originDelta.toFixed(2)}m 다릅니다.`});
+  if(!result?.geometry_change?.available)warnings.push({tone:'warn',message:`LiDAR 지형 비교 불가: ${result?.geometry_change?.reason||'비교 결과 없음'}`});
+  return `<section class="evidence-diagnostics ${warnings.length?'has-warning':'all-clear'}">
+    <div><span class="diagnostic-icon">${warnings.length?'!':'✓'}</span><div><strong>${warnings.length?`검토 필요 ${warnings.length}건`:'센서 Evidence 정상'}</strong><small>${warnings.length?'아래 항목은 자동 승인/반려가 아닌 관리자 확인 정보입니다.':'카메라·LiDAR·IMU 전후 데이터와 시간 순서가 확인됐습니다.'}</small></div></div>
+    ${warnings.length?`<ul>${warnings.map(item=>`<li class="${item.tone}">${esc(item.message)}</li>`).join('')}</ul>`:''}
+  </section>`;
+}
+function formatExecutionDuration(seconds){
+  const value=Number(seconds);
+  if(!Number.isFinite(value))return '-';
+  if(value<60)return `${value.toFixed(2)}초`;
+  return `${Math.floor(value/60)}분 ${(value%60).toFixed(1)}초`;
+}
+function executionMetricCards(result,evidence){
+  const geometry=result.geometry_change||{};
+  const quantity=result.performed_quantity||{};
+  const quality=evidence.quality||{};
+  const completeness=Number(quality.completeness_ratio);
+  const metric=(label,value,note='')=>`<div class="execution-metric"><span>${label}</span><strong>${value}</strong>${note?`<small>${note}</small>`:''}</div>`;
+  return `<div class="execution-metrics">
+    ${metric('실행 시간',formatExecutionDuration(result.duration_seconds??evidence.duration_seconds),'실제 Adapter 실행 구간')}
+    ${metric('작업량',quantity.value!=null?`${num(quantity.value)} ${esc(quantity.unit||'')}`:'산정 안 됨',quantity.method?`${esc(quantity.method)}${quantity.estimated?' · 추정':''}`:'센서 비교 결과 없음')}
+    ${metric('절토 / 성토',geometry.available?`${num(geometry.removed_volume_m3||0)} / ${num(geometry.added_volume_m3||0)} ㎥`:'비교 불가',geometry.method?esc(geometry.method):esc(geometry.reason||''))}
+    ${metric('Evidence 완결성',Number.isFinite(completeness)?`${Math.round(completeness*100)}%`:'기존 형식',(quality.missing_sensor_types||[]).length?`미수집: ${(quality.missing_sensor_types||[]).map(item=>esc(item)).join(', ')}`:'필수 센서 수집 완료')}
+  </div>`;
+}
+function executionEventTimeline(evidence){
+  const events=evidence.events||[];
+  if(!events.length)return '<div class="execution-event-empty">기존 Commit에는 실행 이벤트가 없습니다.</div>';
+  return `<div class="execution-event-list">${events.map(event=>`<div class="execution-event-row">
+    <span>${Number(event.elapsed_seconds||0).toFixed(2)}s</span>
+    <div><strong>${esc(event.event_type||'-')}</strong><small>${esc(event.work_state||'-')}</small></div>
+  </div>`).join('')}</div>`;
 }
 function openIsaacEvidence(instructionId){
   const instruction=isaacInstructions.find(item=>item.id===instructionId);
@@ -1147,19 +1646,72 @@ function openIsaacEvidence(instructionId){
   if(!instruction||!commit)return;
   const evidence=commit.evidence||{};
   const result=commit.result||{};
+  const bindings=instruction.params?.resource_bindings||{};
+  const equipmentPath=instruction.params?.equipment_prim_path||bindings.equipment||'-';
+  const targetPath=instruction.params?.target_prim_path||bindings.target||result.target_prim_path||'-';
   openModal({
     eyebrow:'ISAAC EXECUTION COMMIT',
     title:'작업 전·후 증거 검토',
+    modalClass:'evidence-review-modal',
     body:`<div class="commit-evidence-summary">
       <strong>${esc(instruction.params?.label||instruction.kind)}</strong>
-      <span>${esc(instruction.params?.equipment_prim_path||'-')} → ${esc(instruction.params?.target_prim_path||'-')}</span>
+      <span>${esc(equipmentPath)} → ${esc(targetPath)}</span>
       <small>실행 원본: ${esc(result.simulator||'-')} · 검증: ${esc(result.source||'-')}</small>
     </div>
-    <div class="commit-evidence-grid">
-      ${evidencePhaseCard('작업 전',evidence.before)}
-      ${evidencePhaseCard('작업 후',evidence.after)}
-    </div>`,
+    ${executionMetricCards(result,evidence)}
+    <section class="sensor-review-section camera-review-section">
+      <div class="sensor-review-heading">
+        <div><span>EQUIPMENT CAMERA</span><h3>장비 카메라 작업 전·후</h3></div>
+        <small>작업 대상에 접근한 뒤 암·버킷 동작 직전과 작업 완료 시점을 비교합니다.</small>
+      </div>
+      <div class="commit-evidence-grid">
+        ${evidencePhaseCard('작업 전',evidence.before)}
+        ${evidencePhaseCard('작업 후',evidence.after)}
+      </div>
+    </section>
+    ${evidenceDiagnostics(evidence,result)}
+    ${lidarComparisonPanel(evidence.before,evidence.after,result)}
+    ${imuComparisonPanel(evidence.before,evidence.after)}
+    <section class="execution-events"><div class="execution-events-head"><h3>실행 이벤트</h3><span>${num((evidence.events||[]).length)}건</span></div>${executionEventTimeline(evidence)}</section>`,
     footer:`<button class="ghost-button" data-modal-close>닫기</button>${commit.review_status==='pending'?`<button class="secondary-button" data-isaac-approve="${esc(commit.id)}">증거 확인 · 승인</button>`:''}`,
+  });
+  $$('[data-evidence-image]',$('#modalBody')).forEach(image=>image.addEventListener('error',()=>{
+    image.hidden=true;
+    const fallback=image.nextElementSibling;
+    if(fallback)fallback.hidden=false;
+  },{once:true}));
+}
+function openRealWorkPackageDetail(instructionId){
+  const instruction=isaacInstructions.find(item=>item.id===instructionId);
+  if(!instruction)return;
+  const params=instruction.params||{};
+  const bindings=params.resource_bindings||{};
+  const commit=isaacLatestCommit(instruction);
+  const status=realWorkPackageStatus(instruction.status);
+  const equipmentPath=params.equipment_prim_path||bindings.equipment||'';
+  const targetPath=params.target_prim_path||bindings.target||commit?.result?.target_prim_path||'';
+  const missing=params.missing_resources||[];
+  const lifecycle=[
+    ['생성',instruction.created_at],
+    ['Isaac 수신',instruction.dispatched_at],
+    ['최근 변경',instruction.updated_at],
+    ['Commit',commit?.committed_at],
+    ['관리자 판정',commit?.reviewed_at],
+  ];
+  openModal({
+    eyebrow:'BACKEND WORK PACKAGE',
+    title:realWorkPackageId(instruction),
+    body:`<div class="real-wp-detail-head"><div><span class="badge ${status.badge}">${esc(status.label)}</span><h3>${esc(params.summary||params.label||instruction.note||realWorkPackageKind(instruction))}</h3><p>${esc(params.source_text||instruction.note||'자연어 원문 미기록')}</p></div><small>Isaac instruction<br><code>${esc(instruction.id)}</code></small></div>
+      <div class="real-wp-detail-grid">
+        <div><span>작업 종류</span><strong>${esc(realWorkPackageKind(instruction))}</strong></div>
+        <div><span>생성자</span><strong>${esc(instruction.created_by_username||'시스템')}</strong></div>
+        <div class="wide"><span>장비 Prim</span><code>${esc(equipmentPath||'미배정')}</code></div>
+        <div class="wide"><span>대상 Prim</span><code>${esc(targetPath||'미배정')}</code></div>
+      </div>
+      ${missing.length?`<div class="real-wp-missing"><strong>현재 부족한 실행 자원</strong>${missing.map(item=>`<span>${esc(item)}</span>`).join('')}</div>`:''}
+      <div class="real-wp-lifecycle">${lifecycle.map(([label,value])=>`<div class="${value?'done':''}"><i></i><span>${esc(label)}</span><b>${value?esc(new Date(value).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})):'-'}</b></div>`).join('')}</div>
+      <div class="real-wp-commit-summary"><span>실행 Commit</span><strong>${commit?`${esc(commit.status)} · ${num(commit.attempt||1)}차`:'아직 생성되지 않음'}</strong><small>${commit?`검토 상태: ${esc(commit.review_status||'pending')}`:'Isaac Adapter가 작업을 완료하면 Evidence와 함께 생성됩니다.'}</small></div>`,
+    footer:`<button class="ghost-button" data-modal-close>닫기</button>${commit?`<button class="secondary-button" data-isaac-detail="${esc(instruction.id)}">Evidence 검토</button>`:''}`,
   });
 }
 async function reviewIsaacCommit(commitId,decision){
@@ -1178,8 +1730,9 @@ async function reviewIsaacCommit(commitId,decision){
       addEvent('success','Isaac 결과 승인','승인된 작업 결과가 Site Work Map에 반영됐습니다.');
       toast('승인 완료','맵에 작업 결과가 반영됐습니다.','success');
     }else{
-      addEvent('warning','Isaac 결과 반려',`사유: ${note}`);
-      toast('반려 처리','맵에는 반영되지 않습니다.','warning');
+      reloadIsaacMapObjects();
+      addEvent('warning','Isaac Conflict 등록',`반려 사유: ${note}`);
+      toast('Conflict 등록','공식 맵에는 반영되지 않고 Constraint 화면에 남습니다.','warning');
     }
     renderAll();
   }catch(error){
@@ -1188,7 +1741,9 @@ async function reviewIsaacCommit(commitId,decision){
 }
 
 /* Modal helpers */
-function openModal({eyebrow='EDIT',title,body,footer}){
+function openModal({eyebrow='EDIT',title,body,footer,modalClass=''}){
+  const modal=$('#genericModal');
+  modal.className=`modal${modalClass?` ${modalClass}`:''}`;
   $('#modalEyebrow').textContent=eyebrow;$('#modalTitle').textContent=title;$('#modalBody').innerHTML=body;$('#modalFooter').innerHTML=footer||`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" data-modal-save>저장</button>`;$('#modalBackdrop').classList.remove('hidden');$('#modalBackdrop').setAttribute('aria-hidden','false');
   $$('[data-modal-close]',$('#modalFooter')).forEach(b=>b.addEventListener('click',closeModal));
 }
@@ -1314,7 +1869,7 @@ async function performFullReset(){
   safeRemoveItem(ONBOARD_KEY);
   try{
     if(!remoteReady||!remoteCanEdit)throw new Error('RESET_NOT_READY');
-    const response=await apiFetch(`/state/${PROJECT_ID}`,{method:'PUT',body:JSON.stringify({payload:state,revision:remoteRevision,source:'full-reset'})});
+    const response=await apiFetch(`/state/${PROJECT_ID}`,{method:'PUT',body:JSON.stringify({payload:sharedStatePayload(),revision:remoteRevision,source:'full-reset'})});
     if(!response.ok)throw new Error(`RESET_${response.status}`);
     await apiFetch('/auth/logout',{method:'POST',body:'{}'}).catch(()=>null);
     location.href='/login';

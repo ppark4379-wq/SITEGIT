@@ -1,0 +1,22 @@
+{
+  "source_material": "tex_u2_v2",
+  "source_uv_center": [
+    0.38,
+    0.67
+  ],
+  "source_pixel_bounds": [
+    2793,
+    2447,
+    3433,
+    2959
+  ],
+  "output_size": [
+    640,
+    512
+  ],
+  "pixel_policy": "original-map-crop-only",
+  "outputs": {
+    "diffuse": "E:\\SITEGIT\\isaac_adapter\\assets\\demolition_soil_tile_diffuse.jpg",
+    "normal": "E:\\SITEGIT\\isaac_adapter\\assets\\demolition_soil_tile_normal.jpg"
+  }
+}

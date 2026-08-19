@@ -65,13 +65,14 @@ class ExecutionsService:
         params: dict,
         note: str | None,
         user: User,
+        initial_status: str = INSTRUCTION_PENDING,
     ) -> WorkInstruction:
         instruction = WorkInstruction(
             project_id=project_id,
             kind=kind,
             params=params,
             note=note,
-            status=INSTRUCTION_PENDING,
+            status=initial_status,
             created_by=user.id,
             created_by_username=user.username,
         )
@@ -150,6 +151,9 @@ class ExecutionsService:
         )
         db.add(commit)
         instruction.status = INSTRUCTION_COMMITTED
+        evidence_quality = evidence.get("quality") or {}
+        performed_quantity = result.get("performed_quantity")
+        geometry_change = result.get("geometry_change") or {}
         # 감사 로그가 commit.id를 참조하므로 컬럼 default를 먼저 확정합니다.
         db.flush()
         db.add(
@@ -164,6 +168,17 @@ class ExecutionsService:
                     "status": commit_status,
                     "attempt": commit.attempt,
                     "adapter": adapter,
+                    "execution_id": result.get("execution_id"),
+                    "duration_seconds": result.get("duration_seconds"),
+                    "performed_quantity": performed_quantity,
+                    "removed_volume_m3": geometry_change.get("removed_volume_m3"),
+                    "added_volume_m3": geometry_change.get("added_volume_m3"),
+                    "evidence_completeness_ratio": evidence_quality.get(
+                        "completeness_ratio"
+                    ),
+                    "missing_sensor_types": evidence_quality.get(
+                        "missing_sensor_types", []
+                    ),
                 },
             )
         )

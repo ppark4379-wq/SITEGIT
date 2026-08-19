@@ -27,7 +27,7 @@ def main() -> None:
 
     simulation_app = SimulationApp({"headless": True})
     try:
-        from pxr import Usd
+        from pxr import Gf, Usd, UsdGeom, UsdSkel
 
         reports: list[dict[str, object]] = []
         for asset in args.assets:
@@ -36,6 +36,8 @@ def main() -> None:
                 print(f"\n[열기 실패] {asset}")
                 continue
             default_prim = stage.GetDefaultPrim()
+            meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+            up_axis = str(UsdGeom.GetStageUpAxis(stage))
             roots = [
                 {"path": str(prim.GetPath()), "type": prim.GetTypeName() or "Prim"}
                 for prim in stage.GetPseudoRoot().GetChildren()
@@ -69,8 +71,7 @@ def main() -> None:
                             for sample in attribute.GetTimeSamples()
                         }
                     )
-                    notable.append(
-                        {
+                    item = {
                             "path": path,
                             "type": prim.GetTypeName() or "Prim",
                             "variants": variants,
@@ -81,11 +82,73 @@ def main() -> None:
                                 "end": time_samples[-1] if time_samples else None,
                             },
                         }
-                    )
+                    if prim.IsA(UsdGeom.Xformable):
+                        xformable = UsdGeom.Xformable(prim)
+                        local_matrix = xformable.GetLocalTransformation(Usd.TimeCode.Default())
+                        resets_stack = xformable.GetResetXformStack()
+                        world_matrix = xformable.ComputeLocalToWorldTransform(
+                            Usd.TimeCode.Default()
+                        )
+                        item["transform"] = {
+                            "local_translation": [
+                                float(value) for value in local_matrix.ExtractTranslation()
+                            ],
+                            "world_translation": [
+                                float(value) for value in world_matrix.ExtractTranslation()
+                            ],
+                            "local_matrix": [
+                                [float(local_matrix[row][column]) for column in range(4)]
+                                for row in range(4)
+                            ],
+                            "resets_xform_stack": bool(resets_stack),
+                        }
+                    if prim.IsA(UsdSkel.Animation):
+                        animation = UsdSkel.Animation(prim)
+                        joints = [str(value) for value in (animation.GetJointsAttr().Get() or [])]
+                        item["animation"] = {
+                            "joints": joints,
+                            "translation_samples": animation.GetTranslationsAttr().GetTimeSamples(),
+                            "rotation_samples": animation.GetRotationsAttr().GetTimeSamples(),
+                            "scale_samples": animation.GetScalesAttr().GetTimeSamples(),
+                        }
+                    if prim.IsA(UsdGeom.Subset):
+                        subset = UsdGeom.Subset(prim)
+                        mesh = UsdGeom.Mesh(prim.GetParent())
+                        points = mesh.GetPointsAttr().Get() or []
+                        counts = [int(value) for value in (mesh.GetFaceVertexCountsAttr().Get() or [])]
+                        indices = [int(value) for value in (mesh.GetFaceVertexIndicesAttr().Get() or [])]
+                        selected_faces = {int(value) for value in (subset.GetIndicesAttr().Get() or [])}
+                        selected_vertices: set[int] = set()
+                        offset = 0
+                        for face_index, count in enumerate(counts):
+                            if face_index in selected_faces:
+                                selected_vertices.update(indices[offset : offset + count])
+                            offset += count
+                        matrix = UsdGeom.Xformable(mesh).ComputeLocalToWorldTransform(
+                            Usd.TimeCode.Default()
+                        )
+                        world_points = [
+                            matrix.Transform(Gf.Vec3d(*[float(axis) for axis in points[index]]))
+                            for index in selected_vertices
+                            if 0 <= index < len(points)
+                        ]
+                        item["subset"] = {
+                            "face_count": len(selected_faces),
+                            "vertex_count": len(selected_vertices),
+                            "bounds": {
+                                "min": [min(float(point[axis]) for point in world_points) for axis in range(3)],
+                                "max": [max(float(point[axis]) for point in world_points) for axis in range(3)],
+                            }
+                            if world_points
+                            else None,
+                        }
+                    notable.append(item)
             reports.append(
                 {
                     "asset": str(asset.resolve()),
                     "default_prim": str(default_prim.GetPath()) if default_prim else None,
+                    "meters_per_unit": meters_per_unit,
+                    "up_axis": up_axis,
                     "time_codes_per_second": stage.GetTimeCodesPerSecond(),
                     "start_time_code": stage.GetStartTimeCode(),
                     "end_time_code": stage.GetEndTimeCode(),

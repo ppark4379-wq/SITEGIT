@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 USD_PRIM_PATH_PATTERN = r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
 MAX_EXCAVATION_TARGET_SPAN_M = 25.0
@@ -64,23 +64,151 @@ class StagePrimRecord(BaseModel):
     path: str = Field(pattern=USD_PRIM_PATH_PATTERN, max_length=500)
     name: str = Field(min_length=1, max_length=160)
     type_name: str = Field(default="Xform", max_length=80)
-    role: Literal["equipment", "diggable"]
+    role: Literal["equipment", "diggable", "scene_object"]
     world_position: Vector3
     bounds_size: Vector3 = Field(default_factory=lambda: Vector3(x=0, y=0, z=0))
     active: bool = True
+    zone_id: str | None = Field(default=None, max_length=80)
+    capabilities: list[str] = Field(default_factory=list, max_length=50)
+    display_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    geometry: dict[str, Any] | None = None
 
 
 class StageInventoryUpdate(BaseModel):
     project_id: str = Field(max_length=80)
+    scenario_id: str | None = Field(default=None, min_length=1, max_length=120)
     stage_identifier: str = Field(default="anonymous-stage", max_length=500)
     equipment: list[StagePrimRecord] = Field(default_factory=list, max_length=100)
     diggable_targets: list[StagePrimRecord] = Field(default_factory=list, max_length=500)
+    scene_objects: list[StagePrimRecord] = Field(default_factory=list, max_length=500)
     captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class StageInventoryResponse(StageInventoryUpdate):
     connected: bool
     age_seconds: float
+
+
+class StageBranchHeadResponse(BaseModel):
+    """Latest manager-approved Isaac Stage snapshot for one branch."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    project_id: str
+    branch: str
+    scenario_id: str | None = Field(default=None, max_length=120)
+    commit_id: str
+    parent_commit_id: str | None = None
+    instruction_id: str
+    approved_by: str
+    approved_at: datetime
+    storage_key: str
+    sha256: str
+    size_bytes: int = Field(ge=0)
+
+
+class QuantityMeasurement(BaseModel):
+    """One measured work quantity with an explicit unit and calculation method."""
+
+    value: float
+    unit: str = Field(min_length=1, max_length=40)
+    method: str | None = Field(default=None, max_length=120)
+    estimated: bool = False
+
+
+class GeometryChange(BaseModel):
+    """Scenario-neutral before/after surface change calculated from sensor data."""
+
+    available: bool = False
+    method: str | None = Field(default=None, max_length=120)
+    compared_cell_count: int = Field(default=0, ge=0)
+    changed_cell_count: int = Field(default=0, ge=0)
+    cell_size_m: float | None = Field(default=None, gt=0)
+    removed_volume_m3: float | None = Field(default=None, ge=0)
+    added_volume_m3: float | None = Field(default=None, ge=0)
+    net_volume_change_m3: float | None = None
+    mean_absolute_height_change_m: float | None = Field(default=None, ge=0)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class ExecutionEventRecord(BaseModel):
+    """Timestamped fact emitted while one Isaac Work Package is executed."""
+
+    sequence: int = Field(ge=1)
+    timestamp: datetime
+    elapsed_seconds: float = Field(ge=0)
+    event_type: str = Field(min_length=1, max_length=80)
+    work_state: str = Field(min_length=1, max_length=80)
+    equipment_prim_path: str | None = Field(default=None, max_length=500)
+    target_prim_path: str | None = Field(default=None, max_length=500)
+    position: Vector3 | None = None
+    performed_quantity: QuantityMeasurement | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class SensorArtifact(BaseModel):
+    """A stored camera, LiDAR, IMU, Stage, or manifest artifact."""
+
+    sensor_type: Literal["camera", "lidar", "imu", "stage", "telemetry", "manifest"]
+    phase: Literal["before", "during", "after", "execution"]
+    available: bool
+    captured_at: datetime
+    storage_key: str | None = Field(default=None, max_length=1000)
+    format: str | None = Field(default=None, max_length=40)
+    source: str | None = Field(default=None, max_length=160)
+    sample_count: int | None = Field(default=None, ge=0)
+    reason: str | None = Field(default=None, max_length=500)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceQuality(BaseModel):
+    """Completeness is reported, not used as a hidden acceptance rule."""
+
+    required_sensor_types: list[str] = Field(default_factory=list)
+    available_sensor_types: list[str] = Field(default_factory=list)
+    missing_sensor_types: list[str] = Field(default_factory=list)
+    completeness_ratio: float = Field(ge=0, le=1)
+    timestamps_valid: bool = True
+    notes: list[str] = Field(default_factory=list)
+
+
+class EvidenceBundle(BaseModel):
+    """Stable Adapter-to-Backend contract for a completed execution attempt."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    evidence_id: str = Field(min_length=1, max_length=100)
+    instruction_id: str = Field(min_length=1, max_length=100)
+    execution_id: str = Field(min_length=1, max_length=100)
+    work_package_id: str | None = Field(default=None, max_length=100)
+    equipment_id: str | None = Field(default=None, max_length=160)
+    zone_id: str | None = Field(default=None, max_length=80)
+    source: str = Field(default="isaac-sim", max_length=80)
+    started_at: datetime
+    finished_at: datetime
+    duration_seconds: float = Field(ge=0)
+    events: list[ExecutionEventRecord] = Field(default_factory=list)
+    artifacts: list[SensorArtifact] = Field(default_factory=list)
+    before: dict[str, Any] = Field(default_factory=dict)
+    after: dict[str, Any] = Field(default_factory=dict)
+    quality: EvidenceQuality
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "EvidenceBundle":
+        if self.finished_at < self.started_at:
+            raise ValueError("finished_at must not be earlier than started_at")
+        return self
+
+
+class WorkResultSummary(BaseModel):
+    """Common result envelope; operation-specific read-back fields remain allowed."""
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: Literal["1.0"] = "1.0"
+    operation: str = Field(min_length=1, max_length=120)
+    execution_id: str = Field(min_length=1, max_length=100)
+    duration_seconds: float = Field(ge=0)
+    performed_quantity: QuantityMeasurement | None = None
+    geometry_change: GeometryChange = Field(default_factory=GeometryChange)
 
 
 class CommitCreate(BaseModel):
@@ -90,6 +218,24 @@ class CommitCreate(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
     evidence: dict[str, Any] = Field(default_factory=dict)
     adapter: str = Field(default="isaac-adapter", max_length=60)
+
+    @model_validator(mode="after")
+    def validate_versioned_payloads(self) -> "CommitCreate":
+        # Older adapters can still send their existing unversioned dicts while
+        # versioned payloads are strictly checked at the API boundary.
+        result_summary = None
+        evidence_bundle = None
+        if self.result.get("schema_version") is not None:
+            result_summary = WorkResultSummary.model_validate(self.result)
+        if self.evidence.get("schema_version") is not None:
+            evidence_bundle = EvidenceBundle.model_validate(self.evidence)
+        if (
+            result_summary is not None
+            and evidence_bundle is not None
+            and result_summary.execution_id != evidence_bundle.execution_id
+        ):
+            raise ValueError("result and evidence must reference the same execution_id")
+        return self
 
 
 class ReviewDecision(BaseModel):
@@ -142,9 +288,39 @@ class MapObject(BaseModel):
     approved_by: str | None
     approved_at: datetime | None
     prim_path: str | None = None
+    geometry: dict[str, Any] | None = None
+
+
+class MapConflict(BaseModel):
+    """A rejected execution proposal retained outside the published map."""
+
+    id: str
+    commit_id: str
+    instruction_id: str
+    label: str
+    reason: str
+    position: Vector3 | None = None
+    size: Vector3 | None = None
+    prim_path: str | None = None
+    rejected_by: str | None = None
+    rejected_at: datetime | None = None
+
+
+class MapTimelineStep(BaseModel):
+    """One immutable approved Commit and its replayable map delta."""
+
+    commit_id: str
+    instruction_id: str
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    objects: list[MapObject] = Field(default_factory=list)
 
 
 class MapObjectsResponse(BaseModel):
     project_id: str
     objects: list[MapObject]
+    baseline_diggable_targets: list[StagePrimRecord] = Field(default_factory=list)
+    baseline_scene_objects: list[StagePrimRecord] = Field(default_factory=list)
+    timeline: list[MapTimelineStep] = Field(default_factory=list)
+    conflicts: list[MapConflict] = Field(default_factory=list)
     revision: str

@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         metavar="ASSET",
         help=(
             "현장 지형을 올립니다. 경로를 생략하면 "
-            "SITEGIT_DATA_ROOT/isaac/assets/construction_site_mud.usdz 를 씁니다."
+            "SITEGIT_SITE_ASSET 또는 demolition 기본 USDZ를 씁니다."
         ),
     )
     parser.add_argument(
@@ -106,9 +106,16 @@ def main() -> None:
 
     # 여기서부터 omni/pxr 사용 가능합니다.
     import omni.usd
+    from isaacsim.core.api import World
 
     from isaac_bridge import IsaacBridge, _path_list
     from cube_task_runner import PROJECT_ID, API_URL, USERNAME, PASSWORD, run_instruction
+    from equipment_sensors import (
+        EquipmentSensorRig,
+        SensorRigConfig,
+        prepare_raycast_collisions,
+    )
+    from equipment_physics import prepare_equipment_physics, track_contact_pose
     from evidence_exporter import EvidenceExporter
     from site_stage import (
         create_diggable_soil_pile,
@@ -117,11 +124,52 @@ def main() -> None:
         load_site,
         write_site_frame,
     )
+    from pipeline_scenario import create_pipeline_backfill
+    from terrain_collision_proxy import (
+        collision_proxy_height_sampler,
+        create_terrain_collision_proxy,
+        load_or_build_collision_proxy_data,
+    )
     from sitegit_client import SiteGitClient
+    from stage_snapshots import load_branch_head_snapshot, save_pending_stage_snapshot
 
     try:
-        if args.usd:
-            omni.usd.get_context().open_stage(str(Path(args.usd).resolve()))
+        data_root_value = Path(os.getenv("SITEGIT_DATA_ROOT", REPO_ROOT / "runtime"))
+        if not data_root_value.is_absolute():
+            data_root_value = REPO_ROOT / data_root_value
+        data_root_value = data_root_value.resolve()
+        branch_name = os.getenv("SITEGIT_BRANCH", "main").strip() or "main"
+        scenario_id = os.getenv(
+            "SITEGIT_STAGE_SCENARIO_ID", "pipeline-demolition-v12"
+        ).strip()
+        restore_head = os.getenv(
+            "SITEGIT_RESTORE_BRANCH_HEAD", "true"
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        approved_stage_path = None
+        approved_head = None
+        if args.usd is None and restore_head and not args.no_site:
+            approved_stage_path, approved_head = load_branch_head_snapshot(
+                data_root_value,
+                PROJECT_ID,
+                branch_name,
+                scenario_id=scenario_id or None,
+            )
+        stage_source = Path(args.usd).resolve() if args.usd else approved_stage_path
+        loaded_head_commit_id = (
+            str(approved_head.get("commit_id")) if approved_head else None
+        )
+        collision_proxy = None
+        proxy_surface_height = None
+        pipeline_surface_height = None
+        if stage_source:
+            omni.usd.get_context().open_stage(str(stage_source))
+            if approved_stage_path and not args.usd:
+                print(
+                    "승인된 Isaac Stage HEAD 복원: "
+                    f"branch={branch_name} · commit={loaded_head_commit_id[:8]}\n"
+                    f"  {approved_stage_path}",
+                    flush=True,
+                )
         elif omni.usd.get_context().get_stage() is None:
             omni.usd.get_context().new_stage()
         # Stage와 확장 모듈이 완전히 올라올 때까지 몇 프레임 돌립니다.
@@ -129,12 +177,13 @@ def main() -> None:
             simulation_app.update()
 
         # 현장 지형은 기본으로 올립니다. --no-site로 끌 수 있습니다.
-        if not args.usd and not args.no_site:
+        if not stage_source and not args.no_site:
             asset = Path(args.site) if args.site else default_site_asset()
             if asset is None:
                 print(
                     "현장 에셋이 없어 빈 Stage로 시작합니다.\n"
-                    "  기대 경로: SITEGIT_DATA_ROOT/isaac/assets/construction_site_mud.usdz"
+                    "  기대 경로: SITEGIT_SITE_ASSET 또는 "
+                    "SITEGIT_DATA_ROOT/isaac/assets/construction_site_demolition.usdz"
                 )
             else:
                 print(f"현장 지형 로딩 중... {asset}")
@@ -155,14 +204,114 @@ def main() -> None:
                 )
 
         stage = omni.usd.get_context().get_stage()
-        create_demo_soil = os.getenv("SITEGIT_CREATE_DEMO_SOIL_PILE", "true").strip().lower()
+        proxy_enabled = os.getenv(
+            "SITEGIT_TERRAIN_COLLISION_PROXY", "true"
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        if proxy_enabled and stage.GetPrimAtPath("/World/Site").IsValid():
+            try:
+                collision_proxy = create_terrain_collision_proxy(
+                    stage,
+                    data_root_value,
+                    resolution_m=float(
+                        os.getenv("SITEGIT_TERRAIN_COLLISION_RESOLUTION_M", "2")
+                    ),
+                )
+                proxy_surface_height = collision_proxy_height_sampler(
+                    collision_proxy["cache_path"]
+                )
+                pipeline_surface_height = proxy_surface_height
+                print(
+                    "Terrain collision proxy ready: "
+                    f"{collision_proxy['triangle_count']:,} triangles · "
+                    f"{collision_proxy['resolution_m']:.1f}m grid · "
+                    f"cache={'hit' if collision_proxy['cache_hit'] else 'created'}",
+                    flush=True,
+                )
+            except Exception as error:
+                print(
+                    "[warning] Terrain collision proxy failed; using the full site mesh: "
+                    f"{error}",
+                    flush=True,
+                )
+
+        create_pipeline_fill = os.getenv(
+            "SITEGIT_CREATE_PIPELINE_BACKFILL", "true"
+        ).strip().lower()
+        if (
+            create_pipeline_fill not in {"0", "false", "no", "off"}
+            and stage.GetPrimAtPath("/World/Site").IsValid()
+        ):
+            if proxy_surface_height is None:
+                raise RuntimeError(
+                    "Pipeline backfill requires the terrain collision height cache"
+                )
+            visual_height_resolution = float(
+                os.getenv("SITEGIT_PIPELINE_HEIGHT_RESOLUTION_M", "0.5")
+            )
+            try:
+                visual_height_cache = (
+                    data_root_value
+                    / "isaac"
+                    / "terrain_backfill_height_0_5m.npz"
+                )
+                visual_height_data, visual_height_cache_hit = (
+                    load_or_build_collision_proxy_data(
+                        data_root_value / "isaac" / "site-work-map",
+                        visual_height_cache,
+                        resolution_m=visual_height_resolution,
+                    )
+                )
+                pipeline_surface_height = collision_proxy_height_sampler(
+                    visual_height_cache
+                )
+                print(
+                    "Pipeline visual height cache ready: "
+                    f"{visual_height_data['valid_cell_count']:,} cells · "
+                    f"{visual_height_resolution:.2f}m grid · "
+                    f"cache={'hit' if visual_height_cache_hit else 'created'}",
+                    flush=True,
+                )
+            except Exception as error:
+                pipeline_surface_height = proxy_surface_height
+                print(
+                    "[warning] Fine pipeline height cache failed; using the "
+                    f"collision grid: {error}",
+                    flush=True,
+                )
+            material_root = data_root_value / "isaac" / "assets" / "materials"
+            pipeline_base_color = os.getenv(
+                "SITEGIT_PIPELINE_SOIL_BASECOLOR",
+                str(material_root / "demolition_soil_tile_diffuse.jpg"),
+            )
+            pipeline_normal = os.getenv(
+                "SITEGIT_PIPELINE_SOIL_NORMAL",
+                str(material_root / "demolition_soil_tile_normal.jpg"),
+            )
+            fill_info = create_pipeline_backfill(
+                stage,
+                surface_height=pipeline_surface_height,
+                base_color_texture=pipeline_base_color,
+                normal_texture=pipeline_normal or None,
+                update_callback=simulation_app.update,
+            )
+            print(
+                "Pipeline 초기 복토 준비 완료: "
+                f"{fill_info['section_count']}개 구간 · "
+                f"{fill_info['root_prim_path']} · "
+                f"material={fill_info['material_path'] or 'displayColor fallback'} · "
+                f"scenario={scenario_id} · texture={pipeline_base_color} · "
+                f"normal={pipeline_normal or 'none'}",
+                flush=True,
+            )
+
+        create_demo_soil = os.getenv("SITEGIT_CREATE_DEMO_SOIL_PILE", "false").strip().lower()
         if (
             not args.no_demo_soil
             and create_demo_soil not in {"0", "false", "no", "off"}
             and stage.GetPrimAtPath("/World/Site").IsValid()
         ):
             pile_xy = _float_tuple(
-                os.getenv("SITEGIT_DEMO_SOIL_PILE_POSITION", "-12,12"),
+                os.getenv("SITEGIT_DEMO_SOIL_PILE_POSITION", "-26.5,-40.5"),
                 count=2,
                 setting_name="SITEGIT_DEMO_SOIL_PILE_POSITION",
             )
@@ -175,12 +324,13 @@ def main() -> None:
                 stage,
                 prim_path=os.getenv(
                     "SITEGIT_DEMO_SOIL_PILE_PRIM",
-                    "/World/Diggable/ZoneA_SoilPile_01",
+                    "/World/Diggable/ZoneC_SoilPile_01",
                 ),
                 position_xy=(pile_xy[0], pile_xy[1]),
                 size=(pile_size[0], pile_size[1], pile_size[2]),
-                zone_id=os.getenv("SITEGIT_DEMO_SOIL_PILE_ZONE", "A"),
+                zone_id=os.getenv("SITEGIT_DEMO_SOIL_PILE_ZONE", "C"),
                 simulation_app=simulation_app,
+                surface_height=proxy_surface_height,
             )
             print(
                 "독립 토사 Prim 준비 완료: "
@@ -190,11 +340,11 @@ def main() -> None:
                 flush=True,
             )
 
-        if not args.usd and not args.no_equipment:
+        if not stage_source and not args.no_equipment:
             equipment_value = args.equipment or os.getenv("SITEGIT_EQUIPMENT_ASSET", "")
             if equipment_value:
                 position_values = _float_tuple(
-                    os.getenv("SITEGIT_EQUIPMENT_POSITION", "0,0,0"),
+                    os.getenv("SITEGIT_EQUIPMENT_POSITION", "-26.5,-30.5,0"),
                     count=3,
                     setting_name="SITEGIT_EQUIPMENT_POSITION",
                 )
@@ -207,6 +357,7 @@ def main() -> None:
                     prim_path=equipment_prim_path,
                     position=position_values,
                     simulation_app=simulation_app,
+                    surface_height=proxy_surface_height,
                 )
                 print(
                     f"굴착기 로드 완료: {equipment_info['prim_path']} · "
@@ -234,26 +385,170 @@ def main() -> None:
                 "  INITIAL_MANAGER_PASSWORD와 같은지 확인하세요."
             ) from error
         bridge = IsaacBridge(update_callback=simulation_app.update)
-        data_root_value = Path(os.getenv("SITEGIT_DATA_ROOT", REPO_ROOT / "runtime"))
-        if not data_root_value.is_absolute():
-            data_root_value = REPO_ROOT / data_root_value
-        evidence_exporter = EvidenceExporter(data_root_value.resolve() / "evidence")
+        evidence_exporter = EvidenceExporter(data_root_value / "evidence")
+
+        def save_stage_candidate(instruction: dict, execution_id: str) -> dict:
+            snapshot = save_pending_stage_snapshot(
+                bridge.stage,
+                data_root=data_root_value,
+                project_id=PROJECT_ID,
+                branch=branch_name,
+                instruction_id=str(instruction["id"]),
+                execution_id=execution_id,
+                base_commit_id=loaded_head_commit_id,
+                scenario_id=scenario_id or None,
+            )
+            print(
+                "  [stage pending] "
+                f"branch={branch_name} · base="
+                f"{(loaded_head_commit_id or 'baseline')[:8]} · "
+                f"{snapshot['storage_key']}",
+                flush=True,
+            )
+            return snapshot
         equipment_paths = _path_list(
             "SITEGIT_EQUIPMENT_PRIMS", "/World/Equipment/EXC_001,/World/Armature"
         )
         diggable_roots = _path_list(
             "SITEGIT_DIGGABLE_ROOTS", "/World/Diggable"
         )
+        scene_object_roots = _path_list(
+            "SITEGIT_SCENE_OBJECT_ROOTS", "/World/SiteGit"
+        )
+
+        default_collision_roots = (
+            "/World/SiteGitTerrainCollision,/World/Diggable,/World/SiteGit"
+            if collision_proxy
+            else "/World/Site,/World/Diggable,/World/SiteGit"
+        )
+        collision_roots = _path_list(
+            "SITEGIT_LIDAR_COLLISION_ROOTS",
+            default_collision_roots,
+        )
+        if not collision_proxy and "/World/SiteGitTerrainCollision" in collision_roots:
+            collision_roots = [
+                "/World/Site" if path == "/World/SiteGitTerrainCollision" else path
+                for path in collision_roots
+            ]
+        collision_report = prepare_raycast_collisions(
+            bridge.stage,
+            collision_roots,
+            update_callback=simulation_app.update,
+            cooking_frames=max(
+                0, int(os.getenv("SITEGIT_COLLISION_COOKING_FRAMES", "20"))
+            ),
+        )
+        print(
+            "LiDAR collision 준비 완료: "
+            f"Mesh {collision_report['mesh_count']}개 · "
+            f"신규 Collision {collision_report['new_collision_count']}개",
+            flush=True,
+        )
+
+        physical_equipment: dict[str, dict] = {}
+        for equipment_path in equipment_paths:
+            if not bridge.stage.GetPrimAtPath(equipment_path).IsValid():
+                continue
+            try:
+                physical_equipment[equipment_path] = prepare_equipment_physics(
+                    bridge.stage,
+                    equipment_path,
+                    surface_height=proxy_surface_height or bridge._terrain_surface_z,
+                )
+                report = physical_equipment[equipment_path]
+                print(
+                    "굴착기 물리 준비 완료: "
+                    f"{equipment_path} · 좌우 궤도 Collider {len(report['collider_paths'])}개 · "
+                    f"질량 {os.getenv('SITEGIT_EQUIPMENT_MASS_KG', '18000')}kg",
+                    flush=True,
+                )
+            except Exception as error:
+                raise RuntimeError(f"굴착기 물리 초기화 실패 ({equipment_path}): {error}") from error
+
+        # Initialize a real physics/render loop before the equipment sensors.
+        # The off-screen camera and PhysX scene queries both depend on this
+        # context even when the normal runner window is visible.
+        world = World(
+            stage_units_in_meters=1.0,
+            physics_prim_path="/World/PhysicsScene",
+            set_defaults=False,
+        )
+        world.reset()
+
+        def render_sensor_frame() -> None:
+            world.step(render=True)
+
+        # All later equipment movement must advance the physics World, not just
+        # redraw Kit.  Otherwise authored velocities never affect the body.
+        bridge._update_callback = render_sensor_frame
+
+        import omni.timeline
+
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        settle_frames = max(1, int(os.getenv("SITEGIT_EQUIPMENT_SETTLE_FRAMES", "120")))
+        for frame in range(settle_frames):
+            world.step(render=(frame % 4 == 0 or frame == settle_frames - 1))
+
+        sensor_rig = None
+        sensor_equipment_path = next(
+            (
+                path
+                for path in equipment_paths
+                if bridge.stage.GetPrimAtPath(path).IsValid()
+            ),
+            "",
+        )
+        if sensor_equipment_path:
+            track_pose = track_contact_pose(bridge.stage, sensor_equipment_path)
+            print(
+                "굴착기 PhysX 안착 완료: "
+                f"궤도 중심 XY=({track_pose['x']:.2f}, {track_pose['y']:.2f}) · "
+                f"궤도 바닥 Z={track_pose['z']:.2f}m",
+                flush=True,
+            )
+            sensor_rig = EquipmentSensorRig(
+                bridge.stage,
+                sensor_equipment_path,
+                update_callback=render_sensor_frame,
+                config=SensorRigConfig.from_environment(),
+                physics_world=world,
+            )
+            sensor_info = sensor_rig.initialize()
+            print(
+                "굴착기 SensorRig 준비 완료\n"
+                f"  Mount  : {sensor_info['mount_prim_path']}\n"
+                f"  Camera : {sensor_info['camera_prim_path']} · "
+                f"{sensor_info['camera_resolution'][0]}x{sensor_info['camera_resolution'][1]}\n"
+                f"  LiDAR  : {sensor_info['lidar_ray_count']:,} rays · "
+                f"{sensor_info['lidar_points_prim_path']}\n"
+                f"  IMU    : {sensor_info['imu_prim_path']} · "
+                f"{sensor_info['imu_frequency_hz']} Hz",
+                flush=True,
+            )
+        else:
+            print(
+                "[warning] 유효한 장비 Prim이 없어 카메라/LiDAR SensorRig를 만들지 않았습니다.",
+                flush=True,
+            )
+
+        # Scene queries need an active PhysX scene.  The runner's normal update
+        # loop keeps the timeline advancing while work instructions are polled.
+        for _ in range(5):
+            world.step(render=True)
 
         def publish_inventory() -> None:
             inventory = bridge.stage_inventory(
                 equipment_paths=equipment_paths,
                 diggable_roots=diggable_roots,
+                scene_object_roots=scene_object_roots,
             )
+            inventory["scenario_id"] = scenario_id
             response = client.update_stage_inventory(PROJECT_ID, inventory)
             print(
                 "  [inventory] "
-                f"장비 {len(response['equipment'])} · 대상 {len(response['diggable_targets'])}"
+                f"장비 {len(response['equipment'])} · 대상 {len(response['diggable_targets'])} · "
+                f"Stage 객체 {len(response.get('scene_objects', []))}"
             )
 
         publish_inventory()
@@ -263,11 +558,13 @@ def main() -> None:
         elapsed = 0.0
         inventory_elapsed = 0.0
         frame_seconds = 1.0 / 60.0
+        waiting_commit_id: str | None = None
+        waiting_notice_printed = False
         while simulation_app.is_running():
             simulation_app.update()
             elapsed += frame_seconds
             inventory_elapsed += frame_seconds
-            if inventory_elapsed >= 5.0:
+            if inventory_elapsed >= 1.0:
                 inventory_elapsed = 0.0
                 try:
                     publish_inventory()
@@ -277,8 +574,79 @@ def main() -> None:
                 continue
             elapsed = 0.0
 
+            if waiting_commit_id:
+                try:
+                    reviewed = client.get_commit(waiting_commit_id)
+                except Exception as error:
+                    print(f"  [warning] Commit 검토 상태 확인 실패: {error}")
+                    continue
+                review_status = reviewed.get("review_status")
+                if review_status == "pending":
+                    if not waiting_notice_printed:
+                        print(
+                            f"  [waiting] Commit {waiting_commit_id[:8]} 관리자 승인/반려 대기",
+                            flush=True,
+                        )
+                        waiting_notice_printed = True
+                    continue
+                if review_status == "approved":
+                    loaded_head_commit_id = waiting_commit_id
+                    print(
+                        f"  [merged] Commit {waiting_commit_id[:8]} → {branch_name} HEAD",
+                        flush=True,
+                    )
+                    waiting_commit_id = None
+                    waiting_notice_printed = False
+                else:
+                    print(
+                        f"  [rejected] Commit {waiting_commit_id[:8]} · "
+                        "승인 HEAD로 안전하게 돌아가기 위해 Isaac Runner를 종료합니다. "
+                        "같은 명령으로 다시 실행하세요.",
+                        flush=True,
+                    )
+                    break
+
+            # A restarted Adapter must not claim new work while another
+            # execution is awaiting review. Once that review advances HEAD,
+            # this process exits so the new approved USD can be checked out.
             try:
-                instructions = client.claim_instructions(PROJECT_ID)
+                committed = client.list_instructions(
+                    PROJECT_ID,
+                    statuses=["committed"],
+                    limit=20,
+                )
+                pending_reviews = [
+                    commit
+                    for instruction in committed
+                    for commit in instruction.get("commits", [])
+                    if commit.get("review_status") == "pending"
+                ]
+                if pending_reviews:
+                    if not waiting_notice_printed:
+                        print(
+                            "  [waiting] 다른 실행 Commit의 관리자 검토가 끝날 때까지 "
+                            "새 Work Package를 가져오지 않습니다.",
+                            flush=True,
+                        )
+                        waiting_notice_printed = True
+                    continue
+                remote_head = client.get_branch_head(PROJECT_ID, branch_name)
+                remote_head_id = remote_head.get("commit_id") if remote_head else None
+                if remote_head_id != loaded_head_commit_id:
+                    print(
+                        "  [head changed] 승인 Branch HEAD가 변경되었습니다. "
+                        "최신 Stage를 복원하기 위해 Isaac Runner를 종료합니다. "
+                        "같은 명령으로 다시 실행하세요.",
+                        flush=True,
+                    )
+                    break
+                waiting_notice_printed = False
+            except Exception as error:
+                print(f"  [warning] Branch 실행 가능 상태 확인 실패: {error}")
+                continue
+
+            try:
+                instructions = client.claim_instructions(PROJECT_ID, limit=1)
             except Exception as error:  # 서버가 잠깐 끊겨도 Isaac은 계속 돌아야 합니다.
                 print(f"  [error] SiteGit 통신 실패: {error}")
                 continue
@@ -286,14 +654,19 @@ def main() -> None:
             if instructions:
                 print(f"지시 {len(instructions)}건 수신")
                 for instruction in instructions:
-                    run_instruction(
+                    commit = run_instruction(
                         client,
                         bridge,
                         instruction,
                         evidence_exporter=evidence_exporter,
-                        update_callback=simulation_app.update,
+                        update_callback=render_sensor_frame,
+                        sensor_rig=sensor_rig,
+                        stage_snapshot_callback=save_stage_candidate,
                     )
                     publish_inventory()
+                    if commit and commit.get("review_status") == "pending":
+                        waiting_commit_id = str(commit["id"])
+                        waiting_notice_printed = False
                 if args.save_usd:
                     omni.usd.get_context().save_as_stage(str(Path(args.save_usd).resolve()))
                     print(f"  [saved] {args.save_usd}")
@@ -303,6 +676,10 @@ def main() -> None:
                     print("대기 중인 지시가 없습니다.")
                 break
     finally:
+        try:
+            timeline.stop()
+        except (NameError, AttributeError):
+            pass
         simulation_app.close()
 
 

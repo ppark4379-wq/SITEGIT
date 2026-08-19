@@ -91,6 +91,368 @@ def test_rejected_commit_never_reaches_the_map(manager_client):
     assert "반려 큐브" not in _labels(manager_client)
 
 
+def test_new_stage_scenario_replaces_the_published_map_baseline(manager_client):
+    project_id = "SCENARIO-BASELINE-CUTOVER"
+
+    def publish(scenario_id: str, target_path: str) -> None:
+        response = manager_client.post(
+            "/api/v1/isaac/stage-inventory",
+            json={
+                "project_id": project_id,
+                "scenario_id": scenario_id,
+                "stage_identifier": f"{scenario_id}.usd",
+                "equipment": [],
+                "diggable_targets": [
+                    {
+                        "path": target_path,
+                        "name": target_path.rsplit("/", 1)[-1],
+                        "type_name": "Mesh",
+                        "role": "diggable",
+                        "world_position": {"x": 0, "y": 0, "z": 1},
+                        "bounds_size": {"x": 5, "y": 5, "z": 2},
+                        "active": True,
+                    }
+                ],
+                "scene_objects": [],
+            },
+        )
+        assert response.status_code == 200, response.text
+
+    publish("mud-map-v1", "/World/Diggable/OldMudPile")
+    publish("pipeline-demolition-v1", "/World/Diggable/Pipeline/TrenchFill_01")
+
+    published = manager_client.get(
+        "/api/v1/isaac/map-objects", params={"project_id": project_id}
+    )
+    assert published.status_code == 200, published.text
+    baseline = published.json()["baseline_diggable_targets"]
+    assert [item["path"] for item in baseline] == [
+        "/World/Diggable/Pipeline/TrenchFill_01"
+    ]
+
+
+def test_live_stage_change_waits_for_merge_and_rejection_becomes_conflict(manager_client):
+    project_id = "MERGE-GATE-REJECT"
+    target_path = "/World/Diggable/MergeGatePile"
+
+    def publish(position, size, *, include_deposit=False):
+        diggable = [
+            {
+                "path": target_path,
+                "name": "MergeGatePile",
+                "type_name": "Mesh",
+                "role": "diggable",
+                "world_position": position,
+                "bounds_size": size,
+                "active": True,
+            }
+        ]
+        if include_deposit:
+            diggable.append(
+                {
+                    "path": "/World/Diggable/MergeGatePile_MovedSoil_01",
+                    "name": "Moved soil",
+                    "type_name": "Mesh",
+                    "role": "diggable",
+                    "world_position": {"x": 8, "y": 4, "z": 0.8},
+                    "bounds_size": {"x": 3, "y": 3, "z": 1.6},
+                    "active": True,
+                }
+            )
+        response = manager_client.post(
+            "/api/v1/isaac/stage-inventory",
+            json={
+                "project_id": project_id,
+                "stage_identifier": "merge-gate.usd",
+                    "equipment": [
+                        {
+                            "path": "/World/Equipment/EXC_001",
+                            "name": "EXC-001",
+                            "type_name": "Xform",
+                            "role": "equipment",
+                            "world_position": {"x": 0, "y": -5, "z": 0},
+                            "bounds_size": {"x": 8, "y": 4, "z": 5},
+                            "active": True,
+                        }
+                    ],
+                "diggable_targets": diggable,
+                "scene_objects": [],
+            },
+        )
+        assert response.status_code == 200, response.text
+
+    original_position = {"x": 2, "y": 3, "z": 1.5}
+    original_size = {"x": 6, "y": 5, "z": 3}
+    publish(original_position, original_size)
+    instruction_response = manager_client.post(
+        "/api/v1/isaac/instructions",
+        json={
+            "project_id": project_id,
+            "kind": "excavate_prim",
+                "params": {
+                    "equipment_prim_path": "/World/Equipment/EXC_001",
+                    "equipment_name": "EXC-001",
+                    "target_prim_path": target_path,
+                    "target_name": "MergeGatePile",
+                    "label": "Merge gate excavation",
+                    "work_package_id": "WP-MERGE-REJECT",
+                },
+        },
+    )
+    assert instruction_response.status_code == 201, instruction_response.text
+    instruction = instruction_response.json()
+    changed_position = {"x": 2, "y": 3, "z": 0.7}
+    changed_size = {"x": 6, "y": 5, "z": 1.4}
+    commit = _commit(
+        manager_client,
+        instruction,
+        result={
+            "operation": "excavate_prim",
+            "simulator": "isaac-sim",
+            "source": "stage-readback",
+            "target_prim_path": target_path,
+            "target_bounds_size": original_size,
+            "target_active_after": True,
+            "terrain_deformation": {"available": True, "removed_volume_m3": 4.2},
+            "map_changes": [
+                {
+                    "action": "upsert",
+                    "type": "deformed_soil",
+                    "label": "MergeGatePile",
+                    "color": "#6B4F2A",
+                    "prim_path": target_path,
+                    "position": changed_position,
+                    "size": changed_size,
+                }
+            ],
+        },
+    )
+
+    # Even if the live Stage has already changed, the official map stays on
+    # the immutable baseline while the commit is pending.
+    publish(changed_position, changed_size, include_deposit=True)
+    pending = manager_client.get(
+        "/api/v1/isaac/map-objects", params={"project_id": project_id}
+    ).json()
+    assert pending["objects"] == []
+    assert pending["baseline_diggable_targets"][0]["world_position"] == {
+        "x": 2.0,
+        "y": 3.0,
+        "z": 1.5,
+    }
+
+    reviewed = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/review",
+        json={"decision": "rejected", "note": "작업 범위를 벗어난 굴착"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    rejected = manager_client.get(
+        "/api/v1/isaac/map-objects", params={"project_id": project_id}
+    ).json()
+    assert rejected["objects"] == []
+    assert rejected["conflicts"][0]["commit_id"] == commit["id"]
+    assert rejected["conflicts"][0]["reason"] == "작업 범위를 벗어난 굴착"
+
+
+def test_approved_mesh_deformation_is_merged_into_official_map(manager_client):
+    project_id = "MERGE-GATE-APPROVE"
+    target_path = "/World/Diggable/ApprovedPile"
+    inventory = manager_client.post(
+        "/api/v1/isaac/stage-inventory",
+        json={
+            "project_id": project_id,
+            "stage_identifier": "merge-approve.usd",
+                "equipment": [
+                    {
+                        "path": "/World/Equipment/EXC_001",
+                        "name": "EXC-001",
+                        "type_name": "Xform",
+                        "role": "equipment",
+                        "world_position": {"x": 0, "y": -5, "z": 0},
+                        "bounds_size": {"x": 8, "y": 4, "z": 5},
+                        "active": True,
+                    }
+                ],
+            "diggable_targets": [
+                {
+                    "path": target_path,
+                    "name": "ApprovedPile",
+                    "type_name": "Mesh",
+                    "role": "diggable",
+                    "world_position": {"x": 0, "y": 0, "z": 1.5},
+                    "bounds_size": {"x": 6, "y": 5, "z": 3},
+                    "active": True,
+                }
+            ],
+            "scene_objects": [],
+        },
+    )
+    assert inventory.status_code == 200, inventory.text
+    instruction = manager_client.post(
+        "/api/v1/isaac/instructions",
+        json={
+            "project_id": project_id,
+            "kind": "excavate_prim",
+                "params": {
+                    "equipment_prim_path": "/World/Equipment/EXC_001",
+                    "equipment_name": "EXC-001",
+                    "target_prim_path": target_path,
+                    "target_name": "ApprovedPile",
+                    "label": "Approved excavation",
+                    "work_package_id": "WP-MERGE-APPROVE",
+                },
+        },
+    ).json()
+    geometry = {
+        "format": "sitegit-triangle-mesh-v1",
+        "points": [[0, 0, 0], [1, 0, 0], [0, 1, 0.2]],
+        "face_vertex_counts": [3],
+        "face_vertex_indices": [0, 1, 2],
+    }
+    commit = _commit(
+        manager_client,
+        instruction,
+        result={
+            "operation": "excavate_prim",
+            "simulator": "isaac-sim",
+            "source": "stage-readback",
+            "target_prim_path": target_path,
+            "target_bounds_size": {"x": 6, "y": 5, "z": 3},
+            "target_active_after": True,
+            "terrain_deformation": {"available": True, "removed_volume_m3": 4.2},
+            "map_changes": [
+                {
+                    "action": "upsert",
+                    "type": "deformed_soil",
+                    "label": "ApprovedPile",
+                    "color": "#6B4F2A",
+                    "prim_path": target_path,
+                    "position": {"x": 0, "y": 0, "z": 0.7},
+                    "size": {"x": 6, "y": 5, "z": 1.4},
+                    "geometry": geometry,
+                }
+            ],
+        },
+    )
+    assert manager_client.get(
+        "/api/v1/isaac/map-objects", params={"project_id": project_id}
+    ).json()["objects"] == []
+
+    approved = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/review",
+        json={"decision": "approved", "note": "전후 증거 확인"},
+    )
+    assert approved.status_code == 200, approved.text
+    published = manager_client.get(
+        "/api/v1/isaac/map-objects", params={"project_id": project_id}
+    ).json()
+    assert published["conflicts"] == []
+    assert published["objects"][0]["type"] == "deformed_soil"
+    assert published["objects"][0]["geometry"] == geometry
+
+
+def test_timeline_keeps_every_approved_change_to_the_same_prim(manager_client):
+    project_id = "TIMELINE-SAME-PRIM"
+    target_path = "/World/Diggable/TimelinePile"
+    inventory = manager_client.post(
+        "/api/v1/isaac/stage-inventory",
+        json={
+            "project_id": project_id,
+            "stage_identifier": "timeline.usd",
+            "equipment": [
+                {
+                    "path": "/World/Equipment/EXC_001",
+                    "name": "EXC-001",
+                    "type_name": "Xform",
+                    "role": "equipment",
+                    "world_position": {"x": 0, "y": -5, "z": 0},
+                    "bounds_size": {"x": 8, "y": 4, "z": 5},
+                    "active": True,
+                }
+            ],
+            "diggable_targets": [
+                {
+                    "path": target_path,
+                    "name": "TimelinePile",
+                    "type_name": "Mesh",
+                    "role": "diggable",
+                    "world_position": {"x": 1, "y": 2, "z": 1.5},
+                    "bounds_size": {"x": 6, "y": 5, "z": 3},
+                    "active": True,
+                }
+            ],
+            "scene_objects": [],
+        },
+    )
+    assert inventory.status_code == 200, inventory.text
+
+    commit_ids = []
+    expected_heights = [2.0, 1.0]
+    for index, height in enumerate(expected_heights, start=1):
+        instruction_response = manager_client.post(
+            "/api/v1/isaac/instructions",
+            json={
+                "project_id": project_id,
+                "kind": "excavate_prim",
+                "params": {
+                    "equipment_prim_path": "/World/Equipment/EXC_001",
+                    "equipment_name": "EXC-001",
+                    "target_prim_path": target_path,
+                    "target_name": "TimelinePile",
+                    "label": f"Timeline excavation {index}",
+                    "work_package_id": f"WP-TIMELINE-{index}",
+                },
+            },
+        )
+        assert instruction_response.status_code == 201, instruction_response.text
+        instruction = instruction_response.json()
+        commit = _commit(
+            manager_client,
+            instruction,
+            result={
+                "operation": "excavate_prim",
+                "simulator": "isaac-sim",
+                "source": "stage-readback",
+                "target_prim_path": target_path,
+                "target_position": {"x": 1, "y": 2, "z": 1.5},
+                "target_bounds_size": {"x": 6, "y": 5, "z": 3},
+                "target_active_before": True,
+                "target_active_after": True,
+                "terrain_deformation": {
+                    "available": True,
+                    "removed_volume_m3": float(index),
+                },
+                "map_changes": [
+                    {
+                        "action": "upsert",
+                        "type": "deformed_soil",
+                        "label": "TimelinePile",
+                        "color": "#6B4F2A",
+                        "prim_path": target_path,
+                        "position": {"x": 1, "y": 2, "z": height / 2},
+                        "size": {"x": 6, "y": 5, "z": height},
+                    }
+                ],
+            },
+        )
+        reviewed = manager_client.post(
+            f"/api/v1/isaac/commits/{commit['id']}/review",
+            json={"decision": "approved", "note": f"step {index}"},
+        )
+        assert reviewed.status_code == 200, reviewed.text
+        commit_ids.append(commit["id"])
+
+    response = manager_client.get(
+        "/api/v1/isaac/map-objects", params={"project_id": project_id}
+    )
+    assert response.status_code == 200, response.text
+    published = response.json()
+    assert [step["commit_id"] for step in published["timeline"]] == commit_ids
+    assert [step["objects"][0]["size"]["z"] for step in published["timeline"]] == expected_heights
+    assert len(published["objects"]) == 1
+    assert published["objects"][0]["size"]["z"] == expected_heights[-1]
+
+
 def test_claim_marks_dispatched_so_the_same_work_is_not_run_twice(manager_client):
     _create_instruction(manager_client, label="중복 방지 큐브")
 
@@ -158,6 +520,105 @@ def test_invalid_color_is_rejected(manager_client):
         },
     )
     assert response.status_code == 422
+
+
+def test_versioned_execution_commit_rejects_invalid_evidence_quality(manager_client):
+    instruction = _create_instruction(manager_client, label="Evidence contract")
+    timestamp = "2026-08-16T00:00:00+00:00"
+    response = manager_client.post(
+        f"/api/v1/isaac/instructions/{instruction['id']}/commit",
+        json={
+            "status": "succeeded",
+            "result": {
+                "schema_version": "1.0",
+                "operation": "place_cube",
+                "execution_id": "exec-test",
+                "duration_seconds": 1.25,
+                "geometry_change": {"available": False},
+            },
+            "evidence": {
+                "schema_version": "1.0",
+                "evidence_id": "ev-test",
+                "instruction_id": instruction["id"],
+                "execution_id": "exec-test",
+                "source": "isaac-sim",
+                "started_at": timestamp,
+                "finished_at": timestamp,
+                "duration_seconds": 1.25,
+                "events": [],
+                "artifacts": [],
+                "before": {},
+                "after": {},
+                "quality": {
+                    "required_sensor_types": ["camera", "lidar", "imu"],
+                    "available_sensor_types": [],
+                    "missing_sensor_types": ["camera", "lidar", "imu"],
+                    "completeness_ratio": 2.0,
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_versioned_execution_commit_preserves_sensor_and_work_metrics(manager_client):
+    instruction = _create_instruction(manager_client, label="Evidence metrics")
+    timestamp = "2026-08-16T00:00:00+00:00"
+    response = manager_client.post(
+        f"/api/v1/isaac/instructions/{instruction['id']}/commit",
+        json={
+            "status": "succeeded",
+            "result": {
+                "schema_version": "1.0",
+                "operation": "excavate",
+                "execution_id": "exec-metrics",
+                "duration_seconds": 4.5,
+                "performed_quantity": {
+                    "value": 2.25,
+                    "unit": "m3",
+                    "method": "lidar_height_grid_max_z",
+                    "estimated": True,
+                },
+                "geometry_change": {
+                    "available": True,
+                    "method": "lidar_height_grid_max_z",
+                    "compared_cell_count": 12,
+                    "changed_cell_count": 3,
+                    "cell_size_m": 0.5,
+                    "removed_volume_m3": 2.25,
+                    "added_volume_m3": 0.5,
+                    "net_volume_change_m3": -1.75,
+                },
+            },
+            "evidence": {
+                "schema_version": "1.0",
+                "evidence_id": "ev-metrics",
+                "instruction_id": instruction["id"],
+                "execution_id": "exec-metrics",
+                "source": "isaac-sim",
+                "started_at": timestamp,
+                "finished_at": "2026-08-16T00:00:04.500000+00:00",
+                "duration_seconds": 4.5,
+                "events": [],
+                "artifacts": [],
+                "before": {},
+                "after": {},
+                "quality": {
+                    "required_sensor_types": ["camera", "lidar", "imu"],
+                    "available_sensor_types": ["camera", "lidar"],
+                    "missing_sensor_types": ["imu"],
+                    "completeness_ratio": 0.666667,
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    commit = response.json()
+    assert commit["result"]["duration_seconds"] == 4.5
+    assert commit["result"]["geometry_change"]["removed_volume_m3"] == 2.25
+    assert commit["evidence"]["quality"]["missing_sensor_types"] == ["imu"]
 
 
 def test_viewer_cannot_issue_or_approve(viewer_client):

@@ -18,6 +18,10 @@ from ...domains.work_packages.ai_compiler import (
     resolve_excavation_plan,
     resolve_plan,
 )
+from ...domains.work_packages.code_agent import (
+    compile_code_work_package,
+    resolve_code_work_package,
+)
 from ...models.user import User
 from ...realtime.manager import manager
 from ...schemas.isaac import InstructionResponse
@@ -32,12 +36,132 @@ from ...schemas.work_package_ai import (
     ExcavationInterpretRequest,
     ExcavationDraft,
     ExcavationWorkPackageRecord,
+    CodeWorkPackageDispatchRequest,
+    CodeWorkPackageDispatchResponse,
+    CodeWorkPackageDraft,
+    CodeWorkPackageInterpretRequest,
+    CodeWorkPackageRecord,
 )
 from ..deps import get_db, require_roles
 
 
 router = APIRouter(prefix="/work-packages", tags=["work-packages"])
 OPERATOR_ROLES = ("admin", "manager", "reviewer")
+
+
+@router.post("/ai/code/interpret", response_model=CodeWorkPackageDraft)
+def interpret_code_work_package(
+    payload: CodeWorkPackageInterpretRequest,
+    _user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> CodeWorkPackageDraft:
+    """Compile a request, resolve live Stage resources, and preview safe code."""
+    settings = get_settings()
+    inventory = load_stage_inventory(payload.project_id)
+    try:
+        plan = compile_code_work_package(payload.message, inventory, settings)
+    except WorkPackageLLMUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "LLM_NOT_CONFIGURED", "message": str(error)},
+        ) from error
+    except WorkPackageLLMError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "LLM_REQUEST_FAILED", "message": str(error)},
+        ) from error
+    return resolve_code_work_package(
+        project_id=payload.project_id,
+        source_text=payload.message,
+        plan=plan,
+        inventory=inventory,
+        settings=settings,
+    )
+
+
+@router.post(
+    "/ai/code/dispatch",
+    response_model=CodeWorkPackageDispatchResponse,
+    status_code=201,
+)
+async def dispatch_code_work_package(
+    payload: CodeWorkPackageDispatchRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> CodeWorkPackageDispatchResponse:
+    """Persist every request; executable programs are queued and others are blocked."""
+    settings = get_settings()
+    inventory = load_stage_inventory(payload.project_id)
+    draft = resolve_code_work_package(
+        project_id=payload.project_id,
+        source_text=payload.message,
+        plan=payload.plan,
+        inventory=inventory,
+        settings=settings,
+    )
+    work_package_id = f"WP-CODE-{uuid4().hex[:10].upper()}"
+    bindings = {
+        "equipment": draft.equipment.path if draft.equipment else "",
+        "target": (
+            draft.execution_target_path
+            or (draft.target.path if draft.target else "")
+        ),
+    }
+    instruction_status = "pending" if draft.executable else "blocked"
+    instruction = ExecutionsService.create_instruction(
+        db,
+        project_id=payload.project_id,
+        kind="generated_script",
+        params={
+            "work_package_id": work_package_id,
+            "operation": draft.plan.operation,
+            "summary": draft.plan.summary,
+            "zone_id": draft.plan.zone_id or None,
+            "source_text": payload.message,
+            "generated_code": draft.generated_code,
+            "program_version": 1,
+            "resource_bindings": bindings,
+            "equipment_name": draft.equipment.name if draft.equipment else None,
+            "target_name": draft.target.name if draft.target else draft.plan.summary,
+            "missing_resources": draft.missing_resources,
+            "checks": [check.model_dump() for check in draft.checks],
+            "compiler_model": draft.model,
+        },
+        note=f"AI code Work Package · {payload.message}"[:500],
+        user=user,
+        initial_status=instruction_status,
+    )
+    await manager.broadcast(
+        payload.project_id,
+        {
+            "type": "isaac.map.updated",
+            "reason": (
+                "work_package.code.queued"
+                if draft.executable
+                else "work_package.code.blocked"
+            ),
+            "instruction_id": instruction.id,
+            "work_package_id": work_package_id,
+        },
+    )
+    record = CodeWorkPackageRecord(
+        id=work_package_id,
+        project_id=payload.project_id,
+        operation=draft.plan.operation,
+        summary=draft.plan.summary,
+        zone_id=draft.plan.zone_id,
+        status=instruction_status,
+        source_text=payload.message,
+        equipment=draft.equipment,
+        target=draft.target,
+        execution_target_path=draft.execution_target_path,
+        checks=draft.checks,
+        missing_resources=draft.missing_resources,
+        generated_code=draft.generated_code,
+    )
+    return CodeWorkPackageDispatchResponse(
+        work_package=record,
+        instruction=InstructionResponse.model_validate(instruction, from_attributes=True),
+    )
 
 
 @router.post("/ai/excavation/interpret", response_model=ExcavationDraft)

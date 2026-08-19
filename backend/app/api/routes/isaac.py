@@ -15,9 +15,12 @@ from ...core.config import get_settings
 from ...domains.executions.service import ExecutionsService
 from ...domains.executions.stage_inventory import (
     find_inventory_prim,
+    load_published_baseline,
+    published_baseline_exists,
     load_stage_inventory,
     save_stage_inventory,
 )
+from ...domains.executions.stage_versions import load_branch_head
 from ...domains.trust_gate.service import TrustGateService
 from ...models.user import User
 from ...realtime.manager import manager
@@ -30,6 +33,7 @@ from ...schemas.isaac import (
     ReviewDecision,
     StageInventoryResponse,
     StageInventoryUpdate,
+    StageBranchHeadResponse,
 )
 from ..deps import get_current_user, get_db, require_roles
 
@@ -48,8 +52,25 @@ def get_stage_inventory(
     project_id: str | None = Query(default=None),
     _user: User = Depends(get_current_user),
 ) -> StageInventoryResponse:
-    """Return exact equipment and diggable Prim paths reported by Isaac Sim."""
+    """Return live equipment, diggable targets, and scene objects reported by Isaac Sim."""
     return load_stage_inventory(project_id or _default_project_id())
+
+
+@router.get("/branches/{branch}/head", response_model=StageBranchHeadResponse)
+def get_stage_branch_head(
+    branch: str,
+    project_id: str | None = Query(default=None),
+    _user: User = Depends(get_current_user),
+) -> StageBranchHeadResponse:
+    """Return the latest manager-approved Stage snapshot for one branch."""
+
+    head = load_branch_head(project_id or _default_project_id(), branch)
+    if head is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stage branch HEAD does not exist yet",
+        )
+    return StageBranchHeadResponse.model_validate(head)
 
 
 @router.post("/stage-inventory", response_model=StageInventoryResponse)
@@ -64,6 +85,7 @@ async def update_stage_inventory(
         "stage.inventory",
         equipment_count=len(payload.equipment),
         target_count=len(payload.diggable_targets),
+        scene_object_count=len(payload.scene_objects),
     )
     return inventory
 
@@ -152,6 +174,15 @@ async def commit_execution(
 ) -> CommitResponse:
     """Adapter 전용. Isaac 실행 결과를 올리고 관리자 검토 대기로 넘깁니다."""
     instruction = ExecutionsService.get_instruction(db, instruction_id)
+    evidence_instruction_id = payload.evidence.get("instruction_id")
+    if (
+        payload.evidence.get("schema_version") is not None
+        and evidence_instruction_id != instruction_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Evidence Bundle instruction_id must match the commit URL.",
+        )
     commit = ExecutionsService.record_commit(
         db,
         instruction=instruction,
@@ -191,6 +222,18 @@ async def review_commit(
     return CommitResponse.model_validate(reviewed, from_attributes=True)
 
 
+@router.get("/commits/{commit_id}", response_model=CommitResponse)
+def get_commit(
+    commit_id: str,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> CommitResponse:
+    """Return one execution Commit so an Adapter can wait for its review."""
+
+    commit = TrustGateService.get_commit(db, commit_id)
+    return CommitResponse.model_validate(commit, from_attributes=True)
+
+
 @router.get("/map-objects", response_model=MapObjectsResponse)
 def list_map_objects(
     project_id: str | None = Query(default=None),
@@ -199,12 +242,32 @@ def list_map_objects(
 ) -> MapObjectsResponse:
     """뷰어가 지형 mesh 위에 그릴 승인된 작업 결과."""
     resolved_project_id = project_id or _default_project_id()
-    objects = TrustGateService.approved_map_objects(db, project_id=resolved_project_id)
+    baseline = load_published_baseline(resolved_project_id)
+    reviewed_after = (
+        baseline.captured_at
+        if published_baseline_exists(resolved_project_id)
+        else None
+    )
+    timeline = TrustGateService.approved_map_timeline(
+        db,
+        project_id=resolved_project_id,
+        reviewed_after=reviewed_after,
+    )
+    objects = TrustGateService.replay_map_timeline(timeline)
+    conflicts = TrustGateService.rejected_map_conflicts(
+        db,
+        project_id=resolved_project_id,
+        reviewed_after=reviewed_after,
+    )
     # 뷰어가 폴링할 때 내용 변화만 싸게 감지할 수 있도록 요약 값을 함께 줍니다.
-    latest = max((o["approved_at"] for o in objects if o["approved_at"]), default=None)
-    revision = f"{len(objects)}:{latest.isoformat() if latest else '-'}"
+    latest = max((step["approved_at"] for step in timeline if step["approved_at"]), default=None)
+    revision = f"{len(timeline)}:{latest.isoformat() if latest else '-'}"
     return MapObjectsResponse(
         project_id=resolved_project_id,
         objects=objects,
+        baseline_diggable_targets=baseline.diggable_targets,
+        baseline_scene_objects=baseline.scene_objects,
+        timeline=timeline,
+        conflicts=conflicts,
         revision=revision,
     )

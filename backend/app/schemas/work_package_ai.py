@@ -159,3 +159,64 @@ class ExcavationWorkPackageRecord(BaseModel):
 class ExcavationDispatchResponse(BaseModel):
     work_package: ExcavationWorkPackageRecord
     instruction: InstructionResponse
+
+
+class LLMCodeWorkPackagePlan(BaseModel):
+    """Natural-language intent plus an LLM-authored restricted Isaac program."""
+
+    ready: bool
+    operation: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    equipment_ref: str = Field(default="", max_length=500)
+    target_ref: str = Field(default="", max_length=500)
+    zone_id: str = Field(default="", max_length=80)
+    summary: str = Field(min_length=1, max_length=300)
+    clarification_question: str = Field(default="", max_length=300)
+    generated_code: str = Field(default="", max_length=12000)
+
+
+class CodeWorkPackageInterpretRequest(BaseModel):
+    project_id: str = Field(default="SASANG-001", max_length=80)
+    message: str = Field(min_length=3, max_length=1500)
+
+
+class CodeWorkPackageDraft(BaseModel):
+    project_id: str
+    source_text: str
+    plan: LLMCodeWorkPackagePlan
+    equipment: StagePrimRecord | None = None
+    target: StagePrimRecord | None = None
+    execution_target_path: str | None = Field(
+        default=None, pattern=USD_PRIM_PATH_PATTERN, max_length=500
+    )
+    checks: list[WorkPackageCheck] = Field(default_factory=list)
+    missing_resources: list[str] = Field(default_factory=list)
+    generated_code: str = Field(default="", max_length=12000)
+    executable: bool = False
+    model: str
+
+
+class CodeWorkPackageDispatchRequest(CodeWorkPackageInterpretRequest):
+    plan: LLMCodeWorkPackagePlan
+
+
+class CodeWorkPackageRecord(BaseModel):
+    id: str
+    project_id: str
+    operation: str
+    summary: str
+    zone_id: str
+    status: Literal["pending", "blocked"]
+    source_text: str
+    equipment: StagePrimRecord | None = None
+    target: StagePrimRecord | None = None
+    execution_target_path: str | None = Field(
+        default=None, pattern=USD_PRIM_PATH_PATTERN, max_length=500
+    )
+    checks: list[WorkPackageCheck] = Field(default_factory=list)
+    missing_resources: list[str] = Field(default_factory=list)
+    generated_code: str = ""
+
+
+class CodeWorkPackageDispatchResponse(BaseModel):
+    work_package: CodeWorkPackageRecord
+    instruction: InstructionResponse

@@ -22,10 +22,12 @@ from ...models.isaac import (
     REVIEW_REJECTED,
     ExecutionCommit,
     KIND_EXCAVATE_PRIM,
+    KIND_GENERATED_SCRIPT,
     WorkInstruction,
 )
 from ...models.user import User
 from ...schemas.isaac import MAX_EXCAVATION_TARGET_SPAN_M
+from ..executions.stage_versions import promote_stage_snapshot
 
 # 뷰어 기본값. 지시에 색·라벨이 없으면 이 값으로 그립니다.
 DEFAULT_CUBE_COLOR = "#f0b429"
@@ -68,18 +70,34 @@ class TrustGateService:
                 status_code=422,
                 detail="Failed execution cannot be approved. Re-run the instruction instead.",
             )
-        if decision == REVIEW_APPROVED and commit.instruction.kind == KIND_EXCAVATE_PRIM:
-            result = commit.result or {}
+        generated_operation = (commit.result or {}).get("operation")
+        result = commit.result or {}
+        has_terrain_deformation = bool(
+            (result.get("terrain_deformation") or {}).get("available")
+            and result.get("map_changes")
+        )
+        is_excavation = commit.instruction.kind == KIND_EXCAVATE_PRIM or (
+            commit.instruction.kind == KIND_GENERATED_SCRIPT
+            and generated_operation in {"excavate_prim", "set_prim_active"}
+            and (
+                result.get("target_active_after") is False
+                or has_terrain_deformation
+            )
+        )
+        if decision == REVIEW_APPROVED and is_excavation:
             if (
                 result.get("simulator") != "isaac-sim"
                 or result.get("source") != "stage-readback"
-                or result.get("target_active_after") is not False
+                or not (
+                    result.get("target_active_after") is False
+                    or has_terrain_deformation
+                )
             ):
                 raise HTTPException(
                     status_code=422,
                     detail=(
                         "Excavation approval requires real Isaac Stage read-back and a "
-                        "verified inactive target Prim."
+                        "verified inactive target Prim or verified terrain deformation."
                     ),
                 )
             target_size = result.get("target_bounds_size") or {}
@@ -97,9 +115,32 @@ class TrustGateService:
                     ),
                 )
 
+        reviewed_at = datetime.now(timezone.utc)
+        stage_snapshot = (commit.result or {}).get("stage_snapshot")
+        if decision == REVIEW_APPROVED:
+            promoted = promote_stage_snapshot(
+                commit,
+                reviewed_by=user.username,
+                reviewed_at=reviewed_at,
+            )
+            if promoted is not None:
+                commit.result = {
+                    **(commit.result or {}),
+                    "stage_snapshot": {
+                        **stage_snapshot,
+                        **promoted,
+                        "status": "approved",
+                    },
+                }
+        elif isinstance(stage_snapshot, dict):
+            commit.result = {
+                **(commit.result or {}),
+                "stage_snapshot": {**stage_snapshot, "status": "rejected"},
+            }
+
         commit.review_status = REVIEW_APPROVED if decision == REVIEW_APPROVED else REVIEW_REJECTED
         commit.reviewed_by = user.username
-        commit.reviewed_at = datetime.now(timezone.utc)
+        commit.reviewed_at = reviewed_at
         commit.review_note = note
         commit.instruction.status = (
             INSTRUCTION_APPROVED if decision == REVIEW_APPROVED else INSTRUCTION_REJECTED
@@ -127,11 +168,32 @@ class TrustGateService:
         return commit
 
     @staticmethod
-    def approved_map_objects(db: Session, *, project_id: str) -> list[dict]:
-        """맵에 그릴 오브젝트 목록.
+    def approved_map_objects(
+        db: Session,
+        *,
+        project_id: str,
+        reviewed_after: datetime | None = None,
+    ) -> list[dict]:
+        """Replay every approved commit and return the latest published state."""
+        timeline = TrustGateService.approved_map_timeline(
+            db,
+            project_id=project_id,
+            reviewed_after=reviewed_after,
+        )
+        return TrustGateService.replay_map_timeline(timeline)
 
-        별도 테이블이 아니라 승인된 Commit에서 그때그때 만들어냅니다. 승인을
-        되돌리면 맵에서도 즉시 사라지므로 두 저장소가 어긋날 수 없습니다.
+    @staticmethod
+    def approved_map_timeline(
+        db: Session,
+        *,
+        project_id: str,
+        reviewed_after: datetime | None = None,
+    ) -> list[dict]:
+        """Return every approved commit with its map delta in review order.
+
+        Unlike ``approved_map_objects``, this method never deduplicates commits
+        that touch the same Prim. The browser can therefore replay the exact
+        approved history instead of seeing only the latest Prim state.
         """
         query = (
             select(ExecutionCommit, WorkInstruction)
@@ -142,47 +204,187 @@ class TrustGateService:
             )
             .order_by(ExecutionCommit.reviewed_at)
         )
-        objects: list[dict] = []
+        if reviewed_after is not None:
+            cutoff = reviewed_after.replace(tzinfo=None)
+            query = query.where(ExecutionCommit.reviewed_at >= cutoff)
+        timeline: list[dict] = []
         for commit, instruction in db.execute(query).all():
-            params = instruction.params or {}
-            result = commit.result or {}
-            if instruction.kind == KIND_EXCAVATE_PRIM:
-                position = result.get("target_position")
-                size = result.get("target_bounds_size")
+            timeline.append(
+                {
+                    "commit_id": commit.id,
+                    "instruction_id": instruction.id,
+                    "approved_by": commit.reviewed_by,
+                    "approved_at": commit.reviewed_at,
+                    "objects": TrustGateService._map_delta_for_commit(commit, instruction),
+                }
+            )
+        return timeline
+
+    @staticmethod
+    def replay_map_timeline(timeline: list[dict]) -> list[dict]:
+        """Replay timeline deltas and return one final object per Prim."""
+        objects_by_prim: dict[str, dict] = {}
+        for step in timeline:
+            for item in step.get("objects") or []:
+                key = str(item.get("prim_path") or item.get("id"))
+                objects_by_prim[key] = item
+        return list(objects_by_prim.values())
+
+    @staticmethod
+    def _map_delta_for_commit(
+        commit: ExecutionCommit,
+        instruction: WorkInstruction,
+    ) -> list[dict]:
+        """Convert one approved execution result into a replayable map delta."""
+        params = instruction.params or {}
+        result = commit.result or {}
+        objects: list[dict] = []
+        map_changes = result.get("map_changes") or []
+        if map_changes:
+            for index, change in enumerate(map_changes):
+                if not isinstance(change, dict):
+                    continue
+                prim_path = str(change.get("prim_path") or f"{commit.id}:{index}")
+                action = str(change.get("action") or "upsert")
+                if action == "remove":
+                    position = change.get("position") or result.get("target_position")
+                    size = change.get("size") or result.get("target_bounds_size")
+                    if not position or not size:
+                        continue
+                    objects.append(
+                        {
+                            "id": f"{commit.id}:{index}",
+                            "instruction_id": instruction.id,
+                            "type": "removed_prim",
+                            "label": change.get("label") or params.get("target_name") or "Removed terrain",
+                            "color": change.get("color") or "#d95757",
+                            "position": position,
+                            "size": size,
+                            "approved_by": commit.reviewed_by,
+                            "approved_at": commit.reviewed_at,
+                            "prim_path": prim_path,
+                            "geometry": None,
+                        }
+                    )
+                    continue
+                position = change.get("position")
+                size = change.get("size")
                 if not position or not size:
                     continue
                 objects.append(
                     {
-                        "id": commit.id,
+                        "id": f"{commit.id}:{index}",
                         "instruction_id": instruction.id,
-                        "type": "removed_prim",
-                        "label": params.get("target_name") or params.get("label") or "굴착 대상",
-                        "color": "#d95757",
+                        "type": change.get("type") or "terrain_patch",
+                        "label": change.get("label") or params.get("label") or instruction.kind,
+                        "color": change.get("color") or DEFAULT_CUBE_COLOR,
                         "position": position,
                         "size": size,
                         "approved_by": commit.reviewed_by,
                         "approved_at": commit.reviewed_at,
-                        "prim_path": result.get("target_prim_path") or params.get("target_prim_path"),
+                        "prim_path": prim_path,
+                        "geometry": change.get("geometry"),
                     }
                 )
-                continue
-            # 실제로 배치된 값이 있으면 그것을 쓰고, 없으면 지시값으로 그립니다.
-            position = result.get("placed_position") or params.get("position")
-            if not position:
-                continue
-            size = result.get("placed_size") or params.get("size") or DEFAULT_CUBE_SIZE
+            return objects
+
+        is_excavation = instruction.kind == KIND_EXCAVATE_PRIM or (
+            instruction.kind == KIND_GENERATED_SCRIPT
+            and result.get("operation") in {"excavate_prim", "set_prim_active"}
+            and result.get("target_active_after") is False
+        )
+        if is_excavation:
+            position = result.get("target_position")
+            size = result.get("target_bounds_size")
+            if not position or not size:
+                return objects
+            prim_path = result.get("target_prim_path") or params.get("target_prim_path")
             objects.append(
                 {
                     "id": commit.id,
                     "instruction_id": instruction.id,
-                    "type": "cube",
-                    "label": params.get("label") or instruction.kind,
-                    "color": params.get("color") or DEFAULT_CUBE_COLOR,
+                    "type": "removed_prim",
+                    "label": params.get("target_name") or params.get("label") or "굴착 대상",
+                    "color": "#d95757",
                     "position": position,
                     "size": size,
                     "approved_by": commit.reviewed_by,
                     "approved_at": commit.reviewed_at,
-                    "prim_path": result.get("prim_path"),
+                    "prim_path": prim_path,
+                    "geometry": None,
                 }
             )
+            return objects
+
+        position = result.get("placed_position") or params.get("position")
+        if not position:
+            return objects
+        size = result.get("placed_size") or params.get("size") or DEFAULT_CUBE_SIZE
+        prim_path = result.get("prim_path") or commit.id
+        objects.append(
+            {
+                "id": commit.id,
+                "instruction_id": instruction.id,
+                "type": "cube",
+                "label": params.get("label") or instruction.kind,
+                "color": params.get("color") or DEFAULT_CUBE_COLOR,
+                "position": position,
+                "size": size,
+                "approved_by": commit.reviewed_by,
+                "approved_at": commit.reviewed_at,
+                "prim_path": result.get("prim_path"),
+                "geometry": result.get("geometry"),
+            }
+        )
         return objects
+
+    @staticmethod
+    def rejected_map_conflicts(
+        db: Session,
+        *,
+        project_id: str,
+        reviewed_after: datetime | None = None,
+    ) -> list[dict]:
+        """Return rejected proposed map changes without mutating the published map."""
+        query = (
+            select(ExecutionCommit, WorkInstruction)
+            .join(WorkInstruction, ExecutionCommit.instruction_id == WorkInstruction.id)
+            .where(
+                WorkInstruction.project_id == project_id,
+                ExecutionCommit.review_status == REVIEW_REJECTED,
+            )
+            .order_by(ExecutionCommit.reviewed_at.desc())
+        )
+        if reviewed_after is not None:
+            cutoff = reviewed_after.replace(tzinfo=None)
+            query = query.where(ExecutionCommit.reviewed_at >= cutoff)
+        conflicts: list[dict] = []
+        for commit, instruction in db.execute(query).all():
+            result = commit.result or {}
+            params = instruction.params or {}
+            proposed = result.get("map_changes") or [
+                {
+                    "prim_path": result.get("target_prim_path") or params.get("target_prim_path"),
+                    "position": result.get("target_after_position") or result.get("target_position"),
+                    "size": result.get("target_after_bounds_size") or result.get("target_bounds_size"),
+                    "label": params.get("target_name") or params.get("label") or instruction.kind,
+                }
+            ]
+            for index, change in enumerate(proposed):
+                if not isinstance(change, dict):
+                    continue
+                conflicts.append(
+                    {
+                        "id": f"conflict:{commit.id}:{index}",
+                        "commit_id": commit.id,
+                        "instruction_id": instruction.id,
+                        "label": change.get("label") or instruction.kind,
+                        "reason": commit.review_note or "Manager rejected this proposed map change.",
+                        "position": change.get("position"),
+                        "size": change.get("size"),
+                        "prim_path": change.get("prim_path"),
+                        "rejected_by": commit.reviewed_by,
+                        "rejected_at": commit.reviewed_at,
+                    }
+                )
+        return conflicts

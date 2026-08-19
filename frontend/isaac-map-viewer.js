@@ -1,22 +1,33 @@
 (function () {
   "use strict";
 
-  // 지형 mesh는 SSD의 정적 번들, 작업 결과 오브젝트는 DB에서 옵니다.
-  // 승인된 Commit만 map-objects에 나타나므로 미승인 결과는 절대 그려지지 않습니다.
+  // The Work map is the published branch: an immutable Stage baseline plus
+  // manager-approved commit changes. Live Stage inventory is used only for
+  // connectivity and must never leak unreviewed work into this viewer.
   var MAP_ROOT = "/isaac-data/site-work-map";
   var MAP_OBJECTS_URL = "/api/v1/isaac/map-objects";
   var STAGE_INVENTORY_URL = "/api/v1/isaac/stage-inventory";
+  var CAMERA_STATE_KEY = "sitegit-isaac-camera-v1";
 
   var root = document.getElementById("viewer");
   var canvas = document.getElementById("mapCanvas");
   var state = document.getElementById("viewerState");
+  var zoneLabels = document.getElementById("zoneLabels");
   var gl = canvas.getContext("webgl", { antialias: true, alpha: false });
   var groups = [];
   var mapObjectsRaw = [];
+  var mapTimelineStepsRaw = [];
   var mapObjects = [];
   var removalObjects = [];
   var diggableTargetsRaw = [];
   var diggableObjects = [];
+  var sceneObjectsRaw = [];
+  var mapConflictsRaw = [];
+  var conflictObjects = [];
+  var publishedGeometryBuffers = [];
+  var soilTexture = null;
+  var soilVolumeTexture = null;
+  var stageConnected = false;
   var bounds = null;
   var triangleCount = 0;
   var meshStatus = "loading";
@@ -28,6 +39,45 @@
   var dragButton = 0;
   var lastX = 0;
   var lastY = 0;
+  var zonesVisible = false;
+  var activeLayer = "work";
+  var timelineEnabled = false;
+  var timelineApprovedAt = null;
+  var timelineCommitId = null;
+  var timelineBaselineObjectsRaw = [];
+
+  function loadCameraState() {
+    try {
+      var saved = JSON.parse(sessionStorage.getItem(CAMERA_STATE_KEY) || "null");
+      if (!saved || !Array.isArray(saved.target) || saved.target.length !== 3) return null;
+      if (![saved.yaw, saved.pitch, saved.distance].every(Number.isFinite)) return null;
+      if (!saved.target.every(Number.isFinite)) return null;
+      return saved;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveCameraState() {
+    try {
+      sessionStorage.setItem(CAMERA_STATE_KEY, JSON.stringify({
+        yaw: yaw,
+        pitch: pitch,
+        distance: distance,
+        target: target
+      }));
+    } catch (error) {
+      // A blocked storage API must not disable the WebGL viewer.
+    }
+  }
+
+  var restoredCamera = loadCameraState();
+  if (restoredCamera) {
+    yaw = restoredCamera.yaw;
+    pitch = restoredCamera.pitch;
+    distance = restoredCamera.distance;
+    target = restoredCamera.target.slice();
+  }
 
   function setState(title, detail, isError) {
     state.className = "state" + (isError ? " error" : "");
@@ -69,6 +119,8 @@
   var meshFragmentSource = [
     "precision mediump float;",
     "uniform sampler2D uTexture;",
+    "uniform int uZonesVisible;",
+    "uniform vec2 uZoneMid;",
     "uniform int uRemovalCount;",
     "uniform vec3 uRemovalCenters[16];",
     "uniform vec3 uRemovalHalfSizes[16];",
@@ -80,6 +132,14 @@
     "  if(i<uRemovalCount){ vec3 d=abs(vWorld-uRemovalCenters[i]); if(all(lessThanEqual(d,uRemovalHalfSizes[i]))) discard; }",
     " }",
     " vec3 c=texture2D(uTexture,vUv).rgb;",
+    " if(uZonesVisible==1){",
+    "  vec3 zoneColor;",
+    "  if(vWorld.z<uZoneMid.y){ zoneColor=vWorld.x<uZoneMid.x?vec3(0.93,0.62,0.12):vec3(0.12,0.66,0.35); }",
+    "  else{ zoneColor=vWorld.x<uZoneMid.x?vec3(0.16,0.40,0.86):vec3(0.72,0.20,0.49); }",
+    "  c=mix(c,zoneColor,0.36);",
+    "  float boundary=1.0-smoothstep(0.0,0.85,min(abs(vWorld.x-uZoneMid.x),abs(vWorld.z-uZoneMid.y)));",
+    "  c=mix(c,vec3(1.0),boundary*0.72);",
+    " }",
     " float fog=clamp((vDepth-120.0)/520.0,0.0,0.34);",
     " gl_FragColor=vec4(mix(c*0.98,vec3(0.07,0.12,0.14),fog),1.0);",
     "}"
@@ -93,17 +153,25 @@
     CAMERA_UNIFORMS,
     "uniform vec3 uCenter,uSize;",
     "varying float vShade;",
+    "varying vec3 vWorld;",
     PROJECT_FN,
     "void main(){",
-    " gl_Position=projectWorld(uCenter+aPosition*uSize);",
+    " vWorld=uCenter+aPosition*uSize;",
+    " gl_Position=projectWorld(vWorld);",
     " vShade=0.45+0.55*max(dot(normalize(aNormal),normalize(vec3(0.35,0.9,0.25))),0.0);",
     "}"
   ].join("\n");
   var cubeFragmentSource = [
     "precision mediump float;",
     "uniform vec3 uColor;",
+    "uniform float uSoil;",
     "varying float vShade;",
-    "void main(){ gl_FragColor=vec4(uColor*vShade,1.0); }"
+    "varying vec3 vWorld;",
+    "float hash(vec2 p){ return fract(sin(dot(floor(p),vec2(127.1,311.7)))*43758.5453); }",
+    "void main(){",
+    " float grain=mix(1.0,0.88+0.22*hash(vWorld.xz*3.5),uSoil);",
+    " gl_FragColor=vec4(uColor*vShade*grain,1.0);",
+    "}"
   ].join("\n");
 
   function createShader(type, source) {
@@ -153,6 +221,8 @@
   }
   var meshUniforms = cameraUniforms(meshProgram);
   meshUniforms.texture = gl.getUniformLocation(meshProgram, "uTexture");
+  meshUniforms.zonesVisible = gl.getUniformLocation(meshProgram, "uZonesVisible");
+  meshUniforms.zoneMid = gl.getUniformLocation(meshProgram, "uZoneMid");
   meshUniforms.removalCount = gl.getUniformLocation(meshProgram, "uRemovalCount");
   meshUniforms.removalCenters = gl.getUniformLocation(meshProgram, "uRemovalCenters[0]");
   meshUniforms.removalHalfSizes = gl.getUniformLocation(meshProgram, "uRemovalHalfSizes[0]");
@@ -163,6 +233,7 @@
   cubeUniforms.center = gl.getUniformLocation(cubeProgram, "uCenter");
   cubeUniforms.size = gl.getUniformLocation(cubeProgram, "uSize");
   cubeUniforms.color = gl.getUniformLocation(cubeProgram, "uColor");
+  cubeUniforms.soil = gl.getUniformLocation(cubeProgram, "uSoil");
   cubeUniforms.position = gl.getAttribLocation(cubeProgram, "aPosition");
   cubeUniforms.normal = gl.getAttribLocation(cubeProgram, "aNormal");
 
@@ -293,6 +364,12 @@
     applyCamera(meshUniforms, view);
     gl.enableVertexAttribArray(meshUniforms.position);
     gl.enableVertexAttribArray(meshUniforms.uv);
+    gl.uniform1i(meshUniforms.zonesVisible, zonesVisible ? 1 : 0);
+    gl.uniform2f(
+      meshUniforms.zoneMid,
+      (bounds.min[0] + bounds.max[0]) * 0.5,
+      (bounds.min[2] + bounds.max[2]) * 0.5
+    );
     var clipped = removalObjects.slice(0, 16);
     gl.uniform1i(meshUniforms.removalCount, clipped.length);
     if (clipped.length) {
@@ -310,6 +387,22 @@
       gl.uniform1i(meshUniforms.texture, 0);
       gl.drawArrays(gl.TRIANGLES, 0, group.count);
     });
+    mapObjects.concat(diggableObjects)
+      .filter(function (item) { return item.customGeometry; })
+      .forEach(function (item) {
+        function drawPublishedPart(part, texture) {
+          if (!part || !part.count) return;
+          gl.bindBuffer(gl.ARRAY_BUFFER, part.buffer);
+          gl.vertexAttribPointer(meshUniforms.position, 3, gl.FLOAT, false, 20, 0);
+          gl.vertexAttribPointer(meshUniforms.uv, 2, gl.FLOAT, false, 20, 12);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.uniform1i(meshUniforms.texture, 0);
+          gl.drawArrays(gl.TRIANGLES, 0, part.count);
+        }
+        drawPublishedPart(item.customGeometry.volume, soilVolumeTexture);
+        drawPublishedPart(item.customGeometry.top, soilTexture);
+      });
     gl.disableVertexAttribArray(meshUniforms.uv);
   }
 
@@ -326,11 +419,20 @@
         gl.uniform3fv(cubeUniforms.center, item.center);
         gl.uniform3fv(cubeUniforms.size, item.size);
         gl.uniform3fv(cubeUniforms.color, item.color);
+        gl.uniform1f(
+          cubeUniforms.soil,
+          item.type === "diggable" || item.type === "deformed_soil" ? 1.0 : 0.0
+        );
         gl.drawArrays(gl.TRIANGLES, 0, count);
       });
     }
-    drawSet(mapObjects, cubeBuffer, 36);
-    drawSet(diggableObjects, moundGeometry.buffer, moundGeometry.count);
+    drawSet(mapObjects.filter(function (item) { return !item.customGeometry; }), cubeBuffer, 36);
+    drawSet(
+      diggableObjects.filter(function (item) { return !item.customGeometry; }),
+      moundGeometry.buffer,
+      moundGeometry.count
+    );
+    if (activeLayer === "constraint") drawSet(conflictObjects, cubeBuffer, 36);
     gl.disableVertexAttribArray(cubeUniforms.normal);
   }
 
@@ -343,7 +445,54 @@
     gl.disable(gl.CULL_FACE);
     var view = camera();
     if (groups.length) drawMesh(view);
-    if (mapObjects.length || diggableObjects.length) drawObjects(view);
+    if (mapObjects.length || diggableObjects.length || (activeLayer === "constraint" && conflictObjects.length)) drawObjects(view);
+    updateZoneLabels(view);
+  }
+
+  function dot(a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  }
+
+  function projectToScreen(world, view) {
+    var relative = [
+      world[0] - view.eye[0],
+      world[1] - view.eye[1],
+      world[2] - view.eye[2]
+    ];
+    var depth = dot(relative, view.forward);
+    if (depth <= 0.05) return null;
+    var tanHalf = Math.tan(Math.PI / 6);
+    var ndcX = dot(relative, view.right) / (tanHalf * (canvas.width / canvas.height) * depth);
+    var ndcY = dot(relative, view.up) / (tanHalf * depth);
+    if (Math.abs(ndcX) > 1.2 || Math.abs(ndcY) > 1.2) return null;
+    return [
+      (ndcX * 0.5 + 0.5) * canvas.clientWidth,
+      (0.5 - ndcY * 0.5) * canvas.clientHeight
+    ];
+  }
+
+  function updateZoneLabels(view) {
+    if (!zoneLabels) return;
+    zoneLabels.hidden = !zonesVisible;
+    if (!zonesVisible || !bounds) return;
+    var minX = bounds.min[0];
+    var maxX = bounds.max[0];
+    var minZ = bounds.min[2];
+    var maxZ = bounds.max[2];
+    var labelY = bounds.max[1] + Math.max(1.5, (bounds.max[1] - bounds.min[1]) * 0.08);
+    var positions = {
+      A: [minX * 0.75 + maxX * 0.25, labelY, minZ * 0.75 + maxZ * 0.25],
+      B: [minX * 0.25 + maxX * 0.75, labelY, minZ * 0.75 + maxZ * 0.25],
+      C: [minX * 0.75 + maxX * 0.25, labelY, minZ * 0.25 + maxZ * 0.75],
+      D: [minX * 0.25 + maxX * 0.75, labelY, minZ * 0.25 + maxZ * 0.75]
+    };
+    Array.prototype.forEach.call(zoneLabels.querySelectorAll("[data-zone]"), function (label) {
+      var projected = projectToScreen(positions[label.dataset.zone], view);
+      label.hidden = !projected;
+      if (!projected) return;
+      label.style.left = projected[0] + "px";
+      label.style.top = projected[1] + "px";
+    });
   }
 
   function resize() {
@@ -372,15 +521,16 @@
     yaw = 0.48;
     pitch = 0.76;
     distance = Math.max(span * 1.18, 5);
+    saveCameraState();
     draw();
   }
 
-  function makeTexture(url) {
+  function makeTexture(url, fallbackColor) {
     var texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texImage2D(
       gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-      new Uint8Array([116, 112, 101, 255])
+      new Uint8Array(fallbackColor || [116, 112, 101, 255])
     );
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -394,8 +544,21 @@
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-      gl.generateMipmap(gl.TEXTURE_2D);
+      var powerOfTwo = function (value) {
+        return value > 0 && (value & (value - 1)) === 0;
+      };
+      if (powerOfTwo(image.width) && powerOfTwo(image.height)) {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.generateMipmap(gl.TEXTURE_2D);
+      } else {
+        // WebGL 1 treats a repeating or mipmapped NPOT texture as incomplete,
+        // which samples as solid black. Keep such assets visible and valid.
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      }
       draw();
     };
     image.onerror = function () {
@@ -405,12 +568,22 @@
     return texture;
   }
 
+  soilTexture = makeTexture(
+    MAP_ROOT + "/demolition_soil_tile_diffuse.jpg?v=dirt-only-v8"
+  );
+  soilVolumeTexture = makeTexture(null, [77, 59, 41, 255]);
+
   function describeState() {
-    var approvedCount = mapObjects.length + removalObjects.length;
-    var objectPart = approvedCount
-      ? " · 승인된 작업 " + approvedCount + "건"
-      : " · 승인된 작업 없음";
-    if (diggableObjects.length) objectPart += " · 토사 Prim " + diggableObjects.length + "개";
+    var objectPart = stageConnected
+      ? " · Isaac Stage 연결됨"
+      : " · Isaac Stage 연결 대기";
+    objectPart += " · 승인 반영 " + mapObjectsRaw.length + "건";
+    if (timelineEnabled) {
+      objectPart += timelineApprovedAt
+        ? " · Timeline " + String(timelineCommitId || "").slice(0, 8)
+        : " · Timeline Baseline";
+    }
+    if (mapConflictsRaw.length) objectPart += " · Conflict " + mapConflictsRaw.length + "건";
     if (meshStatus === "ready") {
       setState(
         "Isaac Site Work Map",
@@ -458,7 +631,8 @@
       meshStatus = "ready";
       // bounds가 이제야 생겼으므로 먼저 도착한 오브젝트를 다시 변환합니다.
       rebuildMapObjects();
-      resetCamera();
+      if (restoredCamera) draw();
+      else resetCamera();
     } catch (error) {
       meshStatus = "missing";
       console.warn("Isaac mesh load failed:", error);
@@ -480,7 +654,8 @@
       }
     });
     bounds = { min: min, max: max };
-    resetCamera();
+    if (restoredCamera) draw();
+    else resetCamera();
   }
 
   // DB에 저장되는 좌표는 Isaac 현장 좌표계입니다: Z가 위, XY 중심이 원점,
@@ -503,13 +678,78 @@
     return [x + centerX, z + minY, -y + centerZ];
   }
 
+  function buildPublishedMeshBuffer(geometry) {
+    if (!bounds || !geometry || geometry.format !== "sitegit-triangle-mesh-v1") return null;
+    var points = geometry.points || [];
+    var counts = geometry.face_vertex_counts || [];
+    var indices = geometry.face_vertex_indices || [];
+    var uvs = geometry.uvs || [];
+    var faceUvs = geometry.face_uvs || [];
+    if (!points.length || !counts.length || !indices.length) return null;
+    var sourceMinX = Math.min.apply(null, points.map(function (point) { return Number(point[0]) || 0; }));
+    var sourceMaxX = Math.max.apply(null, points.map(function (point) { return Number(point[0]) || 0; }));
+    var sourceMinY = Math.min.apply(null, points.map(function (point) { return Number(point[1]) || 0; }));
+    var sourceMaxY = Math.max.apply(null, points.map(function (point) { return Number(point[1]) || 0; }));
+    var sourceSpanX = Math.max(sourceMaxX - sourceMinX, 0.001);
+    var sourceSpanY = Math.max(sourceMaxY - sourceMinY, 0.001);
+    var topVertices = [];
+    var volumeVertices = [];
+    var topFaceCount = Number.isFinite(Number(geometry.top_face_count))
+      ? Math.max(0, Number(geometry.top_face_count))
+      : counts.length;
+    var offset = 0;
+    counts.forEach(function (rawCount, faceNumber) {
+      var count = Number(rawCount) || 0;
+      var faceOffset = offset;
+      var face = indices.slice(offset, offset + count);
+      offset += count;
+      if (count < 3) return;
+      var vertices = faceNumber < topFaceCount ? topVertices : volumeVertices;
+      var first = siteToMesh({ x: points[face[0]][0], y: points[face[0]][1], z: points[face[0]][2] });
+      for (var triangleIndex = 1; triangleIndex < count - 1; triangleIndex += 1) {
+        var secondSource = points[face[triangleIndex]];
+        var thirdSource = points[face[triangleIndex + 1]];
+        if (!secondSource || !thirdSource) continue;
+        var second = siteToMesh({ x: secondSource[0], y: secondSource[1], z: secondSource[2] });
+        var third = siteToMesh({ x: thirdSource[0], y: thirdSource[1], z: thirdSource[2] });
+        var trianglePointIndices = [face[0], face[triangleIndex], face[triangleIndex + 1]];
+        var triangleCornerOffsets = [0, triangleIndex, triangleIndex + 1];
+        [first, second, third].forEach(function (point, pointOffset) {
+          var sourceIndex = trianglePointIndices[pointOffset];
+          var sourcePoint = points[sourceIndex];
+          var uv = faceUvs[faceOffset + triangleCornerOffsets[pointOffset]] || uvs[sourceIndex] || [
+            0.21 + 0.09 * ((Number(sourcePoint[0]) - sourceMinX) / sourceSpanX),
+            0.17 + 0.06 * ((Number(sourcePoint[1]) - sourceMinY) / sourceSpanY)
+          ];
+          vertices.push(
+            point[0], point[1], point[2],
+            Number(uv[0]), Number(uv[1])
+          );
+        });
+      }
+    });
+    function createPart(vertices) {
+      if (!vertices.length) return null;
+      var buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+      publishedGeometryBuffers.push(buffer);
+      return { buffer: buffer, count: vertices.length / 5 };
+    }
+    var top = createPart(topVertices);
+    var volume = createPart(volumeVertices);
+    if (!top && !volume) return null;
+    return { top: top, volume: volume };
+  }
+
   function toRenderable(item) {
     var position = item.position || {};
     var size = item.size || {};
+    var customGeometry = buildPublishedMeshBuffer(item.geometry);
     return {
-      center: siteToMesh(position),
+      center: customGeometry ? [0, 0, 0] : siteToMesh(position),
       // 크기도 축이 바뀝니다. 높이(site Z)가 mesh Y로, 깊이(site Y)가 mesh Z로 갑니다.
-      size: [
+      size: customGeometry ? [1, 1, 1] : [
         Math.abs(Number(size.x) || 1),
         Math.abs(Number(size.z) || 1),
         Math.abs(Number(size.y) || 1)
@@ -518,37 +758,137 @@
       ,type: item.type || "cube"
       ,label: item.label || ""
       ,primPath: item.prim_path || null
+      ,geometry: item.geometry || null
+      ,customGeometry: customGeometry
     };
   }
 
   // 변환이 manifest bounds에 의존하므로, 지형과 오브젝트 중 무엇이 먼저
   // 도착하든 좌표가 맞도록 원본을 들고 있다가 다시 계산합니다.
   function rebuildMapObjects() {
-    var rendered = mapObjectsRaw.map(toRenderable);
-    mapObjects = rendered.filter(function (item) { return item.type !== "removed_prim"; });
-    var approvedDiggablePaths = {};
-    rendered.forEach(function (item) {
-      if (item.type === "removed_prim" && String(item.primPath || "").indexOf("/World/Diggable/") === 0) {
-        approvedDiggablePaths[item.primPath] = true;
+    publishedGeometryBuffers.forEach(function (buffer) { gl.deleteBuffer(buffer); });
+    publishedGeometryBuffers = [];
+    var visibleMapObjectsRaw = mapObjectsRaw;
+    if (timelineEnabled) {
+      if (!timelineApprovedAt) {
+        visibleMapObjectsRaw = [];
+      } else {
+        var objectsByPrim = {};
+        var cutoff = Date.parse(timelineApprovedAt || "");
+        mapTimelineStepsRaw.some(function (step) {
+          var stepTime = Date.parse(step.approved_at || "");
+          if (!timelineCommitId && Number.isFinite(cutoff) && stepTime > cutoff) return true;
+          (step.objects || []).forEach(function (item) {
+            var key = String(item.prim_path || item.id);
+            objectsByPrim[key] = item;
+          });
+          return Boolean(timelineCommitId && step.commit_id === timelineCommitId);
+        });
+        visibleMapObjectsRaw = Object.keys(objectsByPrim).map(function (key) {
+          return objectsByPrim[key];
+        });
       }
+    }
+    var rendered = visibleMapObjectsRaw.map(toRenderable);
+    var changedPaths = {};
+    rendered.forEach(function (item) {
+      if (item.primPath) changedPaths[item.primPath] = true;
     });
-    // 독립 토사 Prim은 정적 Mud Map의 일부가 아니므로 지형을 잘라내지 않고
-    // 해당 overlay만 승인 후 숨깁니다.
-    removalObjects = rendered.filter(function (item) {
-      return item.type === "removed_prim" && !approvedDiggablePaths[item.primPath];
-    });
-    diggableObjects = diggableTargetsRaw
-      .filter(function (item) { return !approvedDiggablePaths[item.path]; })
+    // Old approved cube commits remain in the audit trail, but they are not a
+    // source of truth for the Work map. Only objects that exist in the current
+    // Stage inventory are rendered here.
+    mapObjects = sceneObjectsRaw
+      .filter(function (item) { return item.active !== false && !changedPaths[item.path]; })
       .map(function (item) {
         return toRenderable({
           position: item.world_position,
           size: item.bounds_size,
-          color: "#76502d",
-          type: "diggable",
+          color: item.display_color || "#F0B429",
+          type: "scene_object",
           label: item.name,
           prim_path: item.path
         });
       });
+    rendered.forEach(function (item) {
+      if (item.type !== "removed_prim") mapObjects.push(item);
+    });
+    // 독립 토사 Prim은 정적 Mud Map의 일부가 아니므로 지형을 잘라내지 않고
+    // 해당 overlay만 승인 후 숨깁니다.
+    removalObjects = rendered.filter(function (item) {
+      return item.type === "terrain_cut";
+    });
+    var baselineDiggableTargets = diggableTargetsRaw.slice();
+    if (timelineEnabled) {
+      var knownBaselinePaths = {};
+      baselineDiggableTargets.forEach(function (item) {
+        if (item.path) knownBaselinePaths[item.path] = true;
+      });
+      timelineBaselineObjectsRaw.forEach(function (item) {
+        if (!item.path || knownBaselinePaths[item.path]) return;
+        knownBaselinePaths[item.path] = true;
+        baselineDiggableTargets.push(item);
+      });
+    }
+    diggableObjects = baselineDiggableTargets
+      .filter(function (item) { return item.active !== false && !changedPaths[item.path]; })
+      .map(function (item) {
+        return toRenderable({
+          position: item.world_position,
+          size: item.bounds_size,
+          color: item.display_color || "#76502d",
+          type: "diggable",
+          label: item.name,
+          prim_path: item.path,
+          geometry: item.geometry || null
+        });
+      });
+    conflictObjects = mapConflictsRaw
+      .filter(function (item) { return item.position && item.size; })
+      .map(function (item) {
+        return toRenderable({
+          position: item.position,
+          size: item.size,
+          color: "#ef4444",
+          type: "conflict",
+          label: item.label,
+          prim_path: item.prim_path
+        });
+      });
+  }
+
+  function publishTimelineData() {
+    if (mapTimelineStepsRaw.length) {
+      window.parent.postMessage({
+        type: "sitegit.isaac-map.timeline-data",
+        commits: mapTimelineStepsRaw.map(function (step) {
+          return {
+            commitId: step.commit_id || null,
+            instructionId: step.instruction_id || null,
+            approvedAt: step.approved_at || null
+          };
+        })
+      }, window.location.origin);
+      return;
+    }
+    var seen = {};
+    var commits = [];
+    mapObjectsRaw.forEach(function (item) {
+      if (!item.approved_at) return;
+      var rawId = String(item.id || "");
+      var commitId = rawId.indexOf(":") >= 0 ? rawId.split(":", 1)[0] : rawId;
+      var key = commitId || String(item.instruction_id || "") + "@" + item.approved_at;
+      if (seen[key]) return;
+      seen[key] = true;
+      commits.push({
+        commitId: commitId || null,
+        instructionId: item.instruction_id || null,
+        approvedAt: item.approved_at
+      });
+    });
+    window.parent.postMessage({
+      type: "sitegit.isaac-map.timeline-data",
+      commits: commits
+    }, window.location.origin);
   }
 
   async function loadMapObjects() {
@@ -560,6 +900,11 @@
       if (!response.ok) throw new Error("map-objects HTTP " + response.status);
       var data = await response.json();
       mapObjectsRaw = data.objects || [];
+      mapTimelineStepsRaw = data.timeline || [];
+      diggableTargetsRaw = data.baseline_diggable_targets || [];
+      sceneObjectsRaw = data.baseline_scene_objects || [];
+      mapConflictsRaw = data.conflicts || [];
+      publishTimelineData();
       rebuildMapObjects();
       if (!bounds) boundsFromObjects();
       draw();
@@ -577,9 +922,7 @@
       });
       if (!response.ok) throw new Error("stage-inventory HTTP " + response.status);
       var data = await response.json();
-      diggableTargetsRaw = data.diggable_targets || [];
-      rebuildMapObjects();
-      draw();
+      stageConnected = Boolean(data.connected);
       describeState();
     } catch (error) {
       console.warn("Stage inventory load failed:", error);
@@ -616,6 +959,7 @@
   function stopDrag() {
     dragging = false;
     canvas.classList.remove("dragging");
+    saveCameraState();
   }
   canvas.addEventListener("pointerup", stopDrag);
   canvas.addEventListener("pointercancel", stopDrag);
@@ -623,12 +967,38 @@
     event.preventDefault();
     distance *= Math.exp(event.deltaY * 0.001);
     distance = Math.max(1, Math.min(3000, distance));
+    saveCameraState();
     draw();
   }, { passive: false });
   canvas.addEventListener("dblclick", resetCamera);
   window.addEventListener("message", function (event) {
     if (event.origin !== window.location.origin || !event.data) return;
     if (event.data.type === "sitegit.isaac-map.fit") resetCamera();
+    if (event.data.type === "sitegit.isaac-map.layer") {
+      activeLayer = event.data.layer || "work";
+      zonesVisible = event.data.layer === "zone";
+      timelineEnabled = event.data.layer === "timeline";
+      if (!timelineEnabled) {
+        timelineApprovedAt = null;
+        timelineCommitId = null;
+      }
+      rebuildMapObjects();
+      draw();
+      describeState();
+    }
+    if (event.data.type === "sitegit.isaac-map.timeline") {
+      timelineEnabled = true;
+      activeLayer = "timeline";
+      zonesVisible = false;
+      timelineApprovedAt = event.data.baseline ? null : (event.data.approvedAt || null);
+      timelineCommitId = event.data.baseline ? null : (event.data.commitId || null);
+      timelineBaselineObjectsRaw = Array.isArray(event.data.baselineObjects)
+        ? event.data.baselineObjects
+        : [];
+      rebuildMapObjects();
+      draw();
+      describeState();
+    }
     // 관리자가 승인하면 부모 창이 이 메시지를 보냅니다.
     if (event.data.type === "sitegit.isaac-map.reload-objects") loadMapObjects();
   });
@@ -638,5 +1008,5 @@
   loadMesh();
   loadMapObjects();
   loadStageInventory();
-  window.setInterval(loadStageInventory, 5000);
+  window.setInterval(loadStageInventory, 1000);
 }());
