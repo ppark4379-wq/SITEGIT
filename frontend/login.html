@@ -3,50 +3,53 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#0d3d5c" />
+  <meta name="theme-color" content="#071a29" />
   <title>SiteGit 로그인</title>
-  <link rel="stylesheet" href="/static/login.css" />
+  <link rel="stylesheet" href="/static/login.css?v=20260819-login-2" />
 </head>
 <body>
   <main class="login-shell">
-    <section class="visual-panel">
-      <div class="grid"></div>
-      <div class="brand"><span class="mark">S</span><div><strong>SiteGit</strong><small>AUTONOMOUS WORK ASSURANCE</small></div></div>
+    <section class="visual-panel" aria-label="SiteGit 서비스 소개">
+      <div class="brand"><span class="mark">S</span><div><strong>SiteGit</strong><small>WORK ASSURANCE</small></div></div>
       <div class="headline">
-        <div class="eyebrow">SHARED LOCAL PLATFORM</div>
-        <h1>작업지시부터 Evidence와<br/>관리자 Release까지.</h1>
-        <p>대표 PC의 FastAPI와 외장 SSD SQLite를 기반으로 팀원이 같은 프로젝트 상태를 공유하는 개발 환경입니다.</p>
+        <div class="eyebrow">AUTONOMOUS WORK ASSURANCE</div>
+        <h1>현장의 작업 흐름을<br/>하나의 이력으로.</h1>
+        <p>작업 지시, 실행, 검토·승인과 Release를 연결해 관리자가 지금 필요한 조치를 빠르게 판단합니다.</p>
       </div>
-      <div class="flow"><span>Plan</span><i>→</i><span>Work Package</span><i>→</i><span>Execution</span><i>→</i><span>Evidence</span><i>→</i><span>Release</span></div>
-      <div class="system-note"><b>고정 URL 전제</b><span>Cloudflare Named Tunnel → localhost:8000</span></div>
+      <div class="access-flow" aria-label="SiteGit 업무 흐름">
+        <div><span>01</span><b>작업 지시</b><small>계획·기준 확인</small></div>
+        <i></i>
+        <div><span>02</span><b>작업 현황</b><small>실행·진척 추적</small></div>
+        <i></i>
+        <div><span>03</span><b>검토·승인</b><small>Evidence·Release</small></div>
+      </div>
+      <div class="system-note"><span class="live-dot"></span><div><b>Shared Project</b><small>공동 DB · 감사 이력 연결</small></div></div>
     </section>
 
     <section class="form-panel">
-      <form id="loginForm" class="login-card" autocomplete="off">
-        <div class="eyebrow">SECURE ACCESS</div>
-        <h2>SiteGit에 로그인</h2>
-        <p class="intro">계정별 역할에 따라 작업 편집·검토·조회 권한이 분리됩니다.</p>
+      <div class="form-wrap">
+        <div class="mobile-brand"><span class="mark">S</span><strong>SiteGit</strong></div>
+        <form id="loginForm" class="login-card" autocomplete="off">
+        <div class="eyebrow">SECURE WORKSPACE</div>
+        <h2>작업 공간 로그인</h2>
+        <p class="intro">SiteGit 공동 프로젝트에 접속합니다.</p>
 
         <label>
-          <span>사용자 ID</span>
-          <input id="username" name="username" autocomplete="username" required />
+          <span>아이디</span>
+          <div class="input-shell"><i>ID</i><input id="username" name="username" autocomplete="username" placeholder="아이디를 입력하세요" required /></div>
         </label>
         <label>
           <span>비밀번호</span>
-          <input id="password" name="password" type="password" autocomplete="new-password" required />
+          <div class="input-shell"><i>PW</i><input id="password" name="password" type="password" autocomplete="new-password" placeholder="비밀번호를 입력하세요" required /></div>
         </label>
 
         <div class="error hidden" id="loginError"></div>
         <button type="submit" id="loginButton">로그인</button>
 
-        <div class="demo-accounts">
-          <strong>초기 개발 계정</strong>
-          <span><b>admin</b> · 전체 권한</span>
-          <span><b>manager</b> · 편집 권한</span>
-          <span><b>viewer</b> · 조회 전용</span>
-          <small>공개 URL 연결 전 반드시 .env에서 비밀번호와 JWT_SECRET을 변경하세요.</small>
-        </div>
-      </form>
+        <div class="account-guide"><span>계정 권한</span><div><b>ADMIN</b><b>MANAGER</b><b>VIEWER</b></div><small>로그인 정보는 서버의 <code>.env</code> 설정을 사용합니다.</small></div>
+        <p class="security-note">마지막 로그인 아이디만 저장되며 비밀번호는 저장하지 않습니다.</p>
+        </form>
+      </div>
     </section>
   </main>
   <script src="/static/login.js"></script>

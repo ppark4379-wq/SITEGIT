@@ -7,6 +7,8 @@
   <title>SiteGit v2 — Autonomous Work Assurance</title>
   <meta name="description" content="사상구 공개 발주 데이터를 기반으로 만든 SiteGit 자율화 건설장비 작업운영·검증 컨셉 프로토타입" />
   <link rel="stylesheet" href="/static/styles.css?v=20260818-approved-timeline-3" />
+  <link rel="stylesheet" href="/static/review-layout.css?v=20260819-review-layout-7" />
+  <link rel="stylesheet" href="/static/dashboard-progress.css?v=20260819-daily-progress-1" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -31,25 +33,25 @@
 
       <nav class="nav-list" id="navList">
         <button class="nav-item active" data-page="dashboard">
-          <span class="nav-icon">⌂</span><span>통합 관제</span><span class="nav-badge" id="navAlertBadge">3</span>
-        </button>
-        <button class="nav-item" data-page="readiness">
-          <span class="nav-icon">◫</span><span>데이터 준비도</span>
+          <span class="nav-icon">⌂</span><span>현장 대시보드</span><span class="nav-badge" id="navAlertBadge">3</span>
         </button>
         <button class="nav-item" data-page="workpackages">
-          <span class="nav-icon">▤</span><span>Work Package</span>
+          <span class="nav-icon">▧</span><span>작업 지시</span>
         </button>
-        <button class="nav-item" data-page="equipment">
-          <span class="nav-icon">◆</span><span>장비 Registry</span>
+        <button class="nav-item" data-page="execution">
+          <span class="nav-icon">▤</span><span>작업 현황</span>
         </button>
         <button class="nav-item" data-page="evidence">
-          <span class="nav-icon">◎</span><span>결과 검토</span>
+          <span class="nav-icon">◇</span><span>검토·승인</span>
         </button>
         <button class="nav-item" data-page="versions">
-          <span class="nav-icon">⑂</span><span>Version 이력</span>
+          <span class="nav-icon">◷</span><span>작업 이력</span>
+        </button>
+        <button class="nav-item" data-page="equipment">
+          <span class="nav-icon">◆</span><span>장비관리</span>
         </button>
         <button class="nav-item" data-page="settings">
-          <span class="nav-icon">⚙</span><span>설정·데이터</span>
+          <span class="nav-icon">⚙</span><span>설정</span>
         </button>
       </nav>
 
@@ -86,6 +88,7 @@
         <section id="page-dashboard" class="page active"></section>
         <section id="page-readiness" class="page"></section>
         <section id="page-workpackages" class="page"></section>
+        <section id="page-execution" class="page"></section>
         <section id="page-equipment" class="page"></section>
         <section id="page-evidence" class="page"></section>
         <section id="page-versions" class="page"></section>
@@ -150,6 +153,7 @@
 
   <input type="file" id="jsonImportInput" accept="application/json" class="hidden-input" />
 
-  <script src="/static/app.js?v=20260818-approved-timeline-3"></script>
+  <script src="/static/app.js?v=20260819-tab-local-navigation-1"></script>
+  <script src="/static/workflow-ui.js?v=20260819-workflow-14"></script>
 </body>
 </html>

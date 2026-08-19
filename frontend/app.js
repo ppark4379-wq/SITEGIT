@@ -7,6 +7,7 @@
 
 const STORAGE_KEY = 'sitegit-concept-prototype-v2';
 const ONBOARD_KEY = 'sitegit-concept-onboarded-v2';
+const VIEW_STORAGE_KEY = 'sitegit-view-state-v1';
 const PROJECT_ID = 'SASANG-001';
 const API_BASE = '/api/v1';
 const EQUIPMENT_PHOTOS = {
@@ -141,23 +142,40 @@ const DEFAULT_STATE = {
 };
 
 let state = loadState();
+restoreLocalView(loadTabView());
 let onboardingStep = 0;
 let simTimer = null;
 
 const PAGE_META = {
-  dashboard: ['AUTONOMOUS WORK ASSURANCE','통합 관리자 Control Center'],
+  dashboard: ['FIELD OPERATIONS','현장 대시보드'],
   readiness: ['SITE DATA ONBOARDING','자율화 작업 데이터 준비도'],
-  workpackages: ['PLAN TO MACHINE LANGUAGE','Work Package 관리'],
-  equipment: ['SITEGIT READY EQUIPMENT','장비 Registry & Capability'],
-  evidence: ['EVIDENCE & TRUST','결과 검토·인수 판단'],
-  versions: ['VERSION & AUDIT','작업 Version 이력'],
-  settings: ['PROJECT CONFIGURATION','설정·데이터 관리'],
+  workpackages: ['PLAN TO MACHINE LANGUAGE','작업 지시'],
+  execution: ['FIELD EXECUTION','작업 현황'],
+  equipment: ['EQUIPMENT MANAGEMENT','장비관리'],
+  evidence: ['EVIDENCE & TRUST','검토·승인'],
+  versions: ['VERSION & AUDIT','작업 이력'],
+  settings: ['PROJECT CONFIGURATION','설정'],
 };
 
 function deepClone(obj){ return JSON.parse(JSON.stringify(obj)); }
 function safeGetItem(key){ try{return localStorage.getItem(key)}catch(e){return null} }
 function safeSetItem(key,value){ try{localStorage.setItem(key,value);return true}catch(e){return false} }
 function safeRemoveItem(key){ try{localStorage.removeItem(key)}catch(e){} }
+function safeGetSessionItem(key){ try{return sessionStorage.getItem(key)}catch(e){return null} }
+function safeSetSessionItem(key,value){ try{sessionStorage.setItem(key,value);return true}catch(e){return false} }
+function loadTabView(){
+  try{
+    const saved=safeGetSessionItem(VIEW_STORAGE_KEY);
+    if(saved)return JSON.parse(saved);
+  }catch(e){console.warn('View state load failed',e)}
+  return {selectedPage:'dashboard',selectedWpId:''};
+}
+function persistLocalView(){
+  safeSetSessionItem(VIEW_STORAGE_KEY,JSON.stringify({
+    selectedPage:state?.selectedPage||'dashboard',
+    selectedWpId:state?.selectedWpId||'',
+  }));
+}
 function loadState(){
   try{
     const saved = safeGetItem(STORAGE_KEY);
@@ -186,9 +204,10 @@ function sharedStatePayload(){
   return payload;
 }
 function localViewState(){
+  const tabView=loadTabView();
   return {
-    selectedPage:state?.selectedPage||'dashboard',
-    selectedWpId:state?.selectedWpId||'',
+    selectedPage:tabView.selectedPage||state?.selectedPage||'dashboard',
+    selectedWpId:tabView.selectedWpId||state?.selectedWpId||'',
   };
 }
 function restoreLocalView(view){
@@ -199,7 +218,9 @@ function restoreLocalView(view){
     :(workPackages[0]?.id||'');
 }
 function saveState(){
-  safeSetItem(STORAGE_KEY,JSON.stringify(state));
+  // Navigation and selected cards are tab-local. The local backup contains
+  // the same project-data shape as the shared server payload only.
+  safeSetItem(STORAGE_KEY,JSON.stringify(sharedStatePayload()));
   scheduleRemoteSave();
 }
 function updateSyncIndicator(label,tone='online'){
@@ -462,12 +483,14 @@ function renderAll(){
   renderIsaacPanel();
   renderReadiness();
   renderWorkPackages();
+  if(typeof renderExecution==='function')renderExecution();
   renderEquipment();
   applyOfficialEquipmentPhotos();
   renderEvidence();
   renderVersions();
   renderSettings();
   applyPage();
+  persistLocalView();
   saveState();
 }
 function renderHeader(){
@@ -1012,7 +1035,7 @@ $('#modalBackdrop').addEventListener('click',e=>{if(e.target===e.currentTarget)c
 $('#openOnboardingBtn').addEventListener('click',openOnboarding);
 
 function navigate(page){
-  state.selectedPage=page; $('.sidebar').classList.remove('open'); renderHeader(); applyPage(); saveState(); window.scrollTo({top:0,behavior:'smooth'});
+  state.selectedPage=page; $('.sidebar').classList.remove('open'); renderHeader(); applyPage(); persistLocalView(); window.scrollTo({top:0,behavior:'smooth'});
 }
 function syncIsaacMapLayer(frame=document.querySelector('.isaac-map-frame')){
   frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.layer',layer:activeMapLayer},window.location.origin);
@@ -1904,7 +1927,7 @@ document.addEventListener('click',event=>{
   if(remoteCanEdit)return;
   const button=event.target.closest('button');
   if(!button)return;
-  const allowed=button.matches('.nav-item,#mobileMenuBtn,#logoutBtn,#notificationsBtn,#profileBtn,#closeModalBtn,[data-modal-close],[data-select-wp],[data-wp-id],[data-zone]');
+  const allowed=button.matches('.nav-item,#mobileMenuBtn,#logoutBtn,#notificationsBtn,#profileBtn,#closeModalBtn,[data-modal-close],[data-select-wp],[data-wp-id],[data-zone],[data-page-link],[data-review-open],[data-review-back],[data-review-phase],[data-settings-tab],[data-equipment-select]');
   if(allowed)return;
   event.preventDefault();
   event.stopImmediatePropagation();

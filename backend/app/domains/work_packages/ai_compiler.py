@@ -25,9 +25,45 @@ from ...schemas.work_package_ai import (
     ExcavationDraft,
     LLMExcavationPlan,
     LLMWorkPackagePlan,
+    PlanningWorkPackagePlan,
     WorkPackageCheck,
     ZoneBounds,
 )
+
+
+def compile_planning_work_package(message: str, settings: Settings) -> PlanningWorkPackagePlan:
+    """실행과 분리된 관리자 검토용 작업지시 초안을 만듭니다."""
+    schema = PlanningWorkPackagePlan.model_json_schema()
+    system_prompt = """당신은 건설 현장 관리자용 SiteGit Planning Assistant입니다.
+사용자의 한국어 요청을 작업지시 초안으로 구조화하세요. 실행 좌표, Isaac Prim path,
+장비 제어 명령은 절대 만들지 않습니다. 불명확한 핵심 값은 추측하지 말고
+clarification_question에 질문하며 ready=false로 반환하세요. Zone은 A-D 중 하나이며,
+공종, 제목, 목표량/단위, 구간, 권장 장비, 후속 작업을 간결하게 작성하세요.
+target_unit은 m, m3, ea 중 하나입니다."""
+    try:
+        endpoint = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
+        with httpx.Client(timeout=settings.ollama_timeout_seconds) as client:
+            response = client.post(endpoint, json={
+                "model": settings.ollama_model,
+                "messages": [{"role":"system","content":system_prompt},{"role":"user","content":message}],
+                "stream": False, "think": False, "format": schema,
+                "options": {"temperature": 0}, "keep_alive": "10m",
+            })
+        if response.status_code == 404:
+            raise WorkPackageLLMUnavailable(f"Ollama 모델 '{settings.ollama_model}'을 찾지 못했습니다.")
+        response.raise_for_status()
+        output_text = response.json().get("message", {}).get("content", "")
+        if not output_text:
+            raise WorkPackageLLMError("LLM이 작업지시 초안을 반환하지 않았습니다.")
+        return PlanningWorkPackagePlan.model_validate_json(output_text)
+    except (WorkPackageLLMUnavailable, WorkPackageLLMError):
+        raise
+    except httpx.ConnectError as error:
+        raise WorkPackageLLMUnavailable("로컬 Ollama에 연결할 수 없습니다.") from error
+    except httpx.TimeoutException as error:
+        raise WorkPackageLLMError("Ollama 응답 시간이 초과되었습니다.") from error
+    except (httpx.HTTPError, ValidationError, ValueError, json.JSONDecodeError) as error:
+        raise WorkPackageLLMError("LLM 작업지시 응답을 검증하지 못했습니다.") from error
 
 
 DEFAULT_SITE_BOUNDS = {

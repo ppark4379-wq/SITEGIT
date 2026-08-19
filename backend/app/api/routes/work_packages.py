@@ -14,6 +14,7 @@ from ...domains.work_packages.ai_compiler import (
     WorkPackageLLMError,
     WorkPackageLLMUnavailable,
     compile_natural_language,
+    compile_planning_work_package,
     compile_excavation_language,
     resolve_excavation_plan,
     resolve_plan,
@@ -41,12 +42,40 @@ from ...schemas.work_package_ai import (
     CodeWorkPackageDraft,
     CodeWorkPackageInterpretRequest,
     CodeWorkPackageRecord,
+    PlanningWorkPackageDraft,
 )
 from ..deps import get_db, require_roles
 
 
 router = APIRouter(prefix="/work-packages", tags=["work-packages"])
 OPERATOR_ROLES = ("admin", "manager", "reviewer")
+
+
+@router.post("/ai/planning/interpret", response_model=PlanningWorkPackageDraft)
+def interpret_planning_work_package(
+    payload: AIWorkPackageInterpretRequest,
+    _user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> PlanningWorkPackageDraft:
+    """Isaac 실행과 분리해 관리자 검토용 작업지시 초안만 생성합니다."""
+    settings = get_settings()
+    try:
+        plan = compile_planning_work_package(payload.message, settings)
+    except WorkPackageLLMUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "LLM_NOT_CONFIGURED", "message": str(error)},
+        ) from error
+    except WorkPackageLLMError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "LLM_REQUEST_FAILED", "message": str(error)},
+        ) from error
+    return PlanningWorkPackageDraft(
+        project_id=payload.project_id,
+        source_text=payload.message,
+        plan=plan,
+        model=settings.ollama_model,
+    )
 
 
 @router.post("/ai/code/interpret", response_model=CodeWorkPackageDraft)

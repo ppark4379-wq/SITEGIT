@@ -51,6 +51,29 @@ class AIWorkPackageInterpretRequest(BaseModel):
     message: str = Field(min_length=3, max_length=1000)
 
 
+class PlanningWorkPackagePlan(BaseModel):
+    """관리자 검토용 작업지시 초안. 실행 좌표나 Isaac Prim은 포함하지 않습니다."""
+
+    ready: bool
+    zone_id: ZoneId
+    work_type: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=120)
+    target_amount: float = Field(default=0, ge=0, le=1_000_000)
+    target_unit: Literal["m", "m3", "ea"] = "m"
+    segment: str = Field(default="관리자 확인 필요", max_length=120)
+    equipment_hint: str = Field(default="관리자 배정 필요", max_length=120)
+    successor_title: str = Field(default="후속 작업 미지정", max_length=120)
+    summary: str = Field(min_length=1, max_length=500)
+    clarification_question: str = Field(default="", max_length=300)
+
+
+class PlanningWorkPackageDraft(BaseModel):
+    project_id: str
+    source_text: str
+    plan: PlanningWorkPackagePlan
+    model: str
+
+
 class ZoneBounds(BaseModel):
     min_x: float
     max_x: float

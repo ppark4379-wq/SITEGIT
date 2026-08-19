@@ -24,14 +24,13 @@ git clone https://github.com/ysj20030825-lab/SITEGIT.git
 cd SITEGIT
 ```
 
-PowerShell 실행 정책을 현재 창에서만 허용하고 최초 설정을 실행합니다.
+프로젝트 폴더에서 아래 명령 하나만 실행합니다.
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\ops\scripts\setup_windows.ps1
+.\start_sitegit.bat
 ```
 
-이 스크립트는 다음 작업을 자동으로 수행합니다.
+PowerShell 실행 정책은 이 실행에만 자동으로 우회됩니다. 처음 실행할 때는 다음 작업도 자동으로 수행하고, 이후에는 곧바로 서버를 시작합니다.
 
 - `.env`가 없으면 예시 설정을 복사해 생성
 - `.venv` Python 가상환경 생성
@@ -93,13 +92,13 @@ $bytes = New-Object byte[] 32
 [Convert]::ToBase64String($bytes)
 ```
 
-서버를 실행합니다.
+다음 실행부터도 같은 명령을 사용합니다.
 
 ```powershell
-.\ops\scripts\start_sitegit.ps1
+.\start_sitegit.bat
 ```
 
-또는 탐색기에서 `start_sitegit.bat`을 실행할 수 있습니다. PowerShell 창을 닫으면 서버도 종료됩니다.
+탐색기에서 `start_sitegit.bat`을 더블클릭해도 됩니다. 서버는 `Ctrl+C`를 누르거나 실행 창을 닫으면 종료됩니다.
 
 브라우저 접속 주소:
 
