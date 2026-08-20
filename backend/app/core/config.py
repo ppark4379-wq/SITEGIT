@@ -90,6 +90,6 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    for name in ("database", "evidence", "isaac", "logs", "backups"):
+    for name in ("database", "evidence", "isaac", "site_plans", "logs", "backups"):
         (settings.sitegit_data_root / name).mkdir(parents=True, exist_ok=True)
     return settings

@@ -18,18 +18,20 @@
     .zone-label b,.zone-label small{display:block}.zone-label b{font-size:13px;letter-spacing:.08em}.zone-label small{margin-top:2px;font-size:8px;color:#f5fbfd}
     .zone-label{background:color-mix(in srgb,var(--zone-color,#2ca66f) 84%,#07131b);border-color:color-mix(in srgb,var(--zone-color,#2ca66f) 62%,#fff)}
     .planning-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}.planning-overlay .plan-area{fill:#d6a92d29;stroke:#ffe07a;stroke-width:3;stroke-dasharray:9 6;filter:drop-shadow(0 0 7px #d6a92dbb)}.planning-overlay .plan-front-area{fill:var(--front);fill-opacity:.34;stroke:var(--front);stroke-width:1.5;stroke-opacity:.95}.planning-overlay .plan-centerline{fill:none;stroke:#fff4bc;stroke-width:3;stroke-dasharray:5 5}.planning-overlay .plan-front circle{stroke:#fff;stroke-width:2}.planning-overlay .plan-front text{fill:#fff;font-size:11px;font-weight:900;paint-order:stroke;stroke:#07131b;stroke-width:4px;stroke-linejoin:round}.planning-overlay .plan-zone-title rect{fill:#b98b12e8;stroke:#ffe899;stroke-width:1.5}.planning-overlay .plan-zone-title text{fill:#fff8d6;font-size:11px;font-weight:900;letter-spacing:.03em}
+    .design-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}.design-overlay .design-corridor{fill:#33c6dd18;stroke:#6ae6f2;stroke-width:2;stroke-dasharray:9 7;filter:drop-shadow(0 0 5px #1cb7cd88)}.design-overlay .pipe-shadow{fill:none;stroke:#06141bd9;stroke-width:18;stroke-linecap:round;stroke-linejoin:round}.design-overlay .pipe-body{fill:none;stroke:#52d9ed;stroke-width:13;stroke-linecap:round;stroke-linejoin:round;opacity:.64;filter:drop-shadow(0 0 8px #21c7e6)}.design-overlay .pipe-core{fill:none;stroke:#dffcff;stroke-width:3;stroke-dasharray:10 6;stroke-linecap:round}.design-overlay .depth-link{stroke:#b9f5fb;stroke-width:1.5;stroke-dasharray:3 4;opacity:.75}.design-overlay .surface-point{fill:#081820;stroke:#8beefa;stroke-width:2}.design-overlay .pipe-point{fill:#52d9ed;stroke:#e9feff;stroke-width:2}.design-overlay .design-label rect{fill:#073545e8;stroke:#72e7f2;stroke-width:1}.design-overlay .design-label text{fill:#e9feff;font-size:10px;font-weight:900}.design-overlay .design-label text.sub{fill:#a8e9ef;font-size:8px;font-weight:700}
     @media(max-width:620px){.help{display:none}.state{max-width:190px}}
   </style>
 </head>
 <body>
   <div id="viewer">
     <canvas id="mapCanvas" aria-label="Isaac Sim pipeline construction site 3D viewer"></canvas>
+    <svg class="design-overlay" id="designOverlay" hidden aria-label="승인 도면 지하 관로 X-ray"></svg>
     <svg class="planning-overlay" id="planningOverlay" hidden aria-label="도면 작업 예정 구간"></svg>
     <div class="zone-label-layer" id="zoneLabels" hidden aria-hidden="true"></div>
     <div class="state" id="viewerState"><b>Isaac Map 불러오는 중</b><span>Mesh manifest 확인</span></div>
     <div class="help">좌클릭 회전 · 우클릭 이동 · 휠 확대/축소 · 더블클릭 초기화</div>
     <div class="axis" aria-hidden="true"><i class="x">X</i><i class="y">Y</i><i class="z">Z</i></div>
   </div>
-  <script src="/static/isaac-map-viewer.js?v=20260820-front-masks-4"></script>
+  <script src="/static/isaac-map-viewer.js?v=20260820-drawing-xray-6"></script>
 </body>
 </html>

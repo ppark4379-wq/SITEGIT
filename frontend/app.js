@@ -40,6 +40,8 @@ let timelineStepIndex = null;
 let timelineZoneFilter = 'ALL';
 let mapTimelineCommitRefs = null;
 let isaacPlanningOverlay = null;
+let sitePlans = [];
+let approvedSitePlan = null;
 
 const DEFAULT_STATE = {
   selectedPage: 'dashboard',
@@ -340,8 +342,10 @@ async function bootstrapSharedState(){
     const avatar=$('#profileBtn .avatar');if(avatar)avatar.textContent=(me.full_name||me.username).trim().slice(0,1).toUpperCase();
     const profile=$('#profileBtn small');if(profile)profile.textContent=roleLabel;
     await pullRemoteState();
+    await loadSitePlans();
     await loadStageInventory();
     await loadIsaacInstructions();
+    renderAll();
     remoteReady=true;
     connectRealtime();
     if(!remoteCanEdit)updateSyncIndicator('조회 전용','readonly');
@@ -812,7 +816,7 @@ function renderDashboard(){
           <div class="map-toolbar"><div class="segmented"><button class="${activeMapLayer==='work'?'active':''}" data-map-layer="work">Work</button><button class="${activeMapLayer==='zone'?'active':''}" data-map-layer="zone">Zone</button><button class="${activeMapLayer==='evidence'?'active':''}" data-map-layer="evidence">Evidence</button><button class="${activeMapLayer==='constraint'?'active':''}" data-map-layer="constraint">Constraint</button><button class="${activeMapLayer==='timeline'?'active':''}" data-map-layer="timeline">Timeline</button></div><button class="ghost-button button-sm" data-action="fit-map">화면 맞춤</button></div>
         </div>
         <div class="site-map-wrap isaac-map">
-          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html?v=20260820-front-masks-4" title="Isaac Sim pipeline construction site 3D viewer" loading="eager"></iframe>
+          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html?v=20260820-drawing-xray-6" title="Isaac Sim pipeline construction site 3D viewer" loading="eager"></iframe>
           <div class="map-info-float">${mapInfoMarkup(wp)}</div>
           <div class="isaac-map-note">${stageInventory.connected?`Isaac Stage 연결 · 객체 ${(stageInventory.scene_objects||[]).length}개 · 1초 갱신`:'Isaac Stage 연결 대기'} · 좌클릭 회전 · 우클릭 이동 · 휠 확대</div>
           <div class="map-timeline-shell ${activeMapLayer==='timeline'?'active':''}" id="mapTimelineControl">${timelineControlMarkup()}</div>
@@ -1179,6 +1183,7 @@ function syncIsaacMapLayer(frame=null){
   syncIsaacMapZones(frame);
   targets.forEach(target=>target?.contentWindow?.postMessage({type:'sitegit.isaac-map.layer',layer:activeMapLayer},window.location.origin));
   syncIsaacPlanningOverlay(frame);
+  syncIsaacDesignOverlay(frame);
   if(activeMapLayer==='timeline')syncIsaacTimeline(frame);
 }
 function setIsaacPlanningOverlay(design=null){
@@ -1191,6 +1196,16 @@ function syncIsaacPlanningOverlay(frame=null){
       isaacPlanningOverlay
         ?{type:'sitegit.isaac-map.plan',plan:isaacPlanningOverlay}
         :{type:'sitegit.isaac-map.plan-clear'},
+      window.location.origin,
+    );
+  });
+}
+function syncIsaacDesignOverlay(frame=null){
+  mapFrameTargets(frame).filter(target=>target?.dataset?.planningMap!=='1').forEach(target=>{
+    target.contentWindow?.postMessage(
+      activeMapLayer==='drawing'&&approvedSitePlan?.design
+        ?{type:'sitegit.isaac-map.design',plan:approvedSitePlan.design,status:approvedSitePlan.status}
+        :{type:'sitegit.isaac-map.design-clear'},
       window.location.origin,
     );
   });
@@ -1227,11 +1242,13 @@ function refreshTimelineControl({sync=true}={}){
     if(caption.closest('.workflow-map-shell')?.classList.contains('planning'))return;
     const title=caption.querySelector('b');
     const detail=caption.querySelector('span');
-    if(title)title.textContent=activeMapLayer==='zone'?'작업 Zone':activeMapLayer==='timeline'?'Commit Timeline':'현재 현장 맵';
+    if(title)title.textContent=activeMapLayer==='zone'?'작업 Zone':activeMapLayer==='timeline'?'Commit Timeline':activeMapLayer==='drawing'?'승인 도면 · 지하 관로':'현재 현장 맵';
     if(detail)detail.textContent=activeMapLayer==='zone'
       ?(dynamicMapZones().length?'작업 지시의 실제 대상 위치를 표시합니다.':'새 작업 지시가 발행되면 Zone이 생성됩니다.')
       :activeMapLayer==='timeline'
         ?(approvedTimelineSteps().length>1?'슬라이더로 승인 Commit을 재생합니다.':'새 Commit을 승인하면 Timeline에 추가됩니다.')
+        :activeMapLayer==='drawing'
+          ?(approvedSitePlan?`${approvedSitePlan.design.plan_id} Rev.${approvedSitePlan.design.revision} · 설계 깊이 ${approvedSitePlan.design.design_depth_m}m`:'승인된 현장 도면이 없습니다.')
         :'관리자 승인으로 Merge된 작업 결과를 표시합니다.';
   });
   const info=document.querySelector('.map-info-float');
@@ -1257,6 +1274,7 @@ function setIsaacMapLayer(layer){
   syncIsaacMapLayer();
   if(layer==='zone')toast('작업구역 표시',dynamicMapZones().length?'새 작업 지시의 실제 대상 범위를 Zone으로 표시합니다.':'아직 새 작업 지시가 없어 표시할 Zone이 없습니다.','success');
   if(layer==='timeline')toast('승인 이력 Timeline','전체 맵 또는 Zone을 선택하고 Baseline부터 새 승인 Commit까지 확인하세요.','success');
+  if(layer==='drawing')toast('승인 도면 X-ray',approvedSitePlan?'설계 관로를 지표 아래 반투명 형상으로 표시합니다.':'도면 관리에서 승인 도면을 등록해 주세요.',approvedSitePlan?'success':'warning');
 }
 function handleAction(action){
   const handlers={
@@ -1264,7 +1282,7 @@ function handleAction(action){
     'edit-project':openProjectModal,'add-readiness':()=>openReadinessModal(null),'create-wp':openAiWorkPackageModal,'add-equipment':()=>openEquipmentModal(null),'edit-assignments':()=>openWpModal(selectedWp().id),
     'check-all-compatibility':()=>toast('장비 적합성 검사 완료','5개 장비의 작업 유형·범위·Evidence 반환 가능성을 다시 계산했습니다.','success'),
     'show-sources':showSourcesModal,'export-json':exportJson,'import-json':()=>$('#jsonImportInput').click(),'snapshot-version':snapshotVersion,
-    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'fit-map':()=>{isaacMapFrames().forEach(frame=>frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin));toast('현장 뷰 재정렬','Isaac Sim 관로 공사 현장을 화면에 맞췄습니다.','success')},
+    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'manage-drawings':openDrawingManager,'fit-map':()=>{isaacMapFrames().forEach(frame=>frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin));toast('현장 뷰 재정렬','Isaac Sim 관로 공사 현장을 화면에 맞췄습니다.','success')},
   };
   handlers[action]?.();
 }
@@ -1353,6 +1371,18 @@ function isaacPositionText(instruction){
 }
 function reloadIsaacMapObjects(){
   isaacMapFrames().forEach(frame=>frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.reload-objects'},window.location.origin));
+}
+async function loadSitePlans(){
+  try{
+    const response=await apiFetch(`/site-plans?project_id=${encodeURIComponent(PROJECT_ID)}`);
+    if(!response.ok)throw new Error(`SITE_PLANS_${response.status}`);
+    sitePlans=await response.json();
+    approvedSitePlan=sitePlans.find(item=>item.status==='approved')||sitePlans[0]||null;
+    syncIsaacDesignOverlay();
+  }catch(error){
+    if(error.message!=='AUTH_REQUIRED')console.warn('Site plan load failed',error);
+    sitePlans=[];approvedSitePlan=null;
+  }
 }
 async function loadStageInventory(){
   try{
@@ -1968,6 +1998,49 @@ async function reviewIsaacCommit(commitId,decision){
 }
 
 /* Modal helpers */
+function normalizedSitePlanDesign(raw){
+  const candidate=raw?.design||raw;
+  if(candidate?.centerline&&candidate?.phases)return candidate;
+  const area=candidate?.work_area;const pipe=area?.pipe;
+  if(!area||!pipe||!Array.isArray(candidate?.workflow))throw new Error('SiteGit 도면 JSON 또는 시나리오 도면 JSON이 아닙니다.');
+  return {
+    plan_id:candidate.plan_id,revision:candidate.revision,title:candidate.title,
+    source_map:candidate.source_map,work_area_id:area.id,work_area_label:area.label,
+    station_range:area.station_range,total_length_m:area.total_length_m,
+    design_depth_m:area.design_depth_m,pipe_diameter_m:pipe.outside_diameter_m,
+    centerline:area.centerline,workfronts:area.workfronts||[],phases:candidate.workflow,
+    assumptions:candidate.planning_assumptions||[],
+  };
+}
+function drawingRecordMarkup(record){
+  const design=record.design||{};const approved=record.status==='approved';
+  const updated=Number(new Date(record.updated_at))>0?new Date(record.updated_at).toLocaleString('ko-KR'):'기본 시나리오';
+  return `<article class="drawing-record ${approved?'approved':''}"><div><span>${approved?'APPROVED':'DRAFT'}</span><b>${esc(design.plan_id||'-')} · Rev.${esc(design.revision||'-')}</b><small>${esc(design.title||'-')}</small></div><dl><div><dt>구간</dt><dd>${esc(design.station_range||'-')}</dd></div><div><dt>관로</dt><dd>Ø${design.pipe_diameter_m||'-'}m · 깊이 ${design.design_depth_m||'-'}m</dd></div><div><dt>저장</dt><dd>${esc(updated)}</dd></div><div><dt>작성자</dt><dd>${esc(record.updated_by||'-')}</dd></div></dl></article>`;
+}
+function openDrawingManager(){
+  const current=approvedSitePlan?.design;
+  openModal({
+    eyebrow:'SITE PLAN REGISTRY',title:'현장 도면 관리',modalClass:'drawing-manager-modal',
+    body:`<div class="drawing-manager-summary"><div><span>현재 승인 도면</span><b>${current?`${esc(current.plan_id)} · Rev.${esc(current.revision)}`:'등록되지 않음'}</b><small>${current?`${esc(current.station_range)} · 관경 Ø${current.pipe_diameter_m}m · 설계 깊이 ${current.design_depth_m}m`:'도면을 등록하면 메인 맵의 도면 레이어에 표시됩니다.'}</small></div><button class="secondary-button" type="button" data-map-layer="drawing">맵에서 보기</button></div><div class="drawing-registry-list">${sitePlans.map(drawingRecordMarkup).join('')||'<p class="muted">저장된 도면이 없습니다.</p>'}</div><div class="drawing-upload-box"><div><b>새 Revision 등록</b><span>좌표 정합이 끝난 SiteGit JSON 또는 시나리오 JSON을 저장합니다.</span></div><input class="form-control" id="sitePlanFile" type="file" accept="application/json,.json"><label>저장 상태<select class="form-control" id="sitePlanStatus"><option value="draft">초안</option><option value="approved">승인 도면</option></select></label><p class="form-hint">승인 도면만 메인 3D 맵의 지하 관로 X-ray 레이어에 적용됩니다.</p></div>`,
+    footer:`<button class="ghost-button" data-modal-close>닫기</button><button class="primary-button" id="saveSitePlanBtn" ${remoteCanEdit?'':'disabled'}>도면 Revision 저장</button>`,
+  });
+  $('#saveSitePlanBtn')?.addEventListener('click',saveDrawingRevision);
+}
+async function saveDrawingRevision(){
+  const button=$('#saveSitePlanBtn');const file=$('#sitePlanFile')?.files?.[0];
+  if(!file){toast('도면 파일 필요','저장할 JSON 도면 파일을 선택해 주세요.','warning');return;}
+  button.disabled=true;button.textContent='도면 검증·저장 중…';
+  try{
+    const raw=JSON.parse(await file.text());const design=normalizedSitePlanDesign(raw);
+    const response=await apiFetch('/site-plans',{method:'POST',body:JSON.stringify({project_id:PROJECT_ID,status:$('#sitePlanStatus').value,source_filename:file.name,design})});
+    const payload=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(payload.detail?.message||payload.detail||`SITE_PLAN_${response.status}`);
+    await loadSitePlans();activeMapLayer=payload.status==='approved'?'drawing':activeMapLayer;
+    closeModal();renderAll();
+    toast('도면 Revision 저장 완료',`${payload.design.plan_id} Rev.${payload.design.revision} · ${payload.status==='approved'?'메인 맵 적용':'초안 저장'}`,'success');
+  }catch(error){button.disabled=false;button.textContent='도면 Revision 저장';toast('도면 저장 실패',String(error.message||error),'danger');}
+}
+
 function openModal({eyebrow='EDIT',title,body,footer,modalClass=''}){
   const modal=$('#genericModal');
   modal.className=`modal${modalClass?` ${modalClass}`:''}`;
@@ -2131,7 +2204,7 @@ document.addEventListener('click',event=>{
   if(remoteCanEdit)return;
   const button=event.target.closest('button');
   if(!button)return;
-  const allowed=button.matches('.nav-item,#mobileMenuBtn,#logoutBtn,#notificationsBtn,#profileBtn,#closeModalBtn,[data-modal-close],[data-select-wp],[data-wp-id],[data-zone],[data-page-link],[data-review-open],[data-review-back],[data-review-phase],[data-settings-tab],[data-equipment-select],[data-isaac-detail],[data-real-wp-detail],[data-history-event],[data-map-layer],[data-action="fit-map"],[data-workflow-action="refresh"]');
+  const allowed=button.matches('.nav-item,#mobileMenuBtn,#logoutBtn,#notificationsBtn,#profileBtn,#closeModalBtn,[data-modal-close],[data-select-wp],[data-wp-id],[data-zone],[data-page-link],[data-review-open],[data-review-back],[data-review-phase],[data-settings-tab],[data-equipment-select],[data-isaac-detail],[data-real-wp-detail],[data-history-event],[data-map-layer],[data-action="fit-map"],[data-action="manage-drawings"],[data-workflow-action="refresh"]');
   if(allowed)return;
   event.preventDefault();
   event.stopImmediatePropagation();

@@ -87,6 +87,35 @@ def test_each_pipeline_phase_has_one_zone(
     assert plan.work_type == expected_work_type
 
 
+def test_site_plan_registry_returns_canonical_and_saves_revisions(manager_client) -> None:
+    listed = manager_client.get("/api/v1/site-plans?project_id=SASANG-001")
+    assert listed.status_code == 200, listed.text
+    canonical = next(
+        item for item in listed.json() if item["design"]["plan_id"] == "SASANG-PIPE-DEMO-V1"
+    )
+    design = canonical["design"]
+    design["revision"] = "TEST-REGISTRY"
+    design["title"] = "테스트 관로 도면"
+
+    saved = manager_client.post(
+        "/api/v1/site-plans",
+        json={
+            "project_id": "SASANG-001",
+            "status": "draft",
+            "source_filename": "test-plan.json",
+            "design": design,
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["updated_by"]
+
+    refreshed = manager_client.get("/api/v1/site-plans?project_id=SASANG-001")
+    assert refreshed.status_code == 200, refreshed.text
+    assert any(
+        item["design"]["revision"] == "TEST-REGISTRY" for item in refreshed.json()
+    )
+
+
 def _stage_prim(path: str, name: str, role: str, zone_id: str | None = None) -> dict:
     return {
         "path": path,

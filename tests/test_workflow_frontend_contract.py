@@ -95,3 +95,21 @@ def test_pipeline_plan_only_shows_criteria_for_the_current_phase() -> None:
     assert "data-criteria-phase" not in workflow
     assert "set-criteria-phase" not in workflow
     assert "phase_id:wfCurrentPhaseId(draft)" in workflow
+
+
+def test_dashboard_has_versioned_drawing_registry_and_xray_layer() -> None:
+    app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+    viewer = (ROOT / "frontend" / "isaac-map-viewer.js").read_text(encoding="utf-8")
+    viewer_html = (ROOT / "frontend" / "isaac-map-viewer.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/site-plans" in app
+    assert 'data-action="manage-drawings"' in workflow
+    assert 'data-map-layer="drawing"' in workflow
+    assert "sitegit.isaac-map.design" in app
+    assert "sitegit.isaac-map.design" in viewer
+    assert "updateDesignOverlay" in viewer
+    assert "design_depth_m" in viewer
+    assert 'id="designOverlay"' in viewer_html

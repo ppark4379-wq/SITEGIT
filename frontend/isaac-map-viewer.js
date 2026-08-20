@@ -13,6 +13,7 @@
   var canvas = document.getElementById("mapCanvas");
   var state = document.getElementById("viewerState");
   var zoneLabels = document.getElementById("zoneLabels");
+  var designOverlay = document.getElementById("designOverlay");
   var planningOverlay = document.getElementById("planningOverlay");
   var embedded = window.self !== window.top;
   var gl = canvas.getContext("webgl", { antialias: true, alpha: false });
@@ -51,6 +52,7 @@
   var timelineInstructionIds = [];
   var timelineBaselineObjectsRaw = [];
   var planningPlan = null;
+  var designPlan = null;
 
   function loadCameraState() {
     try {
@@ -480,6 +482,7 @@
     if (groups.length) drawMesh(view);
     if (mapObjects.length || diggableObjects.length || (activeLayer === "constraint" && conflictObjects.length)) drawObjects(view);
     updateZoneLabels(view);
+    updateDesignOverlay(view);
     updatePlanningOverlay(view);
   }
 
@@ -589,6 +592,43 @@
       return '<g class="plan-front"><circle cx="' + projected[0].toFixed(1) + '" cy="' + projected[1].toFixed(1) + '" r="10" fill="' + color + '"></circle><text x="' + (projected[0] + 14).toFixed(1) + '" y="' + (projected[1] + 4).toFixed(1) + '">Zone A · 작업전선 ' + (index + 1) + ' · ' + escapeOverlayText(front.equipment_id) + '</text></g>';
     }).join("");
     planningOverlay.innerHTML = '<polygon class="plan-area" points="' + polygonPoints + '"></polygon>' + frontMasks + '<polyline class="plan-centerline" points="' + linePoints + '"></polyline><g class="plan-zone-title" transform="translate(18 18)"><rect width="142" height="29" rx="7"></rect><text x="12" y="19">ZONE A · 터파기 전체</text></g>' + labels;
+  }
+
+  function updateDesignOverlay(view) {
+    if (!designOverlay) return;
+    var centerline = Array.isArray(designPlan && designPlan.centerline)
+      ? designPlan.centerline
+      : [];
+    var visible = activeLayer === "drawing" && centerline.length >= 2;
+    designOverlay.hidden = !visible;
+    if (!visible) {
+      designOverlay.innerHTML = "";
+      return;
+    }
+    designOverlay.setAttribute("viewBox", "0 0 " + canvas.clientWidth + " " + canvas.clientHeight);
+    var depth = Math.max(.1, Number(designPlan.design_depth_m) || 0);
+    var radius = Math.max(.05, (Number(designPlan.pipe_diameter_m) || .2) * .5);
+    var buried = centerline.map(function (point) {
+      return {x:Number(point.x)||0,y:Number(point.y)||0,z:(Number(point.z)||0)-depth+radius};
+    });
+    var corridor = planningCorridorPoints(centerline).map(function (point) {
+      return projectToScreen(siteToMesh(point), view);
+    });
+    var surface = centerline.map(function (point) { return projectToScreen(siteToMesh(point), view); });
+    var pipe = buried.map(function (point) { return projectToScreen(siteToMesh(point), view); });
+    if (corridor.some(function (point) { return !point; }) || surface.some(function (point) { return !point; }) || pipe.some(function (point) { return !point; })) {
+      designOverlay.innerHTML = "";
+      return;
+    }
+    var corridorPoints = corridor.map(function (point) { return point[0].toFixed(1) + "," + point[1].toFixed(1); }).join(" ");
+    var pipePoints = pipe.map(function (point) { return point[0].toFixed(1) + "," + point[1].toFixed(1); }).join(" ");
+    var depthLinks = pipe.map(function (point, index) {
+      if (index !== 0 && index !== pipe.length - 1 && index % 2) return "";
+      return '<line class="depth-link" x1="' + surface[index][0].toFixed(1) + '" y1="' + surface[index][1].toFixed(1) + '" x2="' + point[0].toFixed(1) + '" y2="' + point[1].toFixed(1) + '"></line><circle class="surface-point" cx="' + surface[index][0].toFixed(1) + '" cy="' + surface[index][1].toFixed(1) + '" r="3"></circle><circle class="pipe-point" cx="' + point[0].toFixed(1) + '" cy="' + point[1].toFixed(1) + '" r="4"></circle>';
+    }).join("");
+    var labelX = Math.max(12, Math.min(canvas.clientWidth - 220, pipe[Math.floor(pipe.length * .55)][0] + 15));
+    var labelY = Math.max(12, Math.min(canvas.clientHeight - 58, pipe[Math.floor(pipe.length * .55)][1] - 50));
+    designOverlay.innerHTML = '<polygon class="design-corridor" points="' + corridorPoints + '"></polygon><polyline class="pipe-shadow" points="' + pipePoints + '"></polyline><polyline class="pipe-body" points="' + pipePoints + '"></polyline><polyline class="pipe-core" points="' + pipePoints + '"></polyline>' + depthLinks + '<g class="design-label" transform="translate(' + labelX.toFixed(1) + ' ' + labelY.toFixed(1) + ')"><rect width="205" height="45" rx="8"></rect><text x="12" y="18">' + escapeOverlayText(designPlan.plan_id) + ' · REV.' + escapeOverlayText(designPlan.revision) + '</text><text class="sub" x="12" y="34">지하 관로 Ø' + Number(designPlan.pipe_diameter_m).toFixed(1) + 'm · 깊이 ' + depth.toFixed(1) + 'm</text></g>';
   }
 
   function updateZoneLabels(view) {
@@ -711,6 +751,9 @@
         : " · Timeline Baseline";
     }
     if (zonesVisible) objectPart += zoneDefinitions.length ? " · 작업 Zone " + zoneDefinitions.length + "개" : " · 작업 Zone 없음";
+    if (activeLayer === "drawing" && designPlan) {
+      objectPart += " · 승인 도면 " + String(designPlan.plan_id || "-") + " Rev." + String(designPlan.revision || "-");
+    }
     if (mapConflictsRaw.length) objectPart += " · Conflict " + mapConflictsRaw.length + "건";
     if (meshStatus === "ready") {
       setState(
@@ -1157,6 +1200,16 @@
     if (event.data.type === "sitegit.isaac-map.plan-clear") {
       planningPlan = null;
       draw();
+    }
+    if (event.data.type === "sitegit.isaac-map.design") {
+      designPlan = event.data.plan || null;
+      draw();
+      describeState();
+    }
+    if (event.data.type === "sitegit.isaac-map.design-clear") {
+      designPlan = null;
+      draw();
+      describeState();
     }
     // 관리자가 승인하면 부모 창이 이 메시지를 보냅니다.
     if (event.data.type === "sitegit.isaac-map.reload-objects") loadMapObjects();
