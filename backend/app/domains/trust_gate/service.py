@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -72,13 +72,45 @@ class TrustGateService:
             )
         generated_operation = (commit.result or {}).get("operation")
         result = commit.result or {}
+        quality_assessment = result.get("quality_assessment") or {}
+        if (
+            decision == REVIEW_APPROVED
+            and quality_assessment.get("status") == "needs_remediation"
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": (
+                        "목표 굴착량을 만족하지 못해 바로 승인할 수 없습니다. "
+                        "센서 증거를 확인한 뒤 보완 작업을 생성하세요."
+                    ),
+                    "code": "EXCAVATION_REMEDIATION_REQUIRED",
+                    "remediation_required": True,
+                    "planned_volume_m3": quality_assessment.get(
+                        "planned_volume_m3"
+                    ),
+                    "completed_volume_m3": quality_assessment.get(
+                        "completed_volume_m3"
+                    ),
+                    "remaining_volume_m3": quality_assessment.get(
+                        "remaining_volume_m3"
+                    ),
+                    "measured_completion_ratio": quality_assessment.get(
+                        "measured_completion_ratio"
+                    ),
+                    "required_completion_ratio": quality_assessment.get(
+                        "required_completion_ratio"
+                    ),
+                },
+            )
         has_terrain_deformation = bool(
             (result.get("terrain_deformation") or {}).get("available")
             and result.get("map_changes")
         )
         is_excavation = commit.instruction.kind == KIND_EXCAVATE_PRIM or (
             commit.instruction.kind == KIND_GENERATED_SCRIPT
-            and generated_operation in {"excavate_prim", "set_prim_active"}
+            and generated_operation
+            in {"excavate_prim", "set_prim_active", "pipeline_excavation"}
             and (
                 result.get("target_active_after") is False
                 or has_terrain_deformation
@@ -168,6 +200,90 @@ class TrustGateService:
         return commit
 
     @staticmethod
+    def approve_remediation_parent(
+        db: Session,
+        *,
+        remediation_commit: ExecutionCommit,
+        user: User,
+    ) -> WorkInstruction | None:
+        """Close the original deficient commit after corrective work passes.
+
+        The original result remains in history as an under-excavated state,
+        but its review is completed one microsecond before the corrective
+        commit so map replay always finishes on the corrected geometry.
+        """
+
+        params = remediation_commit.instruction.params or {}
+        parent_commit_id = str(params.get("remediation_parent_commit_id") or "")
+        if not parent_commit_id:
+            return None
+        parent = db.get(ExecutionCommit, parent_commit_id)
+        if parent is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The remediation parent commit no longer exists",
+            )
+        if parent.review_status == REVIEW_APPROVED:
+            return parent.instruction
+        if parent.review_status != REVIEW_PENDING:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The remediation parent commit is no longer reviewable",
+            )
+        quality = (parent.result or {}).get("quality_assessment") or {}
+        if quality.get("status") != "needs_remediation":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The parent commit does not require remediation",
+            )
+
+        corrected_at = remediation_commit.reviewed_at or datetime.now(timezone.utc)
+        planned_volume = float(quality.get("planned_volume_m3") or 0.0)
+        initial_completed_volume = float(quality.get("completed_volume_m3") or 0.0)
+        initial_remaining_volume = float(quality.get("remaining_volume_m3") or 0.0)
+        initial_measured_ratio = float(
+            quality.get("measured_completion_ratio") or 0.0
+        )
+        parent.result = {
+            **(parent.result or {}),
+            "quality_assessment": {
+                **quality,
+                "status": "remediated",
+                "initial_completed_volume_m3": initial_completed_volume,
+                "initial_remaining_volume_m3": initial_remaining_volume,
+                "initial_measured_completion_ratio": initial_measured_ratio,
+                "completed_volume_m3": planned_volume,
+                "remaining_volume_m3": 0.0,
+                "measured_completion_ratio": 1.0,
+                "remediation_commit_id": remediation_commit.id,
+                "message": "Corrective excavation was completed and revalidated.",
+            },
+        }
+        parent.review_status = REVIEW_APPROVED
+        parent.reviewed_by = user.username
+        parent.reviewed_at = corrected_at - timedelta(microseconds=1)
+        parent.review_note = (
+            f"보완 커밋 {remediation_commit.id[:8]} 재검증 통과로 원 작업을 완료 처리"
+        )
+        parent.instruction.status = INSTRUCTION_APPROVED
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                username=user.username,
+                action="ISAAC_REMEDIATION_PARENT_APPROVED",
+                target_type="execution_commit",
+                target_id=parent.id,
+                details={
+                    "remediation_commit_id": remediation_commit.id,
+                    "instruction_id": parent.instruction_id,
+                },
+            )
+        )
+        db.commit()
+        db.refresh(parent.instruction)
+        return parent.instruction
+
+    @staticmethod
     def approved_map_objects(
         db: Session,
         *,
@@ -239,16 +355,46 @@ class TrustGateService:
         params = instruction.params or {}
         result = commit.result or {}
         objects: list[dict] = []
+        seen_prim_paths: set[str] = set()
+
+        # Parallel excavation originally recorded removals as ``active: false``
+        # and kept the exact per-Prim bounds inside each scoop.  Preserve
+        # compatibility with those already-approved commits so the published
+        # Work/Timeline maps can be rebuilt without rerunning Isaac Sim.
+        final_targets: dict[str, dict] = {}
+        for scoop in reversed(result.get("scoops") or []):
+            if not isinstance(scoop, dict):
+                continue
+            deformation = scoop.get("terrain_deformation") or {}
+            for target in deformation.get("targets") or []:
+                if not isinstance(target, dict):
+                    continue
+                target_path = str(target.get("target_prim_path") or "")
+                if target_path and target_path not in final_targets:
+                    final_targets[target_path] = target
+
         map_changes = result.get("map_changes") or []
         if map_changes:
             for index, change in enumerate(map_changes):
                 if not isinstance(change, dict):
                     continue
                 prim_path = str(change.get("prim_path") or f"{commit.id}:{index}")
-                action = str(change.get("action") or "upsert")
+                action = str(
+                    change.get("action")
+                    or ("remove" if change.get("active") is False else "upsert")
+                )
                 if action == "remove":
-                    position = change.get("position") or result.get("target_position")
-                    size = change.get("size") or result.get("target_bounds_size")
+                    final_target = final_targets.get(prim_path) or {}
+                    position = (
+                        change.get("position")
+                        or final_target.get("position")
+                        or result.get("target_position")
+                    )
+                    size = (
+                        change.get("size")
+                        or final_target.get("size")
+                        or result.get("target_bounds_size")
+                    )
                     if not position or not size:
                         continue
                     objects.append(
@@ -266,6 +412,7 @@ class TrustGateService:
                             "geometry": None,
                         }
                     )
+                    seen_prim_paths.add(prim_path)
                     continue
                 position = change.get("position")
                 size = change.get("size")
@@ -286,6 +433,40 @@ class TrustGateService:
                         "geometry": change.get("geometry"),
                     }
                 )
+                seen_prim_paths.add(prim_path)
+
+            # Older parallel-excavation results kept deposited soil under each
+            # scoop rather than in map_changes.  Publish those authored meshes
+            # as approved map overlays as well.
+            deposit_index = len(map_changes)
+            for scoop in result.get("scoops") or []:
+                if not isinstance(scoop, dict):
+                    continue
+                moved_soil = scoop.get("moved_soil")
+                if not isinstance(moved_soil, dict):
+                    continue
+                prim_path = str(moved_soil.get("prim_path") or "")
+                position = moved_soil.get("position")
+                size = moved_soil.get("size")
+                if not prim_path or prim_path in seen_prim_paths or not position or not size:
+                    continue
+                objects.append(
+                    {
+                        "id": f"{commit.id}:{deposit_index}",
+                        "instruction_id": instruction.id,
+                        "type": "soil_deposit",
+                        "label": moved_soil.get("label") or "굴착 토사",
+                        "color": moved_soil.get("color") or "#8B6A3D",
+                        "position": position,
+                        "size": size,
+                        "approved_by": commit.reviewed_by,
+                        "approved_at": commit.reviewed_at,
+                        "prim_path": prim_path,
+                        "geometry": moved_soil.get("geometry"),
+                    }
+                )
+                seen_prim_paths.add(prim_path)
+                deposit_index += 1
             return objects
 
         is_excavation = instruction.kind == KIND_EXCAVATE_PRIM or (

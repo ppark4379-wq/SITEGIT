@@ -29,8 +29,13 @@ from dotenv import load_dotenv
 
 ADAPTER_DIR = Path(__file__).resolve().parent
 REPO_ROOT = ADAPTER_DIR.parent
+_PROCESS_ENVIRONMENT = dict(os.environ)
 load_dotenv(REPO_ROOT / ".env")
 load_dotenv(ADAPTER_DIR / ".env", override=True)
+# A portable launcher supplies SSD paths through the real process environment.
+# Keep adapter/.env more specific than the root file, while giving explicit
+# process values the highest priority on every machine.
+os.environ.update(_PROCESS_ENVIRONMENT)
 if str(ADAPTER_DIR) not in sys.path:
     sys.path.insert(0, str(ADAPTER_DIR))
 
@@ -38,6 +43,11 @@ if str(ADAPTER_DIR) not in sys.path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--headless", action="store_true", help="GUI 없이 실행")
+    parser.add_argument(
+        "--presentation",
+        action="store_true",
+        help="Stage/Property/Content를 숨기고 Viewport를 이동 가능한 최대화 창으로 표시",
+    )
     parser.add_argument("--interval", type=float, default=2.0, help="지시 확인 간격(초)")
     parser.add_argument("--once", action="store_true", help="한 번만 확인하고 종료")
     parser.add_argument(
@@ -102,14 +112,34 @@ def main() -> None:
     # SimulationApp이 가장 먼저 부팅되어야 omni/pxr을 import할 수 있습니다.
     from isaacsim.simulation_app import SimulationApp
 
-    simulation_app = SimulationApp({"headless": bool(args.headless)})
+    from presentation_mode import enable_viewport_only_mode, simulation_app_config
+
+    simulation_app = SimulationApp(
+        simulation_app_config(
+            headless=bool(args.headless),
+            presentation=bool(args.presentation),
+        )
+    )
+    enable_viewport_only_mode(
+        simulation_app,
+        enabled=bool(args.presentation and not args.headless),
+    )
 
     # 여기서부터 omni/pxr 사용 가능합니다.
     import omni.usd
     from isaacsim.core.api import World
 
     from isaac_bridge import IsaacBridge, _path_list
-    from cube_task_runner import PROJECT_ID, API_URL, USERNAME, PASSWORD, run_instruction
+    from cube_task_runner import (
+        PROJECT_ID,
+        API_URL,
+        USERNAME,
+        PASSWORD,
+        run_instruction,
+        run_parallel_excavation_group,
+        run_parallel_pipeline_backfill_group,
+        run_parallel_pipeline_installation_group,
+    )
     from equipment_sensors import (
         EquipmentSensorRig,
         SensorRigConfig,
@@ -161,6 +191,8 @@ def main() -> None:
         collision_proxy = None
         proxy_surface_height = None
         pipeline_surface_height = None
+        pipeline_base_color: str | None = None
+        pipeline_normal: str | None = None
         if stage_source:
             omni.usd.get_context().open_stage(str(stage_source))
             if approved_stage_path and not args.usd:
@@ -340,7 +372,11 @@ def main() -> None:
                 flush=True,
             )
 
-        if not stage_source and not args.no_equipment:
+        equipment_paths = _path_list(
+            "SITEGIT_EQUIPMENT_PRIMS",
+            "/World/Equipment/EXC_001,/World/Equipment/EXC_002,/World/Equipment/EXC_003",
+        )
+        if not args.no_equipment:
             equipment_value = args.equipment or os.getenv("SITEGIT_EQUIPMENT_ASSET", "")
             if equipment_value:
                 position_values = _float_tuple(
@@ -348,17 +384,44 @@ def main() -> None:
                     count=3,
                     setting_name="SITEGIT_EQUIPMENT_POSITION",
                 )
-                equipment_prim_path = os.getenv(
-                    "SITEGIT_EQUIPMENT_PRIMS", "/World/Equipment/EXC_001"
-                ).split(",")[0].strip()
-                equipment_info = load_equipment(
-                    omni.usd.get_context().get_stage(),
-                    equipment_value,
-                    prim_path=equipment_prim_path,
-                    position=position_values,
-                    simulation_app=simulation_app,
-                    surface_height=proxy_surface_height,
-                )
+                try:
+                    from three_excavator_demo import load_demo_workfronts
+
+                    planned_positions = {
+                        item.equipment_prim_path: item.start_position
+                        for item in load_demo_workfronts()
+                    }
+                except Exception as error:
+                    planned_positions = {}
+                    print(f"[warning] drawing equipment positions unavailable: {error}")
+                equipment_info = None
+                for equipment_index, equipment_prim_path in enumerate(equipment_paths):
+                    if stage.GetPrimAtPath(equipment_prim_path).IsValid():
+                        continue
+                    position = planned_positions.get(
+                        equipment_prim_path,
+                        (
+                            position_values[0] + equipment_index * 5.0,
+                            position_values[1],
+                            position_values[2],
+                        ),
+                    )
+                    equipment_info = load_equipment(
+                        omni.usd.get_context().get_stage(),
+                        equipment_value,
+                        prim_path=equipment_prim_path,
+                        equipment_id=f"EXC-{equipment_index + 1:03d}",
+                        position=position,
+                        simulation_app=simulation_app,
+                        surface_height=proxy_surface_height,
+                    )
+                if equipment_info is None:
+                    equipment_info = {
+                        "prim_path": ",".join(equipment_paths),
+                        "asset": str(equipment_value),
+                        "skeleton_paths": [],
+                        "animation_paths": [],
+                    }
                 print(
                     f"굴착기 로드 완료: {equipment_info['prim_path']} · "
                     f"{equipment_info['asset']}"
@@ -406,9 +469,6 @@ def main() -> None:
                 flush=True,
             )
             return snapshot
-        equipment_paths = _path_list(
-            "SITEGIT_EQUIPMENT_PRIMS", "/World/Equipment/EXC_001,/World/Armature"
-        )
         diggable_roots = _path_list(
             "SITEGIT_DIGGABLE_ROOTS", "/World/Diggable"
         )
@@ -478,9 +538,22 @@ def main() -> None:
         def render_sensor_frame() -> None:
             world.step(render=True)
 
+        motion_render_every = max(
+            1,
+            int(os.getenv("SITEGIT_MOTION_RENDER_EVERY_N", "2")),
+        )
+        motion_frame = 0
+
+        def advance_motion_frame() -> None:
+            """Advance physics every frame and render only the configured frames."""
+
+            nonlocal motion_frame
+            motion_frame += 1
+            world.step(render=(motion_frame % motion_render_every == 0))
+
         # All later equipment movement must advance the physics World, not just
         # redraw Kit.  Otherwise authored velocities never affect the body.
-        bridge._update_callback = render_sensor_frame
+        bridge._update_callback = advance_motion_frame
 
         import omni.timeline
 
@@ -491,14 +564,11 @@ def main() -> None:
             world.step(render=(frame % 4 == 0 or frame == settle_frames - 1))
 
         sensor_rig = None
-        sensor_equipment_path = next(
-            (
-                path
-                for path in equipment_paths
-                if bridge.stage.GetPrimAtPath(path).IsValid()
-            ),
-            "",
-        )
+        sensor_rigs: dict[str, EquipmentSensorRig] = {}
+        valid_sensor_equipment_paths = [
+            path for path in equipment_paths if bridge.stage.GetPrimAtPath(path).IsValid()
+        ]
+        sensor_equipment_path = valid_sensor_equipment_paths[0] if valid_sensor_equipment_paths else ""
         if sensor_equipment_path:
             track_pose = track_contact_pose(bridge.stage, sensor_equipment_path)
             print(
@@ -507,14 +577,21 @@ def main() -> None:
                 f"궤도 바닥 Z={track_pose['z']:.2f}m",
                 flush=True,
             )
-            sensor_rig = EquipmentSensorRig(
-                bridge.stage,
-                sensor_equipment_path,
-                update_callback=render_sensor_frame,
-                config=SensorRigConfig.from_environment(),
-                physics_world=world,
-            )
-            sensor_info = sensor_rig.initialize()
+            sensor_info = None
+            for path in valid_sensor_equipment_paths:
+                rig = EquipmentSensorRig(
+                    bridge.stage,
+                    path,
+                    update_callback=render_sensor_frame,
+                    config=SensorRigConfig.from_environment(),
+                    physics_world=world,
+                )
+                info = rig.initialize()
+                sensor_rigs[path] = rig
+                if path == sensor_equipment_path:
+                    sensor_info = info
+            sensor_rig = sensor_rigs[sensor_equipment_path]
+            assert sensor_info is not None
             print(
                 "굴착기 SensorRig 준비 완료\n"
                 f"  Mount  : {sensor_info['mount_prim_path']}\n"
@@ -606,9 +683,10 @@ def main() -> None:
                     )
                     break
 
-            # A restarted Adapter must not claim new work while another
-            # execution is awaiting review. Once that review advances HEAD,
-            # this process exits so the new approved USD can be checked out.
+            # A restarted Adapter must only wait for commits that actually own
+            # a candidate Stage snapshot. Older demo commits contain evidence
+            # but no USD snapshot; treating those as a global lock leaves every
+            # newly issued scenario instruction pending forever.
             try:
                 committed = client.list_instructions(
                     PROJECT_ID,
@@ -620,6 +698,7 @@ def main() -> None:
                     for instruction in committed
                     for commit in instruction.get("commits", [])
                     if commit.get("review_status") == "pending"
+                    and bool((commit.get("result") or {}).get("stage_snapshot"))
                 ]
                 if pending_reviews:
                     if not waiting_notice_printed:
@@ -646,27 +725,192 @@ def main() -> None:
                 continue
 
             try:
-                instructions = client.claim_instructions(PROJECT_ID, limit=1)
+                instructions = client.claim_instructions(
+                    PROJECT_ID,
+                    limit=3,
+                    prefer_execution_group=True,
+                )
             except Exception as error:  # 서버가 잠깐 끊겨도 Isaac은 계속 돌아야 합니다.
                 print(f"  [error] SiteGit 통신 실패: {error}")
                 continue
 
             if instructions:
                 print(f"지시 {len(instructions)}건 수신")
-                for instruction in instructions:
-                    commit = run_instruction(
+                group_ids = {
+                    str((instruction.get("params") or {}).get("execution_group_id") or "")
+                    for instruction in instructions
+                }
+                is_parallel_excavation = (
+                    1 <= len(instructions) <= 3
+                    and len(group_ids) == 1
+                    and "" not in group_ids
+                    and all(
+                        (instruction.get("params") or {}).get("execution_group_mode")
+                        == "parallel_incremental_scoops"
+                        for instruction in instructions
+                    )
+                )
+                is_parallel_pipeline_installation = (
+                    len(instructions) == 3
+                    and len(group_ids) == 1
+                    and "" not in group_ids
+                    and all(
+                        (instruction.get("params") or {}).get("execution_group_mode")
+                        == "parallel_pipe_installation"
+                        for instruction in instructions
+                    )
+                )
+                is_parallel_pipeline_backfill = (
+                    len(instructions) == 3
+                    and len(group_ids) == 1
+                    and "" not in group_ids
+                    and all(
+                        (instruction.get("params") or {}).get("execution_group_mode")
+                        == "parallel_pipeline_backfill"
+                        for instruction in instructions
+                    )
+                )
+                if is_parallel_excavation:
+                    print(
+                        "[Zone A · phase 1] Excavation group received; starting "
+                        f"{len(instructions)}-excavator execution.",
+                        flush=True,
+                    )
+                    commits = run_parallel_excavation_group(
                         client,
                         bridge,
-                        instruction,
+                        instructions,
+                        world=world,
                         evidence_exporter=evidence_exporter,
-                        update_callback=render_sensor_frame,
-                        sensor_rig=sensor_rig,
+                        sensor_rigs=sensor_rigs,
                         stage_snapshot_callback=save_stage_candidate,
+                        animation_seconds=float(
+                            os.getenv("SITEGIT_GROUP_EXCAVATION_ANIMATION_SECONDS", "3.5")
+                        ),
+                        scoop_count=int(
+                            os.getenv("SITEGIT_GROUP_EXCAVATION_SCOOPS", "5")
+                        ),
+                        render=not args.headless,
                     )
                     publish_inventory()
-                    if commit and commit.get("review_status") == "pending":
-                        waiting_commit_id = str(commit["id"])
+                    pending = [
+                        commit
+                        for commit in commits
+                        if commit and commit.get("review_status") == "pending"
+                    ]
+                    if pending:
+                        waiting_commit_id = str(pending[-1]["id"])
                         waiting_notice_printed = False
+                elif is_parallel_pipeline_installation:
+                    if pipeline_surface_height is None:
+                        raise RuntimeError(
+                            "Zone A phase 2 pipeline installation needs the site height sampler"
+                        )
+                    print(
+                        "[Zone A · phase 2] Excavation approvals complete; starting "
+                        "synchronized pipeline installation.",
+                        flush=True,
+                    )
+                    commits = run_parallel_pipeline_installation_group(
+                        client,
+                        bridge,
+                        instructions,
+                        world=world,
+                        floor_height=pipeline_surface_height,
+                        plan_path=(
+                            REPO_ROOT
+                            / "contracts"
+                            / "site_plans"
+                            / "demolition_pipeline_v1.json"
+                        ),
+                        evidence_exporter=evidence_exporter,
+                        sensor_rigs=sensor_rigs,
+                        stage_snapshot_callback=save_stage_candidate,
+                        animation_seconds=float(
+                            os.getenv(
+                                "SITEGIT_GROUP_PIPE_INSTALLATION_ANIMATION_SECONDS",
+                                "1.6",
+                            )
+                        ),
+                        render=not args.headless,
+                    )
+                    publish_inventory()
+                    pending = [
+                        commit
+                        for commit in commits
+                        if commit and commit.get("review_status") == "pending"
+                    ]
+                    if pending:
+                        waiting_commit_id = str(pending[-1]["id"])
+                        waiting_notice_printed = False
+                elif is_parallel_pipeline_backfill:
+                    if pipeline_surface_height is None:
+                        raise RuntimeError(
+                            "Zone A phase 3 backfill needs the site height sampler"
+                        )
+                    print(
+                        "[Zone A · phase 3] Installation approvals complete; starting "
+                        "synchronized pipeline backfill.",
+                        flush=True,
+                    )
+                    commits = run_parallel_pipeline_backfill_group(
+                        client,
+                        bridge,
+                        instructions,
+                        world=world,
+                        surface_height=pipeline_surface_height,
+                        plan_path=(
+                            REPO_ROOT
+                            / "contracts"
+                            / "site_plans"
+                            / "demolition_pipeline_v1.json"
+                        ),
+                        base_color_texture=pipeline_base_color,
+                        normal_texture=pipeline_normal,
+                        evidence_exporter=evidence_exporter,
+                        sensor_rigs=sensor_rigs,
+                        stage_snapshot_callback=save_stage_candidate,
+                        animation_seconds=float(
+                            os.getenv(
+                                "SITEGIT_GROUP_PIPELINE_BACKFILL_ANIMATION_SECONDS",
+                                "3.0",
+                            )
+                        ),
+                        scoop_count=int(
+                            os.getenv("SITEGIT_GROUP_PIPELINE_BACKFILL_SCOOPS", "5")
+                        ),
+                        render=not args.headless,
+                    )
+                    publish_inventory()
+                    pending = [
+                        commit
+                        for commit in commits
+                        if commit and commit.get("review_status") == "pending"
+                    ]
+                    if pending:
+                        waiting_commit_id = str(pending[-1]["id"])
+                        waiting_notice_printed = False
+                else:
+                    for instruction in instructions:
+                        params = instruction.get("params") or {}
+                        equipment_path = str(
+                            (params.get("resource_bindings") or {}).get("equipment")
+                            or params.get("equipment_prim_path")
+                            or ""
+                        )
+                        commit = run_instruction(
+                            client,
+                            bridge,
+                            instruction,
+                            evidence_exporter=evidence_exporter,
+                            update_callback=render_sensor_frame,
+                            sensor_rig=sensor_rigs.get(equipment_path, sensor_rig),
+                            stage_snapshot_callback=save_stage_candidate,
+                        )
+                        publish_inventory()
+                        if commit and commit.get("review_status") == "pending":
+                            waiting_commit_id = str(commit["id"])
+                            waiting_notice_printed = False
                 if args.save_usd:
                     omni.usd.get_context().save_as_stage(str(Path(args.save_usd).resolve()))
                     print(f"  [saved] {args.save_usd}")

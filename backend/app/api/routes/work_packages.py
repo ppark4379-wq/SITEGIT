@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -32,6 +33,7 @@ from ...domains.work_packages.site_plan import (
     load_pipeline_design,
 )
 from ...models.user import User
+from ...models.audit_log import AuditLog
 from ...realtime.manager import manager
 from ...schemas.isaac import InstructionResponse
 from ...schemas.work_package_ai import (
@@ -118,6 +120,157 @@ def _scenario_excavation_code(equipment_path: str, target_paths: list[str]) -> s
     return code
 
 
+def _scenario_coordinated_code() -> str:
+    """Return a validated placeholder for an Adapter-coordinated group task."""
+
+    code = "def execute(ctx):\n    return ctx.finish()"
+    validate_restricted_code(code)
+    return code
+
+
+def _approve_registered_scenario_phase(
+    db: Session,
+    *,
+    payload: PlanningScenarioDispatchRequest,
+    raw_plan: dict,
+    user: User,
+) -> PlanningScenarioDispatchResponse:
+    """Approve the latest ready successor phase without creating duplicates."""
+
+    phase = next(
+        (item for item in raw_plan["workflow"] if item["id"] == payload.phase_id),
+        None,
+    )
+    if phase is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"도면에 없는 공정입니다: {payload.phase_id}",
+        )
+
+    candidates = [
+        item
+        for item in ExecutionsService.list_instructions(
+            db, project_id=payload.project_id, limit=500
+        )
+        if item.status == "blocked"
+        and str((item.params or {}).get("scenario_plan_id") or "")
+        == payload.plan_id
+        and str((item.params or {}).get("scenario_phase_id") or "")
+        == payload.phase_id
+        and bool((item.params or {}).get("phase_approval_ready"))
+    ]
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Zone {phase['zone_id']}의 {phase['title']} 공정 계획은 아직 열리지 않았습니다. "
+                "선행 공정의 모든 Evidence Commit을 먼저 승인해 주세요."
+            ),
+        )
+
+    group_id = str((candidates[0].params or {}).get("execution_group_id") or "")
+    members = [
+        item
+        for item in candidates
+        if str((item.params or {}).get("execution_group_id") or "") == group_id
+    ]
+    expected_size = int((members[0].params or {}).get("execution_group_size") or 0)
+    if not group_id or len(members) != expected_size:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="다음 공정의 Work Package 그룹이 완전하지 않습니다.",
+        )
+
+    inventory = load_stage_inventory(payload.project_id)
+    active_equipment = {item.path for item in inventory.equipment if item.active}
+    missing: list[str] = []
+    if not inventory.connected:
+        missing.append("Isaac Stage 연결 대기")
+    for instruction in members:
+        equipment_path = str(
+            ((instruction.params or {}).get("resource_bindings") or {}).get(
+                "equipment"
+            )
+            or ""
+        )
+        if equipment_path and equipment_path not in active_equipment:
+            missing.append(f"장비 Prim 없음: {equipment_path}")
+    missing = list(dict.fromkeys(missing))
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=" · ".join(missing),
+        )
+
+    approved_at = datetime.now(timezone.utc).isoformat()
+    records: list[PlanningScenarioWorkPackageRecord] = []
+    for instruction in members:
+        params = dict(instruction.params or {})
+        params["phase_plan_status"] = "approved"
+        params["phase_plan_approved_at"] = approved_at
+        params["phase_plan_approved_by"] = user.username
+        checks = []
+        for check in params.get("checks") or []:
+            if check.get("code") == "predecessor":
+                checks.append(
+                    {
+                        **check,
+                        "ok": True,
+                        "message": "선행 공정 승인 및 현재 공정 계획 승인 완료",
+                    }
+                )
+            else:
+                checks.append(check)
+        params["checks"] = checks
+        params["missing_resources"] = []
+        instruction.params = params
+        instruction.status = "pending"
+        db.add(instruction)
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                username=user.username,
+                action="ISAAC_SCENARIO_PHASE_PLAN_APPROVED",
+                target_type="work_instruction",
+                target_id=instruction.id,
+                details={
+                    "project_id": payload.project_id,
+                    "scenario_plan_id": payload.plan_id,
+                    "scenario_run_id": params.get("scenario_run_id"),
+                    "scenario_phase_id": payload.phase_id,
+                    "execution_group_id": group_id,
+                },
+            )
+        )
+    db.commit()
+    for instruction in members:
+        db.refresh(instruction)
+        params = instruction.params or {}
+        records.append(
+            PlanningScenarioWorkPackageRecord(
+                id=str(params.get("work_package_id")),
+                phase_id=payload.phase_id,
+                workfront_id=str(params.get("workfront_id")),
+                zone_id=str(params.get("zone_id")),
+                equipment_id=str(params.get("equipment_name")),
+                target_prim_paths=[
+                    str(path) for path in params.get("target_prim_paths") or []
+                ],
+                status="pending",
+                missing_resources=[],
+            )
+        )
+    return PlanningScenarioDispatchResponse(
+        plan_id=payload.plan_id,
+        phase_id=payload.phase_id,
+        work_packages=records,
+        instructions=[
+            InstructionResponse.model_validate(item, from_attributes=True)
+            for item in members
+        ],
+    )
+
+
 @router.post(
     "/ai/planning/dispatch",
     response_model=PlanningScenarioDispatchResponse,
@@ -135,10 +288,22 @@ async def dispatch_planning_scenario(
     except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     if payload.phase_id != "excavation":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="현재 데모에서는 터파기 승인 후 관로 설치와 되메우기를 순서대로 해제합니다.",
+        response = _approve_registered_scenario_phase(
+            db,
+            payload=payload,
+            raw_plan=raw_plan,
+            user=user,
         )
+        await manager.broadcast(
+            payload.project_id,
+            {
+                "type": "isaac.map.updated",
+                "reason": "scenario.phase.plan_approved",
+                "plan_id": payload.plan_id,
+                "phase_id": payload.phase_id,
+            },
+        )
+        return response
 
     inventory = load_stage_inventory(payload.project_id)
     equipment_by_path = {item.path: item for item in inventory.equipment if item.active}
@@ -150,6 +315,10 @@ async def dispatch_planning_scenario(
     records: list[PlanningScenarioWorkPackageRecord] = []
     instructions: list[InstructionResponse] = []
     work_area = raw_plan["work_area"]
+    scenario_run_id = f"SCN-{uuid4().hex[:12].upper()}"
+    scenario_parent_work_package_id = f"WP-PIPELINE-{uuid4().hex[:8].upper()}"
+    execution_group_id = f"EXG-{payload.plan_id}-{payload.phase_id}-{uuid4().hex[:10]}"
+    execution_group_size = len(work_area["workfronts"])
     for front in work_area["workfronts"]:
         equipment_path = str(front["equipment_prim_path"])
         target_paths = [str(path) for path in front["target_prim_paths"]]
@@ -173,11 +342,17 @@ async def dispatch_planning_scenario(
             params={
                 "work_package_id": work_package_id,
                 "scenario_plan_id": payload.plan_id,
+                "scenario_run_id": scenario_run_id,
+                "scenario_parent_work_package_id": scenario_parent_work_package_id,
+                "scenario_title": "관로 공사",
                 "scenario_phase_id": payload.phase_id,
                 "scenario_phase_order": 1,
                 "workfront_id": front["id"],
                 "operation": "pipeline_excavation",
-                "summary": f"Zone {phase_zone_id} · {front['label']}",
+                "execution_group_id": execution_group_id,
+                "execution_group_size": execution_group_size,
+                "execution_group_mode": "parallel_incremental_scoops",
+                "summary": f"Zone {phase_zone_id} 관로 공사 · 1단계 {front['label']}",
                 "zone_id": phase_zone_id,
                 "source_text": payload.source_text,
                 "generated_code": generated_code,
@@ -194,6 +369,12 @@ async def dispatch_planning_scenario(
                     "unit": "m3",
                     "source": f"{payload.plan_id} Rev.{raw_plan['revision']}",
                 },
+                "quality_scenario": front.get("demo_quality_scenario"),
+                "required_completion_ratio": float(
+                    (front.get("demo_quality_scenario") or {}).get(
+                        "required_completion_ratio", 0.98
+                    )
+                ),
                 "station_range": (
                     f"STA {front['station_start_m']:05.1f} ~ {front['station_end_m']:05.1f}"
                 ),
@@ -226,6 +407,204 @@ async def dispatch_planning_scenario(
                 equipment_id=front["equipment_id"],
                 target_prim_paths=target_paths,
                 status=instruction_status,
+                missing_resources=missing,
+            )
+        )
+        instructions.append(
+            InstructionResponse.model_validate(instruction, from_attributes=True)
+        )
+
+    # A pipeline request is one approved construction plan, not three unrelated
+    # chat commands.  Register the next phase now, but keep it blocked until all
+    # independently reviewable excavation commits in Zone A have been approved.
+    # The trust gate then exposes phase 2 for a separate manager approval; only
+    # that second approval changes this group to pending for the Adapter.
+    installation_phase = next(
+        item for item in raw_plan["workflow"] if item["id"] == "pipe_installation"
+    )
+    installation_zone_id = str(installation_phase["zone_id"])
+    installation_group_id = (
+        f"EXG-{payload.plan_id}-pipe_installation-{uuid4().hex[:10]}"
+    )
+    installation_group_size = len(work_area["workfronts"])
+    coordinated_code = _scenario_coordinated_code()
+    for front in work_area["workfronts"]:
+        equipment_path = str(front["equipment_prim_path"])
+        target_paths = [str(path) for path in front["target_prim_paths"]]
+        missing: list[str] = []
+        if not inventory.connected:
+            missing.append("Isaac Stage connection is not ready")
+        if equipment_path not in equipment_by_path:
+            missing.append(f"Equipment Prim is missing: {equipment_path}")
+        work_package_id = (
+            f"WP-PIPE-{installation_zone_id}-{uuid4().hex[:8].upper()}"
+        )
+        instruction = ExecutionsService.create_instruction(
+            db,
+            project_id=payload.project_id,
+            kind="generated_script",
+            params={
+                "work_package_id": work_package_id,
+                "scenario_plan_id": payload.plan_id,
+                "scenario_run_id": scenario_run_id,
+                "scenario_parent_work_package_id": scenario_parent_work_package_id,
+                "scenario_title": "관로 공사",
+                "scenario_phase_id": "pipe_installation",
+                "scenario_phase_order": 2,
+                "workfront_id": front["id"],
+                "operation": "pipeline_installation",
+                "execution_group_id": installation_group_id,
+                "execution_group_size": installation_group_size,
+                "execution_group_mode": "parallel_pipe_installation",
+                "predecessor_execution_group_id": execution_group_id,
+                "summary": f"Zone {installation_zone_id} 관로 공사 · 2단계 관로 설치 · {front['label']}",
+                "zone_id": installation_zone_id,
+                "source_text": payload.source_text,
+                "generated_code": coordinated_code,
+                "program_version": 1,
+                "resource_bindings": {
+                    "equipment": equipment_path,
+                    "target": target_paths[0],
+                },
+                "target_prim_paths": target_paths,
+                "equipment_name": front["equipment_id"],
+                "target_name": f"Pipeline segment · {front['id']}",
+                "planned_quantity": {
+                    "value": float(front["station_end_m"])
+                    - float(front["station_start_m"]),
+                    "unit": "m",
+                    "source": f"{payload.plan_id} Rev.{raw_plan['revision']}",
+                },
+                "station_range": (
+                    f"STA {front['station_start_m']:05.1f} ~ "
+                    f"{front['station_end_m']:05.1f}"
+                ),
+                "depends_on_phase_ids": ["excavation"],
+                "phase_approval_ready": False,
+                "phase_plan_status": "locked",
+                "missing_resources": missing,
+                "checks": [
+                    {
+                        "code": "predecessor",
+                        "ok": False,
+                        "message": "Waiting for all Zone A phase 1 excavation commits to be approved",
+                    },
+                    {
+                        "code": "resources",
+                        "ok": not missing,
+                        "message": "Stage resources are ready" if not missing else missing[0],
+                    },
+                ],
+                "compiler_model": "site-plan-deterministic-v1",
+            },
+            note=f"Pipeline drawing successor · {front['label']}"[:500],
+            user=user,
+            initial_status="blocked",
+        )
+        records.append(
+            PlanningScenarioWorkPackageRecord(
+                id=work_package_id,
+                phase_id="pipe_installation",
+                workfront_id=front["id"],
+                zone_id=installation_zone_id,
+                equipment_id=front["equipment_id"],
+                target_prim_paths=target_paths,
+                status="blocked",
+                missing_resources=missing,
+            )
+        )
+        instructions.append(
+            InstructionResponse.model_validate(instruction, from_attributes=True)
+        )
+
+    # Phase 3 is part of the same Zone A construction job.  It remains locked
+    # while phase 2 is being installed/reviewed, then uses the same explicit
+    # phase-plan approval gate before the Adapter may claim it.
+    backfill_phase = next(
+        item for item in raw_plan["workflow"] if item["id"] == "backfill"
+    )
+    backfill_zone_id = str(backfill_phase["zone_id"])
+    backfill_group_id = f"EXG-{payload.plan_id}-backfill-{uuid4().hex[:10]}"
+    backfill_group_size = len(work_area["workfronts"])
+    for front in work_area["workfronts"]:
+        equipment_path = str(front["equipment_prim_path"])
+        target_paths = [str(path) for path in front["target_prim_paths"]]
+        missing: list[str] = []
+        if not inventory.connected:
+            missing.append("Isaac Stage connection is not ready")
+        if equipment_path not in equipment_by_path:
+            missing.append(f"Equipment Prim is missing: {equipment_path}")
+        work_package_id = f"WP-PIPE-{backfill_zone_id}-{uuid4().hex[:8].upper()}"
+        instruction = ExecutionsService.create_instruction(
+            db,
+            project_id=payload.project_id,
+            kind="generated_script",
+            params={
+                "work_package_id": work_package_id,
+                "scenario_plan_id": payload.plan_id,
+                "scenario_run_id": scenario_run_id,
+                "scenario_parent_work_package_id": scenario_parent_work_package_id,
+                "scenario_title": "관로 공사",
+                "scenario_phase_id": "backfill",
+                "scenario_phase_order": 3,
+                "workfront_id": front["id"],
+                "operation": "pipeline_backfill",
+                "execution_group_id": backfill_group_id,
+                "execution_group_size": backfill_group_size,
+                "execution_group_mode": "parallel_pipeline_backfill",
+                "predecessor_execution_group_id": installation_group_id,
+                "summary": f"Zone {backfill_zone_id} 관로 공사 · 3단계 되메우기 · {front['label']}",
+                "zone_id": backfill_zone_id,
+                "source_text": payload.source_text,
+                "generated_code": coordinated_code,
+                "program_version": 1,
+                "resource_bindings": {
+                    "equipment": equipment_path,
+                    "target": target_paths[0],
+                },
+                "target_prim_paths": target_paths,
+                "equipment_name": front["equipment_id"],
+                "target_name": f"Backfill section · {front['id']}",
+                "planned_quantity": {
+                    "value": float(front["target_volume_m3"]),
+                    "unit": "m3",
+                    "source": f"{payload.plan_id} Rev.{raw_plan['revision']}",
+                },
+                "station_range": (
+                    f"STA {front['station_start_m']:05.1f} ~ "
+                    f"{front['station_end_m']:05.1f}"
+                ),
+                "depends_on_phase_ids": ["pipe_installation"],
+                "phase_approval_ready": False,
+                "phase_plan_status": "locked",
+                "missing_resources": missing,
+                "checks": [
+                    {
+                        "code": "predecessor",
+                        "ok": False,
+                        "message": "Waiting for all Zone A phase 2 installation commits to be approved",
+                    },
+                    {
+                        "code": "resources",
+                        "ok": not missing,
+                        "message": "Stage resources are ready" if not missing else missing[0],
+                    },
+                ],
+                "compiler_model": "site-plan-deterministic-v1",
+            },
+            note=f"Pipeline drawing successor · backfill · {front['label']}"[:500],
+            user=user,
+            initial_status="blocked",
+        )
+        records.append(
+            PlanningScenarioWorkPackageRecord(
+                id=work_package_id,
+                phase_id="backfill",
+                workfront_id=front["id"],
+                zone_id=backfill_zone_id,
+                equipment_id=front["equipment_id"],
+                target_prim_paths=target_paths,
+                status="blocked",
                 missing_resources=missing,
             )
         )

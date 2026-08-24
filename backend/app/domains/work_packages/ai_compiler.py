@@ -26,9 +26,82 @@ from ...schemas.work_package_ai import (
     LLMExcavationPlan,
     LLMWorkPackagePlan,
     PlanningWorkPackagePlan,
+    RemediationNarrative,
     WorkPackageCheck,
     ZoneBounds,
 )
+
+
+def compile_remediation_narrative(
+    *,
+    settings: Settings,
+    workfront_id: str,
+    equipment_id: str,
+    planned_volume_m3: float,
+    completed_volume_m3: float,
+    remaining_volume_m3: float,
+    measured_completion_ratio: float,
+    required_completion_ratio: float,
+) -> RemediationNarrative:
+    """Ask the local LLM to explain a deterministic corrective-work plan.
+
+    Every measurement is supplied by Stage read-back and remains immutable in
+    the Backend. The model may only phrase the manager-facing title, summary,
+    and action steps; it cannot select another target, machine, or quantity.
+    """
+
+    facts = {
+        "workfront_id": workfront_id,
+        "equipment_id": equipment_id,
+        "planned_volume_m3": round(planned_volume_m3, 3),
+        "completed_volume_m3": round(completed_volume_m3, 3),
+        "remaining_volume_m3": round(remaining_volume_m3, 3),
+        "measured_completion_percent": round(measured_completion_ratio * 100, 1),
+        "required_completion_percent": round(required_completion_ratio * 100, 1),
+    }
+    system_prompt = """당신은 SiteGit 보완 작업 지시 작성 도우미입니다.
+제공된 계측값은 Isaac Stage read-back과 규칙 엔진이 확정한 값입니다.
+수치, 장비 ID, 작업전선 ID를 바꾸거나 새로운 값을 추정하지 마세요.
+관리자가 검토할 수 있도록 부족 원인, 동일 장비의 잔여 굴착, 재측정 및
+재커밋 순서를 간결한 한국어로 작성하세요. 실행 코드는 작성하지 마세요."""
+    try:
+        endpoint = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
+        with httpx.Client(timeout=settings.ollama_timeout_seconds) as client:
+            response = client.post(
+                endpoint,
+                json={
+                    "model": settings.ollama_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": json.dumps(facts, ensure_ascii=False),
+                        },
+                    ],
+                    "stream": False,
+                    "think": False,
+                    "format": RemediationNarrative.model_json_schema(),
+                    "options": {"temperature": 0},
+                    "keep_alive": "10m",
+                },
+            )
+        if response.status_code == 404:
+            raise WorkPackageLLMUnavailable(
+                f"Ollama model '{settings.ollama_model}' was not found"
+            )
+        response.raise_for_status()
+        output_text = response.json().get("message", {}).get("content", "")
+        if not output_text:
+            raise WorkPackageLLMError("The LLM returned an empty remediation plan")
+        return RemediationNarrative.model_validate_json(output_text)
+    except (WorkPackageLLMUnavailable, WorkPackageLLMError):
+        raise
+    except httpx.ConnectError as error:
+        raise WorkPackageLLMUnavailable("Local Ollama is not reachable") from error
+    except httpx.TimeoutException as error:
+        raise WorkPackageLLMError("Ollama remediation request timed out") from error
+    except (httpx.HTTPError, ValidationError, ValueError, json.JSONDecodeError) as error:
+        raise WorkPackageLLMError("The LLM remediation response was invalid") from error
 
 
 def compile_planning_work_package(

@@ -8,7 +8,88 @@
 
 ---
 
-## 0. 처음 실행하기 — 외장 SSD·Isaac Sim 없이
+## 0. 처음 실행하기
+
+### 외장 SSD를 다른 Windows PC에서 실행
+
+저장소, `SiteGitData`, Isaac Sim과 Ollama 모델을 같은 SSD에 둔 경우에는
+먼저 루트의 환경 설정 파일을 한 번 실행합니다.
+
+```powershell
+.\start_sitegit_portable.bat
+```
+
+이 파일은 Backend나 Isaac Sim을 실행하지 않고, SSD 드라이브 문자를 자동
+감지해 다음 환경만 준비합니다.
+
+- Python 3.11 이상이 없으면 Python 3.12를 `winget`으로 설치
+- Ollama 프로그램이 없으면 `winget`으로 설치
+- `SiteGitData/tooling/venvs/<PC 이름>`에 PC별 Python 가상환경 생성
+- Backend Python 패키지 설치
+- 현재 SSD 위치를 기준으로 맵, 굴착기, LiDAR 기준 USD와 토사 재질 검색
+- SSD의 `ollama/models`에서 설정된 모델 확인(없을 때만 SSD로 다운로드)
+- SSD의 Isaac Sim과 NVIDIA 드라이버 확인
+
+모델 데이터가 SSD에 있으면 다시 다운로드하지 않습니다. `ollama.exe`는 각
+PC에 설치되지만, 모델은 계속 SSD의 파일을 사용합니다. 설치하지 않고 상태만
+확인하려면:
+
+```powershell
+.\start_sitegit_portable.bat -CheckOnly
+```
+
+환경 준비가 끝나면 Backend와 Isaac Sim을 서로 다른 창에서 실행합니다.
+
+```powershell
+# 1번 창: Backend + Ollama + 웹
+.\start_sitegit_backend.bat
+
+# 2번 창: Isaac Sim + 현장/굴착기/센서 Adapter
+.\start_sitegit_isaac.bat
+```
+
+### 심사위원 반복 시연: 매회 최초 지형으로 시작
+
+심사위원마다 터파기 전 상태부터 다시 보여줄 때는 별도로 실행한 Backend와
+Isaac Sim을 모두 닫고 아래 파일 하나만 실행합니다.
+
+```powershell
+.\start_sitegit_judge_demo.bat
+```
+
+이 런처는 직전 회차의 DB, Work Package/Commit/승인 기록, Evidence, 승인된
+Isaac Branch HEAD와 웹 게시 기준 상태를 먼저
+`SiteGitData/backups/demo-runs/<시각>`에 이동해 보관합니다. 그다음 새 Backend,
+브라우저, 원본 지형의 Isaac Sim을 순서대로 실행합니다. 현장 USDZ, 텍스처,
+WebGL 맵 번들, 충돌 캐시와 도면은 초기화하지 않습니다.
+
+심사 시연에서는 Isaac Sim이 자동으로 **최대화된 일반 창의 Viewport 전용 모드**로
+열립니다. Stage, Property, Content, 좌측 툴바와 Viewport 메뉴는 숨겨져 현장 장면만
+보이지만 Windows 작업표시줄, `Alt+Tab`, 제목 표시줄은 유지됩니다. 제목 표시줄의
+복원 버튼으로 창 크기를 줄여 웹과 나란히 놓을 수 있고, `F11`은 필요할 때만 진짜
+전체 화면으로 전환합니다. 실행 중 `F7`은 편집 UI 표시/숨김입니다. 문제를 분석할 때
+처음부터 기존 편집 화면으로 열려면 다음처럼 실행합니다.
+
+```powershell
+.\start_sitegit_judge_demo.bat -EditorUi
+```
+
+Isaac Sim 창을 닫으면 이 런처가 소유한 Backend도 종료됩니다. 다음 심사위원
+차례에 같은 파일을 다시 실행하면 새 회차가 시작됩니다. 자동 실행 없이 상태만
+초기화하려면 다음 파일을 사용한 뒤 기존 Backend/Isaac 런처를 각각 실행합니다.
+
+```powershell
+.\reset_sitegit_demo.bat
+.\start_sitegit_backend.bat
+.\start_sitegit_isaac.bat
+```
+
+일반 개발 중에는 `start_sitegit_backend.bat`과 `start_sitegit_isaac.bat`을 그대로
+사용합니다. 이 두 파일은 승인 기록이나 Branch HEAD를 초기화하지 않습니다.
+
+`start_sitegit_portable.bat`에 `-SkipOllama`를 주면 Ollama 설치와 모델 확인을
+건너뜁니다. Isaac Sim 본체와 호환 NVIDIA 드라이버는 크기와 GPU 호환성 때문에
+자동 설치하지 않으며, SSD의 `isaacsim` 설치본과 현재 PC 드라이버를 검사합니다.
 
 ### 준비물
 
@@ -427,9 +508,47 @@ Copy-Item isaac_adapter\.env.example isaac_adapter\.env
 # 실제 Isaac Sim 연결 — Isaac의 Python으로 실행합니다
 E:\isaacsim\python.bat E:\SITEGIT\isaac_adapter\isaac_runner.py
 
+# 또는 SSD/Isaac 경로를 자동 탐색하는 실행 파일
+.\start_sitegit_isaac.bat
+
+# Backend 없이 굴착기 3대 동작만 확인
+.\start_sitegit_excavator_demo.bat
+
+# 편집 패널까지 보면서 독립 데모를 디버깅
+.\start_sitegit_excavator_demo.bat -EditorUi
+
 # Isaac 없이 배관만 검증 (실제 실행 아님)
 .\.venv\Scripts\python.exe isaac_adapter\cube_task_runner.py --interval 3
 ```
+
+### 웹 계획 승인 → Zone A 터파기 실행
+
+Backend와 `start_sitegit_isaac.bat`을 각각 켠 상태에서 작업 지시 화면의
+**계획 승인 · 터파기 3건 하달**을 누르면 세 Work Package가 하나의 실행 그룹으로
+발행됩니다. Live Adapter는 그룹 전체를 한 번에 가져와 `EXC-001~003`을 각 작업전선에
+배치하고, 독립 데모와 같은 5회 굴착·선회·배토 사이클을 동시에 수행합니다.
+
+```text
+계획 승인
+  → Zone A Work Package 3건 생성
+  → 실행 그룹 1건으로 Isaac Adapter가 원자적 claim
+  → 굴착기 3대 동시 터파기 및 단계별 토사 Mesh 감소
+  → 작업전선별 카메라·LiDAR·IMU Evidence Commit 3건 생성
+  → 관리자 검토 대기
+```
+
+Zone A는 계획을 하달하는 즉시 현장 맵에 생성되며, 실행 중에는 Work Package 상태가
+진행 중으로 표시됩니다. 각 버킷 사이클이 끝날 때마다 세 작업전선의 진행률도
+20% 단위로 갱신됩니다. 터파기 결과 지형은 Evidence Commit을 승인하기 전까지 공식
+Work 맵에 Merge되지 않습니다. 이 경로를 시험할 때는 웹과 분리된
+`start_sitegit_excavator_demo.bat`을 동시에 실행하지 마세요.
+
+3대 데모는 관로의 남·중앙·북 작업전선에 `EXC-001~003`을 엇갈려 놓고, 준비 배치가 끝나면
+세 장비가 같은 타임라인에서 5회의 퍼기·지형 감소·선회·배토·정면 복귀 사이클을 동시에 수행합니다.
+토사 Mesh는 매 버킷 사이클마다 단계적으로 낮아지고 배토 Mesh가 옆에 누적됩니다. 중앙
+미굴착 결함이 필요하면 `-IntentionalDefect` 옵션으로 `EXC-002`의 누적 굴착률을 낮출 수
+있습니다. 기본 실행은 세 작업전선을 모두 굴착합니다. 이 데모는 웹·Backend·Commit과 완전히
+분리되어 있으며 자세한 옵션은 `isaac_adapter/README.md`에 있습니다.
 
 두 러너는 같은 지시를 두고 경쟁하므로 동시에 켜지 마세요. Commit의 `result.simulator`가 `isaac-sim`이면 Isaac Stage에서 실제로 읽어온 값이고, `simulated-cube-bridge`면 지시값을 되돌린 것뿐입니다.
 
@@ -607,6 +726,63 @@ git push -u origin develop
 ---
 
 ## 10. Git과 SSD 경계
+
+### Isaac Sim Zone B pipe-installation demo
+
+The excavation-only demo now saves its completed Stage as
+`SITEGIT_DATA_ROOT/isaac/three-excavator-demo/excavated-stage.usda`. Run the
+next construction phase without the Backend or web application with:
+
+```powershell
+.\start_sitegit_pipeline_demo.bat
+
+# Faster animation for a smoke check
+.\start_sitegit_pipeline_demo.bat -Fast
+
+# Stage/Property/Content가 필요한 디버깅 화면
+.\start_sitegit_pipeline_demo.bat -EditorUi
+```
+
+The runner restores the saved excavation Stage when it exists. Otherwise it
+prepares the same drawing's approved excavation state. Three short handling
+pipes start beside the spoil banks left by excavation. `EXC-001~003` remain on
+stable upper ground and lower one short pipe each from above. At release, those
+props are replaced in one frame by the complete drawing-aligned route. It saves
+`pipeline-installed-stage.usda` plus `report.json` under
+`SITEGIT_DATA_ROOT/isaac/pipeline-installation-demo`.
+
+### Isaac Sim Zone C backfill demo
+
+Continue from the installed-pipeline Stage with the final construction phase:
+
+```powershell
+.\start_sitegit_backfill_demo.bat
+
+# Shorter animation for a smoke check
+.\start_sitegit_backfill_demo.bat -Fast
+
+# Stage/Property/Content가 필요한 디버깅 화면
+.\start_sitegit_backfill_demo.bat -EditorUi
+```
+
+The three excavators run five synchronized reverse-excavation cycles. They turn
+to the side spoil banks, scoop, return toward the trench, and dump together.
+The normal launcher uses deliberately visible motion timing. The track carriers
+stay pinned at their settled poses to prevent contact impulses from rolling a
+machine, while each imported full Skeleton clip is played in the exact reverse
+order of the proven excavation cycle (`Rotate90` -> reverse `ArmDump` -> reverse
+`Rotate90` -> reverse `ArmInDig` -> reverse `ArmDig` -> reverse `ArmOut`).
+Every cycle consumes one fifth of the real `MovedSoil` meshes and restores one
+fifth of `TrenchFill_01~08`; the final cycle recovers the exact approved surface
+and leaves the 79.2 m pipeline buried below it. The result is saved as
+`SITEGIT_DATA_ROOT/isaac/pipeline-backfill-demo/backfilled-stage.usda` with a
+standalone `report.json`. The complete local sequence is therefore:
+
+```powershell
+.\start_sitegit_excavator_demo.bat
+.\start_sitegit_pipeline_demo.bat
+.\start_sitegit_backfill_demo.bat
+```
 
 ### GitHub
 

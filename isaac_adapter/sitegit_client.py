@@ -49,7 +49,13 @@ class SiteGitClient:
 
     # --- Isaac 폐루프: 지시 수신과 결과 Commit -------------------------------
 
-    def claim_instructions(self, project_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    def claim_instructions(
+        self,
+        project_id: str,
+        limit: int = 10,
+        *,
+        prefer_execution_group: bool = False,
+    ) -> list[dict[str, Any]]:
         """대기 중인 작업 지시를 가져옵니다.
 
         서버가 건네주는 시점에 dispatched로 표시하므로, 폴링 주기가 실행
@@ -57,7 +63,11 @@ class SiteGitClient:
         """
         response = self.session.post(
             f"{self.base_url}/api/v1/isaac/instructions/claim",
-            params={"project_id": project_id, "limit": limit},
+            params={
+                "project_id": project_id,
+                "limit": limit,
+                "prefer_execution_group": str(prefer_execution_group).lower(),
+            },
             timeout=15,
         )
         response.raise_for_status()
@@ -87,6 +97,36 @@ class SiteGitClient:
 
         response = self.session.get(
             f"{self.base_url}/api/v1/isaac/commits/{commit_id}",
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def report_instruction_progress(
+        self,
+        instruction_id: str,
+        *,
+        phase: str,
+        step_index: int,
+        step_count: int,
+        progress_ratio: float,
+        removed_volume_m3: float = 0.0,
+        installed_length_m: float = 0.0,
+        backfilled_volume_m3: float = 0.0,
+    ) -> dict[str, Any]:
+        """Publish one live task step without creating a Commit."""
+
+        response = self.session.post(
+            f"{self.base_url}/api/v1/isaac/instructions/{instruction_id}/progress",
+            json={
+                "phase": phase,
+                "step_index": step_index,
+                "step_count": step_count,
+                "progress_ratio": progress_ratio,
+                "removed_volume_m3": removed_volume_m3,
+                "installed_length_m": installed_length_m,
+                "backfilled_volume_m3": backfilled_volume_m3,
+            },
             timeout=15,
         )
         response.raise_for_status()

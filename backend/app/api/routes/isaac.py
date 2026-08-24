@@ -8,6 +8,8 @@ Adapter도 일반 사용자로 로그인하므로 별도 인증 경로를 만들
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -22,12 +24,18 @@ from ...domains.executions.stage_inventory import (
 )
 from ...domains.executions.stage_versions import load_branch_head
 from ...domains.trust_gate.service import TrustGateService
+from ...domains.work_packages.ai_compiler import (
+    WorkPackageLLMError,
+    WorkPackageLLMUnavailable,
+    compile_remediation_narrative,
+)
 from ...models.user import User
 from ...realtime.manager import manager
 from ...schemas.isaac import (
     CommitCreate,
     CommitResponse,
     InstructionCreate,
+    InstructionProgressUpdate,
     InstructionResponse,
     MapObjectsResponse,
     ReviewDecision,
@@ -155,14 +163,45 @@ async def create_instruction(
 def claim_instructions(
     project_id: str | None = Query(default=None),
     limit: int = Query(default=10, ge=1, le=50),
+    prefer_execution_group: bool = Query(default=False),
     db: Session = Depends(get_db),
     _user: User = Depends(require_roles(*OPERATOR_ROLES)),
 ) -> list[InstructionResponse]:
     """Adapter 전용. 대기 중인 지시를 가져가면서 dispatched로 표시합니다."""
     claimed = ExecutionsService.claim_pending(
-        db, project_id=project_id or _default_project_id(), limit=limit
+        db,
+        project_id=project_id or _default_project_id(),
+        limit=limit,
+        prefer_execution_group=prefer_execution_group,
     )
     return [InstructionResponse.model_validate(i, from_attributes=True) for i in claimed]
+
+
+@router.post(
+    "/instructions/{instruction_id}/progress",
+    response_model=InstructionResponse,
+)
+async def update_instruction_progress(
+    instruction_id: str,
+    payload: InstructionProgressUpdate,
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> InstructionResponse:
+    """Receive a non-commit progress heartbeat from the live Isaac task."""
+
+    instruction = ExecutionsService.get_instruction(db, instruction_id)
+    updated = ExecutionsService.record_progress(
+        db,
+        instruction=instruction,
+        progress=payload.model_dump(),
+    )
+    await _broadcast_map_changed(
+        instruction.project_id,
+        "instruction.progress",
+        instruction_id=instruction.id,
+        progress_ratio=payload.progress_ratio,
+    )
+    return InstructionResponse.model_validate(updated, from_attributes=True)
 
 
 @router.post("/instructions/{instruction_id}/commit", response_model=CommitResponse, status_code=201)
@@ -201,6 +240,202 @@ async def commit_execution(
     return CommitResponse.model_validate(commit, from_attributes=True)
 
 
+@router.post(
+    "/commits/{commit_id}/remediation",
+    response_model=InstructionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_remediation_instruction(
+    commit_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> InstructionResponse:
+    """Create an LLM-assisted, manager-gated corrective excavation draft."""
+
+    commit = TrustGateService.get_commit(db, commit_id)
+    quality = (commit.result or {}).get("quality_assessment") or {}
+    if commit.review_status != "pending" or quality.get("status") != "needs_remediation":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a pending under-excavation commit can create remediation",
+        )
+    existing = ExecutionsService.find_remediation_for_commit(
+        db,
+        project_id=commit.instruction.project_id,
+        parent_commit_id=commit.id,
+    )
+    if existing is not None:
+        return InstructionResponse.model_validate(existing, from_attributes=True)
+
+    parent_params = dict(commit.instruction.params or {})
+    equipment_path = str(
+        (parent_params.get("resource_bindings") or {}).get("equipment")
+        or (commit.result or {}).get("equipment_prim_path")
+        or ""
+    )
+    target_paths = [
+        str(path)
+        for path in (
+            parent_params.get("target_prim_paths")
+            or (commit.result or {}).get("target_prim_paths")
+            or []
+        )
+    ]
+    if not equipment_path or not target_paths:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Corrective work requires the original equipment and target bindings",
+        )
+
+    planned_volume = float(quality.get("planned_volume_m3") or 0.0)
+    completed_volume = float(quality.get("completed_volume_m3") or 0.0)
+    remaining_volume = max(0.0, float(quality.get("remaining_volume_m3") or 0.0))
+    measured_ratio = float(quality.get("measured_completion_ratio") or 0.0)
+    required_ratio = float(quality.get("required_completion_ratio") or 0.98)
+    equipment_id = str(
+        parent_params.get("equipment_name")
+        or equipment_path.rsplit("/", 1)[-1].replace("_", "-")
+    )
+    llm_assisted = True
+    compiler_model = get_settings().ollama_model
+    try:
+        narrative = compile_remediation_narrative(
+            settings=get_settings(),
+            workfront_id=str(parent_params.get("workfront_id") or "Zone-A"),
+            equipment_id=equipment_id,
+            planned_volume_m3=planned_volume,
+            completed_volume_m3=completed_volume,
+            remaining_volume_m3=remaining_volume,
+            measured_completion_ratio=measured_ratio,
+            required_completion_ratio=required_ratio,
+        ).model_dump()
+    except (WorkPackageLLMUnavailable, WorkPackageLLMError):
+        llm_assisted = False
+        compiler_model = "deterministic-remediation-v1"
+        narrative = {
+            "title": f"{equipment_id} 굴착량 미달 보완 작업",
+            "summary": (
+                f"목표 {planned_volume:.1f}㎥ 중 {completed_volume:.1f}㎥ 완료, "
+                f"잔여 {remaining_volume:.1f}㎥를 동일 작업전선에서 추가 굴착합니다."
+            ),
+            "action_steps": [
+                "기존 작업전선과 잔여 토사 Prim을 재확인합니다.",
+                f"{equipment_id} 한 대로 잔여 {remaining_volume:.1f}㎥를 굴착합니다.",
+                "카메라·LiDAR·IMU 증거를 다시 수집하고 재커밋합니다.",
+            ],
+            "manager_note": "계측 수치는 규칙 엔진이 확정했으며 관리자 승인 후 실행됩니다.",
+        }
+
+    correction_group_id = f"EXG-REMEDIATION-{uuid4().hex[:10]}"
+    work_package_id = f"WP-REMEDIATION-{uuid4().hex[:8].upper()}"
+    remediation = ExecutionsService.create_instruction(
+        db,
+        project_id=commit.instruction.project_id,
+        kind=commit.instruction.kind,
+        params={
+            **parent_params,
+            "work_package_id": work_package_id,
+            "execution_group_id": correction_group_id,
+            "execution_group_size": 1,
+            "execution_group_mode": "parallel_incremental_scoops",
+            "remediation_mode": True,
+            "remediation_plan_status": "draft",
+            "remediation_parent_commit_id": commit.id,
+            "remediation_parent_instruction_id": commit.instruction_id,
+            "quality_scenario": None,
+            "summary": narrative["title"],
+            "planned_quantity": {
+                "value": remaining_volume,
+                "unit": "m3",
+                "source": "Isaac Stage read-back remediation gap",
+            },
+            "remediation_facts": {
+                "planned_volume_m3": planned_volume,
+                "completed_volume_m3": completed_volume,
+                "remaining_volume_m3": remaining_volume,
+                "measured_completion_ratio": measured_ratio,
+                "required_completion_ratio": required_ratio,
+            },
+            "remediation_narrative": narrative,
+            "llm_assisted": llm_assisted,
+            "compiler_model": compiler_model,
+            "resource_bindings": {
+                "equipment": equipment_path,
+                "target": target_paths[0],
+            },
+            "target_prim_paths": target_paths,
+            "checks": [
+                {
+                    "code": "measurement",
+                    "ok": False,
+                    "message": (
+                        f"굴착 달성률 {measured_ratio * 100:.1f}% / "
+                        f"기준 {required_ratio * 100:.1f}%"
+                    ),
+                },
+                {
+                    "code": "manager_gate",
+                    "ok": False,
+                    "message": "관리자 보완 계획 승인 대기",
+                },
+            ],
+        },
+        note=narrative["summary"],
+        user=user,
+        initial_status="blocked",
+    )
+    await _broadcast_map_changed(
+        remediation.project_id,
+        "remediation.draft.created",
+        instruction_id=remediation.id,
+        parent_commit_id=commit.id,
+    )
+    return InstructionResponse.model_validate(remediation, from_attributes=True)
+
+
+@router.post(
+    "/instructions/{instruction_id}/dispatch-remediation",
+    response_model=InstructionResponse,
+)
+async def dispatch_remediation_instruction(
+    instruction_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> InstructionResponse:
+    """Approve a corrective draft and release only its assigned excavator."""
+
+    instruction = ExecutionsService.get_instruction(db, instruction_id)
+    params = instruction.params or {}
+    inventory = load_stage_inventory(instruction.project_id)
+    equipment_path = str((params.get("resource_bindings") or {}).get("equipment") or "")
+    target_paths = [str(path) for path in params.get("target_prim_paths") or []]
+    active_equipment = {item.path for item in inventory.equipment if item.active}
+    active_targets = {item.path for item in inventory.diggable_targets if item.active}
+    missing = []
+    if not inventory.connected:
+        missing.append("Isaac Stage 연결 없음")
+    if equipment_path not in active_equipment:
+        missing.append(f"장비 Prim 없음: {equipment_path}")
+    missing.extend(path for path in target_paths if path not in active_targets)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "보완 작업 실행 자원을 확인할 수 없습니다.",
+                "missing_resources": missing,
+            },
+        )
+    dispatched = ExecutionsService.dispatch_remediation(
+        db, instruction=instruction, user=user
+    )
+    await _broadcast_map_changed(
+        dispatched.project_id,
+        "remediation.dispatched",
+        instruction_id=dispatched.id,
+    )
+    return InstructionResponse.model_validate(dispatched, from_attributes=True)
+
+
 @router.post("/commits/{commit_id}/review", response_model=CommitResponse)
 async def review_commit(
     commit_id: str,
@@ -213,12 +448,36 @@ async def review_commit(
     reviewed = TrustGateService.review(
         db, commit=commit, decision=payload.decision, note=payload.note, user=user
     )
+    released = []
+    if payload.decision == "approved":
+        completed_instruction = reviewed.instruction
+        if (reviewed.instruction.params or {}).get("remediation_mode"):
+            parent_instruction = TrustGateService.approve_remediation_parent(
+                db,
+                remediation_commit=reviewed,
+                user=user,
+            )
+            if parent_instruction is not None:
+                completed_instruction = parent_instruction
+        released = ExecutionsService.release_ready_successor_groups(
+            db,
+            completed_instruction=completed_instruction,
+            user=user,
+        )
     await _broadcast_map_changed(
         reviewed.instruction.project_id,
         f"review.{payload.decision}",
         instruction_id=reviewed.instruction_id,
         commit_id=reviewed.id,
     )
+    if released:
+        await _broadcast_map_changed(
+            reviewed.instruction.project_id,
+            "scenario.phase.approval_ready",
+            instruction_id=released[0].id,
+            ready_count=len(released),
+            phase_id=(released[0].params or {}).get("scenario_phase_id"),
+        )
     return CommitResponse.model_validate(reviewed, from_attributes=True)
 
 

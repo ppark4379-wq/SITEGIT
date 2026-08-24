@@ -654,6 +654,836 @@ def run_instruction(
     return commit
 
 
+def run_parallel_excavation_group(
+    client: SiteGitClient,
+    bridge: IsaacBridge,
+    instructions: list[dict[str, Any]],
+    *,
+    world: Any,
+    evidence_exporter: EvidenceExporter | None = None,
+    sensor_rigs: dict[str, Any] | None = None,
+    stage_snapshot_callback: Callable[[dict, str], dict[str, Any]] | None = None,
+    animation_seconds: float = 3.5,
+    scoop_count: int = 5,
+    render: bool = True,
+) -> list[dict[str, Any]]:
+    """Execute phase 1 excavation for one drawing-approved Zone A group.
+
+    The three Backend instructions remain independently reviewable, but their
+    buckets and terrain edits share one Isaac timeline.  Only the final group
+    commit carries the complete Stage snapshot; the first two commits contain
+    their own equipment evidence and per-front read-back.
+    """
+
+    from parallel_excavation_task import execute_parallel_excavation
+
+    if not 1 <= len(instructions) <= 3:
+        raise ValueError(
+            "excavation group must contain one corrective instruction or up to "
+            "three primary instructions"
+        )
+    ordered = sorted(
+        instructions,
+        key=lambda item: str((item.get("params") or {}).get("workfront_id") or ""),
+    )
+    traces = {str(item["id"]): ExecutionTrace(str(item["id"])) for item in ordered}
+    before_by_id: dict[str, dict[str, Any]] = {}
+    prepared_instruction_by_id: dict[str, dict[str, Any]] = {}
+    sensor_rigs = sensor_rigs or {}
+
+    for instruction in ordered:
+        instruction_id = str(instruction["id"])
+        equipment_path, target_path = _resource_paths(instruction)
+        traces[instruction_id].add(
+            "instruction_claimed",
+            "preparing",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                "instruction_kind": instruction.get("kind"),
+                "execution_group_id": (instruction.get("params") or {}).get(
+                    "execution_group_id"
+                ),
+            },
+        )
+
+    def capture_prepared(instruction: dict[str, Any], details: dict[str, Any]) -> None:
+        instruction_id = str(instruction["id"])
+        params = instruction.get("params") or {}
+        equipment_path = str(details.get("equipment_prim_path") or "")
+        target_path = str(details.get("target_prim_path") or "")
+        prepared = {
+            **instruction,
+            "params": {
+                **params,
+                "equipment_prim_path": equipment_path,
+                "target_prim_path": target_path,
+                "resource_bindings": {
+                    **(params.get("resource_bindings") or {}),
+                    "equipment": equipment_path,
+                    "target": target_path,
+                },
+            },
+        }
+        prepared_instruction_by_id[instruction_id] = prepared
+        rig = sensor_rigs.get(equipment_path)
+        before = _capture_evidence(
+            evidence_exporter,
+            bridge,
+            prepared,
+            "before",
+            bridge._update_callback,
+            rig,
+        )
+        before_by_id[instruction_id] = before
+        traces[instruction_id].add(
+            "before_evidence_captured",
+            "ready",
+            equipment_prim_path=equipment_path,
+            target_prim_path=target_path,
+            details={
+                "capture_trigger": "all_equipment_prepared",
+                "camera_available": bool(before.get("image", {}).get("available")),
+                "lidar_available": bool(before.get("lidar", {}).get("available")),
+                "imu_available": bool(before.get("imu", {}).get("available")),
+            },
+        )
+        traces[instruction_id].add(
+            "execution_started",
+            "executing",
+            equipment_prim_path=equipment_path,
+            target_prim_path=target_path,
+        )
+
+    def record_progress(
+        instruction_id: str,
+        scoop_index: int,
+        total_scoops: int,
+        deformation: dict[str, Any],
+    ) -> None:
+        trace = traces[instruction_id]
+        instruction = next(item for item in ordered if str(item["id"]) == instruction_id)
+        equipment_path, target_path = _resource_paths(instruction)
+        trace.add(
+            "scoop_completed",
+            "executing",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                "scoop_index": scoop_index,
+                "scoop_count": total_scoops,
+                "progress_ratio": scoop_index / total_scoops,
+                "removed_volume_m3": float(
+                    deformation.get("removed_volume_m3") or 0.0
+                ),
+            },
+        )
+        removed_volume_m3 = float(deformation.get("removed_volume_m3") or 0.0)
+        try:
+            client.report_instruction_progress(
+                instruction_id,
+                phase="excavating",
+                step_index=scoop_index,
+                step_count=total_scoops,
+                progress_ratio=scoop_index / total_scoops,
+                removed_volume_m3=removed_volume_m3,
+            )
+        except Exception as error:
+            # A transient UI/backend heartbeat failure must not corrupt the
+            # actual Stage task. The final Evidence Commit remains authoritative.
+            print(f"  [progress warning] {instruction_id[:8]}: {error}", flush=True)
+        print(
+            f"  [Zone A · phase 1 excavation] {instruction_id[:8]} scoop "
+            f"{scoop_index}/{total_scoops}",
+            flush=True,
+        )
+
+    try:
+        results = execute_parallel_excavation(
+            bridge,
+            world,
+            ordered,
+            animation_seconds=animation_seconds,
+            scoop_count=scoop_count,
+            render=render,
+            prepared_callback=capture_prepared,
+            progress_callback=record_progress,
+        )
+    except Exception as error:
+        commits: list[dict[str, Any]] = []
+        for instruction in ordered:
+            instruction_id = str(instruction["id"])
+            trace = traces[instruction_id]
+            equipment_path, target_path = _resource_paths(instruction)
+            trace.add(
+                "execution_failed",
+                "failed",
+                equipment_prim_path=equipment_path or None,
+                target_prim_path=target_path or None,
+                details={"error": str(error), "execution_group": True},
+            )
+            finished_at, duration_seconds = trace.finish()
+            evidence = _build_evidence_bundle(
+                evidence_exporter,
+                instruction,
+                trace,
+                before=before_by_id.get(instruction_id),
+                after=None,
+                finished_at=finished_at,
+                duration_seconds=duration_seconds,
+            )
+            commits.append(
+                client.commit_execution(
+                    instruction_id,
+                    status="failed",
+                    result={
+                        "schema_version": "1.0",
+                        "operation": "pipeline_excavation",
+                        "error": str(error),
+                        "execution_id": trace.execution_id,
+                        "duration_seconds": duration_seconds,
+                    },
+                    evidence=evidence,
+                )
+            )
+        return commits
+
+    commits: list[dict[str, Any]] = []
+    coordinator_id = str(ordered[-1]["id"])
+    for instruction in ordered:
+        instruction_id = str(instruction["id"])
+        trace = traces[instruction_id]
+        result = results[instruction_id]
+        prepared = prepared_instruction_by_id.get(instruction_id, instruction)
+        equipment_path, target_path = _resource_paths(prepared)
+        rig = sensor_rigs.get(equipment_path)
+        after = _capture_evidence(
+            evidence_exporter,
+            bridge,
+            prepared,
+            "after",
+            bridge._update_callback,
+            rig,
+        )
+        geometry_change = _geometry_change(
+            evidence_exporter,
+            before_by_id.get(instruction_id),
+            after,
+        )
+        trace.add(
+            "after_evidence_captured",
+            "verifying",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                "camera_available": bool(after.get("image", {}).get("available")),
+                "lidar_available": bool(after.get("lidar", {}).get("available")),
+                "imu_available": bool(after.get("imu", {}).get("available")),
+                "geometry_change_available": bool(geometry_change.get("available")),
+            },
+        )
+        if instruction_id == coordinator_id and stage_snapshot_callback is not None:
+            snapshot = stage_snapshot_callback(instruction, trace.execution_id)
+            result = {**result, "stage_snapshot": snapshot, "group_coordinator": True}
+            trace.add(
+                "stage_snapshot_saved",
+                "verifying",
+                equipment_prim_path=equipment_path or None,
+                target_prim_path=target_path or None,
+                details={
+                    "branch": snapshot.get("branch"),
+                    "base_commit_id": snapshot.get("base_commit_id"),
+                    "storage_key": snapshot.get("storage_key"),
+                },
+            )
+        trace.add(
+            "execution_completed",
+            "completed",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            performed_quantity=result.get("performed_quantity"),
+        )
+        finished_at, duration_seconds = trace.finish()
+        result = {
+            **result,
+            "execution_id": trace.execution_id,
+            "duration_seconds": duration_seconds,
+            "geometry_change": geometry_change,
+        }
+        evidence = _build_evidence_bundle(
+            evidence_exporter,
+            instruction,
+            trace,
+            before=before_by_id.get(instruction_id),
+            after=after,
+            finished_at=finished_at,
+            duration_seconds=duration_seconds,
+        )
+        commit = client.commit_execution(
+            instruction_id,
+            status="succeeded",
+            result=result,
+            evidence=evidence,
+        )
+        commits.append(commit)
+        print(
+            f"  [Zone A · phase 1 commit] {commit['id'][:8]} · "
+            f"{(instruction.get('params') or {}).get('workfront_id')} · manager review pending",
+            flush=True,
+        )
+    return commits
+
+
+def run_parallel_pipeline_installation_group(
+    client: SiteGitClient,
+    bridge: IsaacBridge,
+    instructions: list[dict[str, Any]],
+    *,
+    world: Any,
+    floor_height: Callable[[float, float, float], float],
+    plan_path: str | Path,
+    evidence_exporter: EvidenceExporter | None = None,
+    sensor_rigs: dict[str, Any] | None = None,
+    stage_snapshot_callback: Callable[[dict, str], dict[str, Any]] | None = None,
+    animation_seconds: float = 1.6,
+    render: bool = True,
+) -> list[dict[str, Any]]:
+    """Execute and commit phase 2 pipe installation inside Zone A."""
+
+    from parallel_pipeline_installation_task import (
+        execute_parallel_pipeline_installation,
+    )
+
+    if len(instructions) != 3:
+        raise ValueError("parallel pipeline installation requires 3 instructions")
+    ordered = sorted(
+        instructions,
+        key=lambda item: str((item.get("params") or {}).get("workfront_id") or ""),
+    )
+    traces = {str(item["id"]): ExecutionTrace(str(item["id"])) for item in ordered}
+    before_by_id: dict[str, dict[str, Any]] = {}
+    prepared_by_id: dict[str, dict[str, Any]] = {}
+    sensor_rigs = sensor_rigs or {}
+
+    for instruction in ordered:
+        instruction_id = str(instruction["id"])
+        equipment_path, target_path = _resource_paths(instruction)
+        traces[instruction_id].add(
+            "instruction_claimed",
+            "preparing",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                "instruction_kind": instruction.get("kind"),
+                "execution_group_id": (instruction.get("params") or {}).get(
+                    "execution_group_id"
+                ),
+                "scenario_phase_id": "pipe_installation",
+            },
+        )
+
+    def capture_prepared(instruction: dict[str, Any], details: dict[str, Any]) -> None:
+        instruction_id = str(instruction["id"])
+        params = instruction.get("params") or {}
+        equipment_path = str(details.get("equipment_prim_path") or "")
+        target_path = str(details.get("target_prim_path") or "")
+        prepared = {
+            **instruction,
+            "params": {
+                **params,
+                "equipment_prim_path": equipment_path,
+                "target_prim_path": target_path,
+                "resource_bindings": {
+                    **(params.get("resource_bindings") or {}),
+                    "equipment": equipment_path,
+                    "target": target_path,
+                },
+            },
+        }
+        prepared_by_id[instruction_id] = prepared
+        before = _capture_evidence(
+            evidence_exporter,
+            bridge,
+            prepared,
+            "before",
+            bridge._update_callback,
+            sensor_rigs.get(equipment_path),
+        )
+        before_by_id[instruction_id] = before
+        traces[instruction_id].add(
+            "before_evidence_captured",
+            "ready",
+            equipment_prim_path=equipment_path,
+            target_prim_path=target_path,
+            details={
+                "capture_trigger": "pipe_staged_before_pickup",
+                "camera_available": bool(before.get("image", {}).get("available")),
+                "lidar_available": bool(before.get("lidar", {}).get("available")),
+                "imu_available": bool(before.get("imu", {}).get("available")),
+            },
+        )
+        traces[instruction_id].add(
+            "execution_started",
+            "executing",
+            equipment_prim_path=equipment_path,
+            target_prim_path=target_path,
+        )
+
+    def record_progress(
+        instruction_id: str,
+        step_index: int,
+        step_count: int,
+        details: dict[str, Any],
+    ) -> None:
+        instruction = next(
+            item for item in ordered if str(item["id"]) == instruction_id
+        )
+        equipment_path, target_path = _resource_paths(instruction)
+        progress_ratio = float(step_index) / max(1.0, float(step_count))
+        traces[instruction_id].add(
+            "installation_step_completed",
+            "executing",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                **details,
+                "step_index": step_index,
+                "step_count": step_count,
+                "progress_ratio": progress_ratio,
+            },
+        )
+        try:
+            client.report_instruction_progress(
+                instruction_id,
+                phase=str(details.get("phase") or "installing_pipeline"),
+                step_index=step_index,
+                step_count=step_count,
+                progress_ratio=progress_ratio,
+                installed_length_m=float(details.get("installed_length_m") or 0.0),
+            )
+        except Exception as error:
+            print(f"  [progress warning] {instruction_id[:8]}: {error}", flush=True)
+        print(
+            f"  [Zone A · phase 2 installation] {instruction_id[:8]} installation "
+            f"{step_index}/{step_count} · {details.get('phase')}",
+            flush=True,
+        )
+
+    try:
+        results = execute_parallel_pipeline_installation(
+            bridge,
+            world,
+            ordered,
+            floor_height=floor_height,
+            plan_path=plan_path,
+            animation_seconds=animation_seconds,
+            render=render,
+            prepared_callback=capture_prepared,
+            progress_callback=record_progress,
+        )
+    except Exception as error:
+        commits: list[dict[str, Any]] = []
+        for instruction in ordered:
+            instruction_id = str(instruction["id"])
+            trace = traces[instruction_id]
+            equipment_path, target_path = _resource_paths(instruction)
+            trace.add(
+                "execution_failed",
+                "failed",
+                equipment_prim_path=equipment_path or None,
+                target_prim_path=target_path or None,
+                details={"error": str(error), "execution_group": True},
+            )
+            finished_at, duration_seconds = trace.finish()
+            evidence = _build_evidence_bundle(
+                evidence_exporter,
+                instruction,
+                trace,
+                before=before_by_id.get(instruction_id),
+                after=None,
+                finished_at=finished_at,
+                duration_seconds=duration_seconds,
+            )
+            commits.append(
+                client.commit_execution(
+                    instruction_id,
+                    status="failed",
+                    result={
+                        "schema_version": "1.0",
+                        "operation": "pipeline_installation",
+                        "error": str(error),
+                        "execution_id": trace.execution_id,
+                        "duration_seconds": duration_seconds,
+                    },
+                    evidence=evidence,
+                )
+            )
+        return commits
+
+    commits: list[dict[str, Any]] = []
+    coordinator_id = str(ordered[-1]["id"])
+    for instruction in ordered:
+        instruction_id = str(instruction["id"])
+        trace = traces[instruction_id]
+        result = results[instruction_id]
+        prepared = prepared_by_id.get(instruction_id, instruction)
+        equipment_path, target_path = _resource_paths(prepared)
+        after = _capture_evidence(
+            evidence_exporter,
+            bridge,
+            prepared,
+            "after",
+            bridge._update_callback,
+            sensor_rigs.get(equipment_path),
+        )
+        geometry_change = _geometry_change(
+            evidence_exporter,
+            before_by_id.get(instruction_id),
+            after,
+        )
+        trace.add(
+            "after_evidence_captured",
+            "verifying",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                "camera_available": bool(after.get("image", {}).get("available")),
+                "lidar_available": bool(after.get("lidar", {}).get("available")),
+                "imu_available": bool(after.get("imu", {}).get("available")),
+                "geometry_change_available": bool(geometry_change.get("available")),
+            },
+        )
+        if instruction_id == coordinator_id and stage_snapshot_callback is not None:
+            snapshot = stage_snapshot_callback(instruction, trace.execution_id)
+            result = {**result, "stage_snapshot": snapshot, "group_coordinator": True}
+            trace.add(
+                "stage_snapshot_saved",
+                "verifying",
+                equipment_prim_path=equipment_path or None,
+                target_prim_path=target_path or None,
+                details={
+                    "branch": snapshot.get("branch"),
+                    "base_commit_id": snapshot.get("base_commit_id"),
+                    "storage_key": snapshot.get("storage_key"),
+                },
+            )
+        trace.add(
+            "execution_completed",
+            "completed",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            performed_quantity=result.get("performed_quantity"),
+        )
+        finished_at, duration_seconds = trace.finish()
+        result = {
+            **result,
+            "execution_id": trace.execution_id,
+            "duration_seconds": duration_seconds,
+            "geometry_change": geometry_change,
+        }
+        evidence = _build_evidence_bundle(
+            evidence_exporter,
+            instruction,
+            trace,
+            before=before_by_id.get(instruction_id),
+            after=after,
+            finished_at=finished_at,
+            duration_seconds=duration_seconds,
+        )
+        commit = client.commit_execution(
+            instruction_id,
+            status="succeeded",
+            result=result,
+            evidence=evidence,
+        )
+        commits.append(commit)
+        print(
+            f"  [Zone A · phase 2 commit] {commit['id'][:8]} · "
+            f"{(instruction.get('params') or {}).get('workfront_id')} · "
+            "manager review pending",
+            flush=True,
+        )
+    return commits
+
+
+def run_parallel_pipeline_backfill_group(
+    client: SiteGitClient,
+    bridge: IsaacBridge,
+    instructions: list[dict[str, Any]],
+    *,
+    world: Any,
+    surface_height: Callable[[float, float, float], float],
+    plan_path: str | Path,
+    base_color_texture: str | Path | None = None,
+    normal_texture: str | Path | None = None,
+    evidence_exporter: EvidenceExporter | None = None,
+    sensor_rigs: dict[str, Any] | None = None,
+    stage_snapshot_callback: Callable[[dict, str], dict[str, Any]] | None = None,
+    animation_seconds: float = 3.0,
+    scoop_count: int = 5,
+    render: bool = True,
+) -> list[dict[str, Any]]:
+    """Execute, capture, and commit phase 3 backfill inside Zone A."""
+
+    from parallel_pipeline_backfill_task import execute_parallel_pipeline_backfill
+
+    if len(instructions) != 3:
+        raise ValueError("parallel pipeline backfill requires 3 instructions")
+    ordered = sorted(
+        instructions,
+        key=lambda item: str((item.get("params") or {}).get("workfront_id") or ""),
+    )
+    traces = {str(item["id"]): ExecutionTrace(str(item["id"])) for item in ordered}
+    before_by_id: dict[str, dict[str, Any]] = {}
+    prepared_by_id: dict[str, dict[str, Any]] = {}
+    sensor_rigs = sensor_rigs or {}
+
+    for instruction in ordered:
+        instruction_id = str(instruction["id"])
+        equipment_path, target_path = _resource_paths(instruction)
+        traces[instruction_id].add(
+            "instruction_claimed",
+            "preparing",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                "instruction_kind": instruction.get("kind"),
+                "execution_group_id": (instruction.get("params") or {}).get(
+                    "execution_group_id"
+                ),
+                "scenario_phase_id": "backfill",
+            },
+        )
+
+    def capture_prepared(instruction: dict[str, Any], details: dict[str, Any]) -> None:
+        instruction_id = str(instruction["id"])
+        params = instruction.get("params") or {}
+        equipment_path = str(details.get("equipment_prim_path") or "")
+        target_path = str(details.get("target_prim_path") or "")
+        prepared = {
+            **instruction,
+            "params": {
+                **params,
+                "equipment_prim_path": equipment_path,
+                "target_prim_path": target_path,
+                "resource_bindings": {
+                    **(params.get("resource_bindings") or {}),
+                    "equipment": equipment_path,
+                    "target": target_path,
+                },
+            },
+        }
+        prepared_by_id[instruction_id] = prepared
+        before = _capture_evidence(
+            evidence_exporter,
+            bridge,
+            prepared,
+            "before",
+            bridge._update_callback,
+            sensor_rigs.get(equipment_path),
+        )
+        before_by_id[instruction_id] = before
+        traces[instruction_id].add(
+            "before_evidence_captured",
+            "ready",
+            equipment_prim_path=equipment_path,
+            target_prim_path=target_path,
+            details={
+                "capture_trigger": "open_trench_before_backfill",
+                "camera_available": bool(before.get("image", {}).get("available")),
+                "lidar_available": bool(before.get("lidar", {}).get("available")),
+                "imu_available": bool(before.get("imu", {}).get("available")),
+            },
+        )
+        traces[instruction_id].add(
+            "execution_started",
+            "executing",
+            equipment_prim_path=equipment_path,
+            target_prim_path=target_path,
+        )
+
+    def record_progress(
+        instruction_id: str,
+        step_index: int,
+        step_count: int,
+        details: dict[str, Any],
+    ) -> None:
+        instruction = next(
+            item for item in ordered if str(item["id"]) == instruction_id
+        )
+        equipment_path, target_path = _resource_paths(instruction)
+        progress_ratio = float(step_index) / max(1.0, float(step_count))
+        traces[instruction_id].add(
+            "backfill_cycle_completed",
+            "executing",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                **details,
+                "step_index": step_index,
+                "step_count": step_count,
+                "progress_ratio": progress_ratio,
+            },
+        )
+        try:
+            client.report_instruction_progress(
+                instruction_id,
+                phase=str(details.get("phase") or "backfilling"),
+                step_index=step_index,
+                step_count=step_count,
+                progress_ratio=progress_ratio,
+                backfilled_volume_m3=float(
+                    details.get("backfilled_volume_m3") or 0.0
+                ),
+            )
+        except Exception as error:
+            print(f"  [progress warning] {instruction_id[:8]}: {error}", flush=True)
+        print(
+            f"  [Zone A · phase 3 backfill] {instruction_id[:8]} backfill "
+            f"{step_index}/{step_count} · {details.get('phase')}",
+            flush=True,
+        )
+
+    try:
+        results = execute_parallel_pipeline_backfill(
+            bridge,
+            world,
+            ordered,
+            surface_height=surface_height,
+            plan_path=plan_path,
+            base_color_texture=base_color_texture,
+            normal_texture=normal_texture,
+            animation_seconds=animation_seconds,
+            scoop_count=scoop_count,
+            render=render,
+            prepared_callback=capture_prepared,
+            progress_callback=record_progress,
+        )
+    except Exception as error:
+        commits: list[dict[str, Any]] = []
+        for instruction in ordered:
+            instruction_id = str(instruction["id"])
+            trace = traces[instruction_id]
+            equipment_path, target_path = _resource_paths(instruction)
+            trace.add(
+                "execution_failed",
+                "failed",
+                equipment_prim_path=equipment_path or None,
+                target_prim_path=target_path or None,
+                details={"error": str(error), "execution_group": True},
+            )
+            finished_at, duration_seconds = trace.finish()
+            evidence = _build_evidence_bundle(
+                evidence_exporter,
+                instruction,
+                trace,
+                before=before_by_id.get(instruction_id),
+                after=None,
+                finished_at=finished_at,
+                duration_seconds=duration_seconds,
+            )
+            commits.append(
+                client.commit_execution(
+                    instruction_id,
+                    status="failed",
+                    result={
+                        "schema_version": "1.0",
+                        "operation": "pipeline_backfill",
+                        "error": str(error),
+                        "execution_id": trace.execution_id,
+                        "duration_seconds": duration_seconds,
+                    },
+                    evidence=evidence,
+                )
+            )
+        return commits
+
+    commits: list[dict[str, Any]] = []
+    coordinator_id = str(ordered[-1]["id"])
+    for instruction in ordered:
+        instruction_id = str(instruction["id"])
+        trace = traces[instruction_id]
+        result = results[instruction_id]
+        prepared = prepared_by_id.get(instruction_id, instruction)
+        equipment_path, target_path = _resource_paths(prepared)
+        after = _capture_evidence(
+            evidence_exporter,
+            bridge,
+            prepared,
+            "after",
+            bridge._update_callback,
+            sensor_rigs.get(equipment_path),
+        )
+        geometry_change = _geometry_change(
+            evidence_exporter,
+            before_by_id.get(instruction_id),
+            after,
+        )
+        trace.add(
+            "after_evidence_captured",
+            "verifying",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            details={
+                "camera_available": bool(after.get("image", {}).get("available")),
+                "lidar_available": bool(after.get("lidar", {}).get("available")),
+                "imu_available": bool(after.get("imu", {}).get("available")),
+                "geometry_change_available": bool(geometry_change.get("available")),
+            },
+        )
+        if instruction_id == coordinator_id and stage_snapshot_callback is not None:
+            snapshot = stage_snapshot_callback(instruction, trace.execution_id)
+            result = {**result, "stage_snapshot": snapshot, "group_coordinator": True}
+            trace.add(
+                "stage_snapshot_saved",
+                "verifying",
+                equipment_prim_path=equipment_path or None,
+                target_prim_path=target_path or None,
+                details={
+                    "branch": snapshot.get("branch"),
+                    "base_commit_id": snapshot.get("base_commit_id"),
+                    "storage_key": snapshot.get("storage_key"),
+                },
+            )
+        trace.add(
+            "execution_completed",
+            "completed",
+            equipment_prim_path=equipment_path or None,
+            target_prim_path=target_path or None,
+            performed_quantity=result.get("performed_quantity"),
+        )
+        finished_at, duration_seconds = trace.finish()
+        result = {
+            **result,
+            "execution_id": trace.execution_id,
+            "duration_seconds": duration_seconds,
+            "geometry_change": geometry_change,
+        }
+        evidence = _build_evidence_bundle(
+            evidence_exporter,
+            instruction,
+            trace,
+            before=before_by_id.get(instruction_id),
+            after=after,
+            finished_at=finished_at,
+            duration_seconds=duration_seconds,
+        )
+        commit = client.commit_execution(
+            instruction_id,
+            status="succeeded",
+            result=result,
+            evidence=evidence,
+        )
+        commits.append(commit)
+        print(
+            f"  [Zone A · phase 3 commit] {commit['id'][:8]} · "
+            f"{(instruction.get('params') or {}).get('workfront_id')} · "
+            "manager review pending",
+            flush=True,
+        )
+    return commits
+
+
 def poll_once(client: SiteGitClient, bridge: IsaacBridge) -> int:
     instructions = client.claim_instructions(PROJECT_ID)
     if not instructions:

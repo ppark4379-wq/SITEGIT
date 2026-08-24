@@ -591,7 +591,7 @@
       var color = frontColors[index % frontColors.length];
       return '<g class="plan-front"><circle cx="' + projected[0].toFixed(1) + '" cy="' + projected[1].toFixed(1) + '" r="10" fill="' + color + '"></circle><text x="' + (projected[0] + 14).toFixed(1) + '" y="' + (projected[1] + 4).toFixed(1) + '">Zone A · 작업전선 ' + (index + 1) + ' · ' + escapeOverlayText(front.equipment_id) + '</text></g>';
     }).join("");
-    planningOverlay.innerHTML = '<polygon class="plan-area" points="' + polygonPoints + '"></polygon>' + frontMasks + '<polyline class="plan-centerline" points="' + linePoints + '"></polyline><g class="plan-zone-title" transform="translate(18 18)"><rect width="142" height="29" rx="7"></rect><text x="12" y="19">ZONE A · 터파기 전체</text></g>' + labels;
+    planningOverlay.innerHTML = '<polygon class="plan-area" points="' + polygonPoints + '"></polygon>' + frontMasks + '<polyline class="plan-centerline" points="' + linePoints + '"></polyline><g class="plan-zone-title" transform="translate(18 18)"><rect width="168" height="29" rx="7"></rect><text x="12" y="19">ZONE A · 관로 공사</text></g>' + labels;
   }
 
   function updateDesignOverlay(view) {
@@ -1107,7 +1107,15 @@
       });
       if (!response.ok) throw new Error("stage-inventory HTTP " + response.status);
       var data = await response.json();
+      var wasConnected = stageConnected;
       stageConnected = Boolean(data.connected);
+      // The judge-demo launcher intentionally opens the dashboard before
+      // Isaac Sim. The immutable published baseline is created by the first
+      // Stage inventory heartbeat, so an early map request can legitimately
+      // contain no initial diggable geometry. Reload only the approved map
+      // endpoint when Isaac changes from disconnected to connected; never use
+      // the live inventory itself as Work-map geometry.
+      if (stageConnected && !wasConnected) loadMapObjects();
       describeState();
     } catch (error) {
       console.warn("Stage inventory load failed:", error);

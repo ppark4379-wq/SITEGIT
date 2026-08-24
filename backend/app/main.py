@@ -27,6 +27,19 @@ app = FastAPI(
     redoc_url=None,
 )
 
+
+@app.middleware("http")
+async def prevent_stale_frontend_cache(request: Request, call_next):
+    """Serve the current working-tree UI instead of a cached older bundle."""
+
+    response = await call_next(request)
+    path = request.url.path
+    if path in {"/", "/login", "/favicon.ico"} or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 app.include_router(api_router, prefix=settings.api_prefix)
 app.mount("/static", StaticFiles(directory=settings.frontend_dir), name="static")
 

@@ -47,6 +47,8 @@ def load_pipeline_design(project_id: str) -> PlanningDesignPreview | None:
             "title": raw["title"],
             "source_map": raw["source_map"],
             "work_area_id": area["id"],
+            "zone_id": area["zone_id"],
+            "zone_title": area["zone_title"],
             "work_area_label": area["label"],
             "station_range": area["station_range"],
             "total_length_m": area["total_length_m"],
@@ -72,19 +74,21 @@ def design_prompt_context(design: PlanningDesignPreview) -> str:
     """Produce a compact, authoritative drawing excerpt for the LLM prompt."""
 
     phase_lines = "; ".join(
-        f"Zone {phase.zone_id}={phase.order}.{phase.title} "
+        f"{phase.order}단계={phase.title} "
         f"{phase.target_amount:g}{phase.target_unit}, "
         f"장비 {','.join(phase.equipment)}, 선행 {','.join(phase.depends_on) or '없음'}"
         for phase in design.phases
     )
     front_lines = "; ".join(
-        f"Zone A 작업전선 {index} {front.station_start_m:g}~{front.station_end_m:g}m "
+        f"Zone {design.zone_id} 작업전선 {index} "
+        f"{front.station_start_m:g}~{front.station_end_m:g}m "
         f"{front.equipment_id} {front.target_volume_m3:g}m3"
         for index, front in enumerate(design.workfronts, start=1)
     )
     return (
         "[승인된 현장 도면 — 이 값은 추측하거나 변경하지 말 것]\n"
-        f"도면 {design.plan_id} Rev.{design.revision}, 작업구역 {design.work_area_id} "
+        f"도면 {design.plan_id} Rev.{design.revision}, Zone {design.zone_id} "
+        f"{design.zone_title}, 작업구역 {design.work_area_id} "
         f"({design.work_area_label}), {design.station_range}, 총연장 {design.total_length_m:g}m, "
         f"설계깊이 {design.design_depth_m:g}m, 관 외경 {design.pipe_diameter_m:g}m.\n"
         f"공정: {phase_lines}.\n작업전선: {front_lines}.\n"
@@ -115,7 +119,7 @@ def apply_pipeline_design_defaults(
         return plan.model_copy(
             update={
                 "ready": True,
-                "zone_id": "A",
+                "zone_id": design.zone_id,
                 "work_type": "관로 공사 통합 계획",
                 "title": f"{design.work_area_label} 관로 공사",
                 "target_amount": design.total_length_m,

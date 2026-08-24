@@ -104,6 +104,106 @@ def excavation_approach_plan(
     }
 
 
+def per_scoop_cut_ratio(total_cut_ratio: float, scoop_count: int) -> float:
+    """Return an equal per-scoop ratio for one requested cumulative cut.
+
+    The soil sculpt is multiplicative: every pass lowers the surface that
+    remains after the previous pass. Converting the requested final ratio this
+    way makes several visible bucket passes converge on the former one-shot
+    deformation target.
+    """
+
+    if scoop_count < 1:
+        raise ValueError("scoop_count must be at least one")
+    total = max(0.0, min(0.999, float(total_cut_ratio)))
+    return float(1.0 - (1.0 - total) ** (1.0 / int(scoop_count)))
+
+
+def skeletal_joint_matches(
+    joint_name: str,
+    *,
+    suffixes: tuple[str, ...] = (),
+    prefixes: tuple[str, ...] = (),
+) -> bool:
+    """Return whether a skeleton joint belongs to an explicitly animated set.
+
+    Suffixes select one exact joint (for example ``/Rotator``), while prefixes
+    select a complete mechanism branch such as the boom and bucket hierarchy.
+    Keeping this decision independent from USD makes the safety rule easy to
+    test without launching Isaac Sim.
+    """
+
+    name = str(joint_name)
+    return any(name.endswith(suffix) for suffix in suffixes) or any(
+        name == prefix or name.startswith(prefix.rstrip("/") + "/")
+        for prefix in prefixes
+    )
+
+
+def moved_soil_dump_position(
+    equipment_position: dict[str, float],
+    approach_direction_xy: list[float] | tuple[float, float],
+    moved_size: tuple[float, float, float],
+    *,
+    track_radius_m: float,
+    dump_side: float,
+    dump_sequence_index: int,
+    bank_inset_m: float = 0.0,
+) -> dict[str, Any]:
+    """Place spoil on a stable side bank without drifting behind the machine.
+
+    A mound is wider than its centre point. Merely putting its centre beside
+    the tracks lets the near edge hang over the newly exposed trench. This
+    calculation includes the mound's projected radius. Later dumps extend the
+    same side bank laterally, rather than marching backwards into buildings or
+    other site geometry behind the excavator.
+    """
+
+    import math
+
+    direction_x = float(approach_direction_xy[0])
+    direction_y = float(approach_direction_xy[1])
+    direction_length = math.hypot(direction_x, direction_y)
+    if direction_length <= 1e-6:
+        direction_x, direction_y = 0.0, -1.0
+    else:
+        direction_x /= direction_length
+        direction_y /= direction_length
+
+    side_sign = -1.0 if float(dump_side) < 0.0 else 1.0
+    side_x = -direction_y * side_sign
+    side_y = direction_x * side_sign
+    half_x = max(0.5, float(moved_size[0]) * 0.5)
+    half_y = max(0.5, float(moved_size[1]) * 0.5)
+    side_radius = abs(side_x) * half_x + abs(side_y) * half_y
+    lateral_offset = max(0.5, float(track_radius_m)) + side_radius + 1.5
+    sequence_spacing = max(
+        0.8,
+        min(1.5, max(float(moved_size[0]), float(moved_size[1])) * 0.10),
+    )
+    lateral_offset += max(0, int(dump_sequence_index)) * sequence_spacing
+    # Most work fronts need no longitudinal offset because the machine has
+    # already stopped outside the target footprint. A small, explicit inset is
+    # still useful where a wide mound would otherwise overhang a curved trench.
+    # It is configured per work front so the centre machine is never pushed
+    # backwards into the demolition-site building again.
+    bank_inset = max(0.0, float(bank_inset_m))
+    return {
+        "position_xy": (
+            float(equipment_position["x"])
+            + side_x * lateral_offset
+            - direction_x * bank_inset,
+            float(equipment_position["y"])
+            + side_y * lateral_offset
+            - direction_y * bank_inset,
+        ),
+        "dump_side": "left" if side_sign > 0.0 else "right",
+        "lateral_offset_m": float(lateral_offset),
+        "bank_inset_m": float(bank_inset),
+        "sequence_spacing_m": float(sequence_spacing),
+    }
+
+
 def projected_mesh_volume(
     points: list[tuple[float, float, float]],
     face_vertex_counts: list[int],
@@ -146,6 +246,7 @@ def sculpt_soil_mesh_points(
     *,
     cut_ratio: float = 0.9,
     base_z_override: float | None = None,
+    minimum_cut_influence: float = 0.0,
 ) -> list[tuple[float, float, float]]:
     """Carve a smooth bucket-shaped depression into a standalone soil mesh."""
 
@@ -165,6 +266,7 @@ def sculpt_soil_mesh_points(
     radius_x = max((maximum_x - minimum_x) * 0.5, 1e-6)
     radius_y = max((maximum_y - minimum_y) * 0.5, 1e-6)
     ratio = max(0.05, min(0.98, float(cut_ratio)))
+    minimum_influence = max(0.0, min(1.0, float(minimum_cut_influence)))
     sculpted: list[tuple[float, float, float]] = []
     for x, y, z in points:
         normalized_radius = (
@@ -173,7 +275,10 @@ def sculpt_soil_mesh_points(
         ) ** 0.5
         # Preserve the outside rim and lower the central surface most. This
         # creates an actual crater rather than deleting or uniformly scaling.
-        influence = max(0.0, 1.0 - normalized_radius / 0.82) ** 1.35
+        influence = max(
+            minimum_influence,
+            max(0.0, 1.0 - normalized_radius / 0.82) ** 1.35,
+        )
         height = max(0.0, z - base_z)
         sculpted.append((x, y, base_z + height * (1.0 - ratio * influence)))
     return sculpted
@@ -193,6 +298,7 @@ class IsaacBridge:
         self._known_diggable_records: dict[str, dict[str, Any]] = {}
         self._terrain_ray_limits: dict[str, tuple[float, float]] = {}
         self._rigid_prim_controllers: dict[str, Any] = {}
+        self._skeletal_clip_cache: dict[str, tuple[int, dict[str, list[Any]]]] = {}
         self._excavation_prepared_callback: Callable[[dict[str, Any]], None] | None = None
 
     def set_excavation_prepared_callback(
@@ -381,7 +487,13 @@ class IsaacBridge:
                 ]
         return geometry
 
-    def _deform_diggable_mesh(self, target: Any) -> dict[str, Any]:
+    def _deform_diggable_mesh(
+        self,
+        target: Any,
+        *,
+        cut_ratio: float | None = None,
+        minimum_cut_influence: float = 0.0,
+    ) -> dict[str, Any]:
         """Carve the target Mesh in place and refresh its collision shape."""
 
         from pxr import Gf, UsdGeom, UsdPhysics
@@ -423,10 +535,16 @@ class IsaacBridge:
             indices,
             face_limit=top_face_count,
         )
+        applied_cut_ratio = (
+            float(cut_ratio)
+            if cut_ratio is not None
+            else float(os.getenv("SITEGIT_EXCAVATION_CUT_RATIO", "0.9"))
+        )
         sculpted_surface = sculpt_soil_mesh_points(
             local_points[:top_vertex_count],
-            cut_ratio=float(os.getenv("SITEGIT_EXCAVATION_CUT_RATIO", "0.9")),
+            cut_ratio=applied_cut_ratio,
             base_z_override=base_z,
+            minimum_cut_influence=minimum_cut_influence,
         )
         after_points = sculpted_surface + local_points[top_vertex_count:]
         after_volume = projected_mesh_volume(
@@ -459,6 +577,11 @@ class IsaacBridge:
             "before_volume_m3": float(before_volume),
             "after_volume_m3": float(after_volume),
             "removed_volume_m3": float(removed_volume),
+            "cut_ratio": max(0.05, min(0.98, applied_cut_ratio)),
+            "minimum_cut_influence": max(
+                0.0,
+                min(1.0, float(minimum_cut_influence)),
+            ),
             "revision": revision,
             "position": position,
             "size": size,
@@ -473,6 +596,9 @@ class IsaacBridge:
         equipment_position: dict[str, float],
         approach_plan: dict[str, Any],
         removed_volume_m3: float,
+        dump_side: float = 1.0,
+        dump_sequence_index: int = 0,
+        dump_bank_inset_m: float = 0.0,
     ) -> dict[str, Any] | None:
         """Create a second physical soil mound representing excavated material."""
 
@@ -486,7 +612,6 @@ class IsaacBridge:
         if removed_volume_m3 <= 1e-6:
             return None
         direction = approach_plan.get("approach_direction_xy") or [0.0, -1.0]
-        right_x, right_y = -float(direction[1]), float(direction[0])
         source_volume = max(
             1e-6,
             float(target_size["x"]) * float(target_size["y"]) * float(target_size["z"]) * 0.45,
@@ -497,15 +622,16 @@ class IsaacBridge:
             max(1.0, float(target_size["y"]) * scale),
             max(0.35, float(target_size["z"]) * scale),
         )
-        offset = (
-            float(approach_plan.get("track_radius_m") or 2.0)
-            + max(moved_size[0], moved_size[1]) * 0.5
-            + 1.0
+        placement = moved_soil_dump_position(
+            equipment_position,
+            direction,
+            moved_size,
+            track_radius_m=float(approach_plan.get("track_radius_m") or 2.0),
+            dump_side=dump_side,
+            dump_sequence_index=dump_sequence_index,
+            bank_inset_m=dump_bank_inset_m,
         )
-        position_xy = (
-            float(equipment_position["x"]) + right_x * offset,
-            float(equipment_position["y"]) + right_y * offset,
-        )
+        position_xy = placement["position_xy"]
         source_name = re.sub(r"[^A-Za-z0-9_]", "_", str(target.GetName()))
         suffix = int(target.GetCustomDataByKey("sitegitTerrainRevision") or 1)
         prim_path = f"/World/Diggable/{source_name}_MovedSoil_{suffix:02d}"
@@ -537,6 +663,11 @@ class IsaacBridge:
             "geometry": self._mesh_geometry_snapshot(moved_prim),
             "source_removed_volume_m3": float(removed_volume_m3),
             "deposited_volume_m3": float(moved_volume),
+            "dump_side": placement["dump_side"],
+            "dump_sequence_index": max(0, int(dump_sequence_index)),
+            "lateral_offset_m": placement["lateral_offset_m"],
+            "bank_inset_m": placement["bank_inset_m"],
+            "sequence_spacing_m": placement["sequence_spacing_m"],
         }
 
     def _match_mesh_volume(self, prim: Any, desired_volume_m3: float) -> float:
@@ -838,6 +969,7 @@ class IsaacBridge:
         animation_name: str,
         *,
         duration_seconds: float,
+        reverse: bool = False,
     ) -> str | None:
         """Bind and play one authored animation below an equipment root.
 
@@ -846,26 +978,53 @@ class IsaacBridge:
         are copied onto the current live timeline so animation playback never
         pauses gravity or contact solving for the physical carrier.
         """
-        from pxr import Usd
         import omni.timeline
 
+        timeline = omni.timeline.get_timeline_interface()
+        time_codes_per_second = float(self.stage.GetTimeCodesPerSecond() or 24.0)
+        start = float(timeline.get_current_time()) * time_codes_per_second
+        path, frames = self._author_skeletal_animation(
+            equipment,
+            animation_name,
+            duration_seconds=duration_seconds,
+            start_time_code=start,
+            reverse=reverse,
+        )
+        if path is None:
+            return None
+        timeline.play()
+        for _ in range(frames):
+            if self._update_callback:
+                self._update_callback()
+        return path
+
+    def _author_skeletal_animation(
+        self,
+        equipment: Any,
+        animation_name: str,
+        *,
+        duration_seconds: float,
+        start_time_code: float,
+        reverse: bool = False,
+        joint_pose_overrides: dict[str, dict[str, Any]] | None = None,
+    ) -> tuple[str | None, int]:
+        """Author one clip at an explicit live-timeline start without stepping."""
+
+        from pxr import Usd
+
         skeleton = None
-        animation = None
-        wanted = animation_name.lower()
         for prim in Usd.PrimRange(equipment):
             type_name = prim.GetTypeName()
             if type_name == "Skeleton" and skeleton is None:
                 skeleton = prim
-            if type_name == "SkelAnimation" and wanted in prim.GetName().lower():
-                animation = prim
+        animation = self._find_skeletal_animation(equipment, animation_name)
         if skeleton is None or animation is None:
-            return None
+            return None, 0
 
         relationship = skeleton.GetRelationship("skel:animationSource")
         if not relationship:
             relationship = skeleton.CreateRelationship("skel:animationSource")
         relationship.SetTargets([animation.GetPath()])
-
         animated_attributes = [
             attribute
             for attribute in animation.GetAttributes()
@@ -880,30 +1039,251 @@ class IsaacBridge:
             }
         )
         if not samples:
-            return str(animation.GetPath())
+            return str(animation.GetPath()), 0
+
+        time_codes_per_second = float(self.stage.GetTimeCodesPerSecond() or 24.0)
+        # ``World.step`` advances the simulation at 60 Hz while USD animation
+        # time is expressed in the Stage's time-codes-per-second (normally
+        # 24). The former code authored one whole time code per physics step,
+        # so a clip had not finished when the next clip was bound.
+        update_hz = max(
+            1.0, float(os.getenv("SITEGIT_ANIMATION_UPDATE_HZ", "60"))
+        )
+        clip_duration_seconds = max(0.25, float(duration_seconds))
+        frames = max(2, min(900, round(clip_duration_seconds * update_hz)))
+        cache_key = str(animation.GetPath())
+        cached_clip = self._skeletal_clip_cache.get(cache_key)
+        if cached_clip is None:
+            source_values = {
+                attribute.GetName(): [
+                    attribute.Get(Usd.TimeCode(sample)) for sample in samples
+                ]
+                for attribute in animated_attributes
+            }
+            source_sample_count = len(samples)
+            self._skeletal_clip_cache[cache_key] = (
+                source_sample_count,
+                source_values,
+            )
+        else:
+            source_sample_count, source_values = cached_clip
+        joint_names = [
+            str(value)
+            for value in (animation.GetAttribute("joints").Get() or [])
+        ]
+        joint_indexes = {name: index for index, name in enumerate(joint_names)}
+        for frame in range(frames + 1):
+            ratio = frame / frames
+            source_ratio = 1.0 - ratio if reverse else ratio
+            source_index = min(
+                source_sample_count - 1,
+                round(source_ratio * (source_sample_count - 1)),
+            )
+            destination_time = Usd.TimeCode(
+                float(start_time_code)
+                + ratio * clip_duration_seconds * time_codes_per_second
+            )
+            for attribute in animated_attributes:
+                attribute_name = attribute.GetName()
+                value = source_values[attribute_name][source_index]
+                overrides = (joint_pose_overrides or {}).get(attribute_name) or {}
+                if value is not None and overrides:
+                    mutable_value = list(value)
+                    for joint_name, joint_value in overrides.items():
+                        joint_index = joint_indexes.get(joint_name)
+                        if joint_index is not None and joint_index < len(mutable_value):
+                            mutable_value[joint_index] = joint_value
+                    value = mutable_value
+                if value is not None:
+                    attribute.Set(value, destination_time)
+        self.stage.SetEndTimeCode(
+            max(
+                float(self.stage.GetEndTimeCode()),
+                float(start_time_code)
+                + clip_duration_seconds * time_codes_per_second
+                + 1,
+            )
+        )
+        return str(animation.GetPath()), frames
+
+    def _find_skeletal_animation(self, equipment: Any, animation_name: str) -> Any:
+        """Find one clip without confusing ``ArmIn`` with ``ArmInDig``."""
+
+        from pxr import Usd
+
+        wanted = str(animation_name).strip().lower()
+        fallback = None
+        for prim in Usd.PrimRange(equipment):
+            if prim.GetTypeName() != "SkelAnimation":
+                continue
+            name = prim.GetName().lower()
+            if name == wanted or name.endswith("_" + wanted):
+                return prim
+            if fallback is None and wanted in name:
+                fallback = prim
+        return fallback
+
+    def _skeletal_joint_pose_overrides(
+        self,
+        equipment: Any,
+        animation_name: str,
+        joint_suffixes: tuple[str, ...] = (),
+        *,
+        joint_prefixes: tuple[str, ...] = (),
+        invert_selection: bool = False,
+        source_ratio: float = 1.0,
+    ) -> dict[str, dict[str, Any]]:
+        """Read selected joint poses from an unmodified cached source clip.
+
+        Imported excavator clips animate the complete skeleton. Consequently,
+        binding ``ArmDump`` after ``Rotate90`` would otherwise reset the upper
+        structure to its forward pose. These overrides let arm/bucket motion
+        come from the dump clip while the Rotator pose stays at the side.
+        """
+
+        from pxr import Usd
+
+        animation = self._find_skeletal_animation(equipment, animation_name)
+        if animation is None:
+            return {}
+
+        cache_key = str(animation.GetPath())
+        cached_clip = self._skeletal_clip_cache.get(cache_key)
+        if cached_clip is None:
+            animated_attributes = [
+                attribute
+                for attribute in animation.GetAttributes()
+                if attribute.GetName() in {"translations", "rotations", "scales"}
+                and attribute.GetNumTimeSamples() > 0
+            ]
+            samples = sorted(
+                {
+                    sample
+                    for attribute in animated_attributes
+                    for sample in attribute.GetTimeSamples()
+                }
+            )
+            if not samples:
+                return {}
+            source_values = {
+                attribute.GetName(): [
+                    attribute.Get(Usd.TimeCode(sample)) for sample in samples
+                ]
+                for attribute in animated_attributes
+            }
+            cached_clip = (len(samples), source_values)
+            self._skeletal_clip_cache[cache_key] = cached_clip
+
+        sample_count, source_values = cached_clip
+        source_index = min(
+            sample_count - 1,
+            max(0, round(float(source_ratio) * (sample_count - 1))),
+        )
+        joint_names = [
+            str(value)
+            for value in (animation.GetAttribute("joints").Get() or [])
+        ]
+        selected = set()
+        for index, name in enumerate(joint_names):
+            matches = skeletal_joint_matches(
+                name,
+                suffixes=joint_suffixes,
+                prefixes=joint_prefixes,
+            )
+            if matches != bool(invert_selection):
+                selected.add((index, name))
+        overrides: dict[str, dict[str, Any]] = {}
+        for attribute_name, values in source_values.items():
+            if source_index >= len(values) or values[source_index] is None:
+                continue
+            sample_value = values[source_index]
+            overrides[attribute_name] = {
+                name: sample_value[index]
+                for index, name in selected
+                if index < len(sample_value)
+            }
+        return overrides
+
+    def play_skeletal_animations_parallel(
+        self,
+        equipment_prims: list[Any],
+        animation_name: str,
+        *,
+        duration_seconds: float,
+        reverse: bool = False,
+        base_pose_animation_name: str | None = None,
+        animated_joint_suffixes: tuple[str, ...] = (),
+        animated_joint_prefixes: tuple[str, ...] = (),
+        pose_overlay_animation_name: str | None = None,
+        pose_overlay_joint_suffixes: tuple[str, ...] = (),
+        pose_overlay_joint_prefixes: tuple[str, ...] = (),
+        frame_callback: Callable[[float], None] | None = None,
+    ) -> list[str]:
+        """Play the same excavator clip on several machines concurrently."""
+
+        import omni.timeline
 
         timeline = omni.timeline.get_timeline_interface()
         time_codes_per_second = float(self.stage.GetTimeCodesPerSecond() or 24.0)
         start = float(timeline.get_current_time()) * time_codes_per_second
-        frames = max(2, min(240, round(max(0.25, duration_seconds) * time_codes_per_second)))
-        source_values = {
-            attribute.GetName(): [attribute.Get(Usd.TimeCode(sample)) for sample in samples]
-            for attribute in animated_attributes
-        }
-        for frame in range(frames + 1):
-            ratio = frame / frames
-            source_index = min(len(samples) - 1, round(ratio * (len(samples) - 1)))
-            destination_time = Usd.TimeCode(start + frame)
-            for attribute in animated_attributes:
-                value = source_values[attribute.GetName()][source_index]
-                if value is not None:
-                    attribute.Set(value, destination_time)
-        self.stage.SetEndTimeCode(max(float(self.stage.GetEndTimeCode()), start + frames + 1))
+        paths: list[str] = []
+        max_frames = 0
+        for equipment in equipment_prims:
+            joint_pose_overrides: dict[str, dict[str, Any]] = {}
+            if base_pose_animation_name:
+                joint_pose_overrides = self._skeletal_joint_pose_overrides(
+                    equipment,
+                    base_pose_animation_name,
+                    animated_joint_suffixes,
+                    joint_prefixes=animated_joint_prefixes,
+                    invert_selection=True,
+                )
+                if not any(joint_pose_overrides.values()):
+                    raise RuntimeError(
+                        "the requested base skeleton pose could not be read: "
+                        f"{base_pose_animation_name}"
+                    )
+            overlay_overrides = (
+                self._skeletal_joint_pose_overrides(
+                    equipment,
+                    pose_overlay_animation_name,
+                    pose_overlay_joint_suffixes,
+                    joint_prefixes=pose_overlay_joint_prefixes,
+                )
+                if pose_overlay_animation_name
+                and (pose_overlay_joint_suffixes or pose_overlay_joint_prefixes)
+                else {}
+            )
+            if (
+                pose_overlay_animation_name
+                and (pose_overlay_joint_suffixes or pose_overlay_joint_prefixes)
+                and not any(overlay_overrides.values())
+            ):
+                raise RuntimeError(
+                    "the requested skeletal pose overlay did not match any joints: "
+                    f"{pose_overlay_animation_name} / "
+                    f"{pose_overlay_joint_suffixes or pose_overlay_joint_prefixes}"
+                )
+            for attribute_name, values in overlay_overrides.items():
+                joint_pose_overrides.setdefault(attribute_name, {}).update(values)
+            path, frames = self._author_skeletal_animation(
+                equipment,
+                animation_name,
+                duration_seconds=duration_seconds,
+                start_time_code=start,
+                reverse=reverse,
+                joint_pose_overrides=joint_pose_overrides or None,
+            )
+            if path:
+                paths.append(path)
+            max_frames = max(max_frames, frames)
         timeline.play()
-        for _ in range(frames):
+        for frame in range(max_frames):
+            if frame_callback:
+                frame_callback(float(frame + 1) / float(max(1, max_frames)))
             if self._update_callback:
                 self._update_callback()
-        return str(animation.GetPath())
+        return paths
 
     def _bind_looping_skeletal_animation(
         self,
@@ -973,8 +1353,14 @@ class IsaacBridge:
         destination_xy: list[float],
         *,
         requested_seconds: float,
+        motion_frame_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        """Drive a dynamic excavator using PhysX velocities and track animation."""
+        """Drive a dynamic excavator using PhysX velocities and track animation.
+
+        ``motion_frame_callback`` receives the live carrier and track pose after
+        every rendered physics step.  Installation demos use it to keep a load
+        attached to the excavator while preserving the normal PhysX drive path.
+        """
 
         import math
         import omni.timeline
@@ -1101,6 +1487,20 @@ class IsaacBridge:
                 np.asarray([0.0, 0.0, math.radians(angular_speed)], dtype=np.float32)
             )
             self._update_callback()
+            if motion_frame_callback is not None:
+                callback_position, callback_orientation = controller.get_world_pose()
+                motion_frame_callback(
+                    {
+                        "root_position": [float(value) for value in callback_position],
+                        "root_orientation_wxyz": [
+                            float(value) for value in callback_orientation
+                        ],
+                        "track_position": [
+                            float(callback_position[index] + track_offset[index])
+                            for index in range(3)
+                        ],
+                    }
+                )
 
         controller.set_linear_velocity(np.zeros(3, dtype=np.float32))
         controller.set_angular_velocity(np.zeros(3, dtype=np.float32))
@@ -1146,8 +1546,10 @@ class IsaacBridge:
         self,
         equipment_prim_path: str,
         target_xy: list[float],
+        *,
+        motion_frame_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        """Rotate the physical carrier in place until its boom faces the target."""
+        """Rotate the physical carrier until its boom faces the target."""
 
         import math
         import omni.timeline
@@ -1167,6 +1569,12 @@ class IsaacBridge:
                 f"굴착기 물리 제어기가 준비되지 않았습니다: {equipment_prim_path}"
             )
 
+        start_track_pose = track_contact_pose(self.stage, equipment_prim_path)
+        callback_root_start, _ = controller.get_world_pose()
+        callback_track_offset = [
+            float(start_track_pose[axis]) - float(callback_root_start[index])
+            for index, axis in enumerate(("x", "y", "z"))
+        ]
         timeline = omni.timeline.get_timeline_interface()
         timeline.play()
         tolerance_degrees = max(
@@ -1225,6 +1633,20 @@ class IsaacBridge:
                 np.asarray([0.0, 0.0, math.radians(angular_speed)], dtype=np.float32)
             )
             self._update_callback()
+            if motion_frame_callback is not None:
+                callback_position, callback_orientation = controller.get_world_pose()
+                motion_frame_callback(
+                    {
+                        "root_position": [float(value) for value in callback_position],
+                        "root_orientation_wxyz": [
+                            float(value) for value in callback_orientation
+                        ],
+                        "track_position": [
+                            float(callback_position[index] + callback_track_offset[index])
+                            for index in range(3)
+                        ],
+                    }
+                )
 
         controller.set_linear_velocity(np.zeros(3, dtype=np.float32))
         controller.set_angular_velocity(np.zeros(3, dtype=np.float32))
@@ -1361,11 +1783,30 @@ class IsaacBridge:
             )
             if animation_path:
                 animation_paths.append(animation_path)
-        terrain_deformation = self._deform_diggable_mesh(target)
+        cut_ratio = float(
+            params.get(
+                "excavation_cut_ratio",
+                os.getenv("SITEGIT_EXCAVATION_CUT_RATIO", "0.9"),
+            )
+        )
+        terrain_deformation = self._deform_diggable_mesh(
+            target,
+            cut_ratio=cut_ratio,
+        )
         target_removed = not bool(terrain_deformation.get("available"))
         if target_removed:
             # Compatibility fallback for an old non-Mesh diggable target.
             target.SetActive(False)
+
+        swing_to_dump = bool(params.get("swing_to_dump", False))
+        if swing_to_dump:
+            swing_animation = self._play_skeletal_animation(
+                equipment,
+                "Rotate90",
+                duration_seconds=max(0.75, animation_phase_seconds),
+            )
+            if swing_animation:
+                animation_paths.append(swing_animation)
 
         dump_animation = self._play_skeletal_animation(
             equipment,
@@ -1385,7 +1826,18 @@ class IsaacBridge:
                 removed_volume_m3=float(
                     terrain_deformation.get("removed_volume_m3") or 0.0
                 ),
+                dump_side=float(params.get("dump_side", 1.0)),
             )
+
+        if swing_to_dump:
+            return_swing_animation = self._play_skeletal_animation(
+                equipment,
+                "Rotate90",
+                duration_seconds=max(0.75, animation_phase_seconds),
+                reverse=True,
+            )
+            if return_swing_animation:
+                animation_paths.append(return_swing_animation)
 
         # Removing a supporting soil Prim does not automatically wake a rigid
         # body that PhysX has put to sleep.  Wake it with a tiny downward
@@ -1509,6 +1961,10 @@ class IsaacBridge:
                 "authored-excavator-clips" if animation_paths else "equipment-root-approach"
             ),
             "animation_prim_paths": animation_paths,
+            "swing_to_dump": swing_to_dump,
+            "excavation_cut_ratio": float(
+                terrain_deformation.get("cut_ratio") or cut_ratio
+            ),
             "approach_plan": approach_plan,
             "facing": facing_result,
             "locomotion": drive_result,

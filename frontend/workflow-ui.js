@@ -1,25 +1,38 @@
 /* Manager-workflow UI layer. Isaac rendering and execution remain owned by app.js. */
-const workflowUI={mode:'compose',messages:[{role:'assistant',text:'현장 작업을 자연어로 설명해 주세요. Zone, 공종, 작업 구간과 목표량을 확인해 작업지시 초안을 만들겠습니다.'}],draft:null,reviewId:null,settingsTab:'criteria',equipmentId:null,historyZone:'ALL',reviewPhase:'excavation',planView:'drawing',publishing:false};
+const workflowUI={mode:'compose',messages:[{role:'assistant',text:'현장 작업을 자연어로 설명해 주세요. Zone, 공종, 작업 구간과 목표량을 확인해 작업지시 초안을 만들겠습니다.'}],draft:null,reviewId:null,scenarioRunId:null,settingsTab:'criteria',equipmentId:null,historyZone:'ALL',historyBranchesOpen:new Set(),reviewPhase:'excavation',planView:'drawing',publishing:false};
 if(state.selectedPage==='readiness')state.selectedPage='dashboard';
 
 function wfInstructionForWork(w){return (isaacInstructions||[]).find(item=>item.id===w?.isaacInstructionId||item.params?.work_package_id===w?.id)||null;}
 function wfCommitForWork(w){const instruction=wfInstructionForWork(w);return instruction?isaacLatestCommit(instruction):null;}
+function wfCommitNeedsRemediation(instruction){
+  const commit=isaacLatestCommit(instruction);
+  return commit?.review_status==='pending'&&commit?.result?.quality_assessment?.status==='needs_remediation';
+}
+function wfRemediationInstruction(instructions=[]){
+  return instructions.find(item=>item.params?.remediation_mode&&item.status!=='approved')||instructions.find(item=>item.params?.remediation_mode)||null;
+}
 function wfStatus(w){
   const instruction=wfInstructionForWork(w);
   const status=instruction?.status||w?.status;
+  if(wfCommitNeedsRemediation(instruction))return ['목표량 미달 · 검토 필요','warning'];
+  if(instruction?.params?.remediation_mode&&status!=='approved')return ['보완 작업 중','warning'];
   if(status==='approved'||status==='accepted'||status==='done'||Number(w?.qualified)>=100)return ['승인 완료','done'];
   if(status==='rejected'||status==='paused')return ['반려·Conflict','warning'];
-  if(status==='blocked')return ['자원 대기','warning'];
+  if(status==='blocked'&&instruction?.params?.phase_approval_ready)return ['다음 공정 계획 승인','review'];
+  if(status==='blocked')return ['선행 공정 승인 대기','locked'];
   if(status==='correction'||status==='correction-issued')return ['보완 중','warning'];
-  if(status==='committed'||status==='review'||Number(w?.qualified)>0)return ['검토 대기','review'];
   if(status==='dispatched'||status==='executing')return ['Isaac 실행 중','active'];
-  if(status==='pending')return ['Isaac 대기','locked'];
+  if(status==='pending')return ['Isaac 대기','active'];
+  if(status==='committed'||status==='review'||Number(w?.qualified)>0)return ['검토 대기','review'];
   return ['대기','locked'];
 }
 function wfProgress(w){
   const instruction=wfInstructionForWork(w);
   if(instruction?.status==='approved')return 100;
   if(['committed','rejected'].includes(instruction?.status))return 100;
+  if(instruction?.status==='dispatched'||['dispatched','executing'].includes(w?.status)){
+    return Math.max(0,Math.min(100,Number(w?.raw??0)));
+  }
   return Math.max(0,Math.min(100,Number(w?.qualified??w?.raw??0)));
 }
 function wfEquipmentLabel(w){
@@ -40,7 +53,7 @@ function wfMapFrame({controls=true,planning=false}={}){
   const captionTitle=planning?'도면 작업 예정 구간':activeMapLayer==='zone'?'작업 Zone':activeMapLayer==='timeline'?'Commit Timeline':activeMapLayer==='drawing'?'승인 도면 · 지하 관로':'현재 현장 맵';
   const captionDetail=planning?'노란 점선 전체는 Zone A, 내부 색상은 장비별 작업전선 1~3입니다.':activeMapLayer==='zone'?'새 작업 지시의 실제 대상 범위를 표시합니다.':activeMapLayer==='timeline'?'새 승인 Commit을 순서대로 재생합니다.':activeMapLayer==='drawing'?(approvedSitePlan?`${approvedSitePlan.design.plan_id} Rev.${approvedSitePlan.design.revision} · X-ray 설계 관로`:'승인 도면을 등록해 주세요.'):'관리자 승인으로 Merge된 작업 결과를 표시합니다.';
   const toolbar=controls?`<div class="workflow-map-toolbar map-toolbar"><div class="segmented"><button class="${activeMapLayer==='work'?'active':''}" data-map-layer="work">Work</button><button class="${activeMapLayer==='zone'?'active':''}" data-map-layer="zone">Zone</button><button class="${activeMapLayer==='timeline'?'active':''}" data-map-layer="timeline">Timeline</button><button class="${activeMapLayer==='drawing'?'active':''}" data-map-layer="drawing">도면</button></div><button class="ghost-button button-sm" data-action="manage-drawings">도면 관리</button><button class="ghost-button button-sm" data-action="fit-map">화면 맞춤</button></div>`:'';
-  return `<div class="workflow-map-shell ${planning?'planning':''}">${toolbar}<iframe class="workflow-map" ${planning?'data-planning-map="1"':''} src="/static/isaac-map-viewer.html?v=20260820-drawing-xray-6" title="${planning?'관로 도면 작업 예정 구간':'Isaac 현장 맵'}"></iframe><div class="workflow-map-caption"><b>${captionTitle}</b><span>${captionDetail}</span></div>${controls?`<div class="map-timeline-shell map-timeline-control ${activeMapLayer==='timeline'?'active':''}">${timelineControlMarkup()}</div>`:''}</div>`;
+  return `<div class="workflow-map-shell ${planning?'planning':''}">${toolbar}<iframe class="workflow-map" ${planning?'data-planning-map="1"':''} src="/static/isaac-map-viewer.html?v=20260823-current-ui-1" title="${planning?'관로 도면 작업 예정 구간':'Isaac 현장 맵'}"></iframe><div class="workflow-map-caption"><b>${captionTitle}</b><span>${captionDetail}</span></div>${controls?`<div class="map-timeline-shell map-timeline-control ${activeMapLayer==='timeline'?'active':''}">${timelineControlMarkup()}</div>`:''}</div>`;
 }
 
 renderDashboard=function(){
@@ -62,11 +75,50 @@ renderWorkPackages=function(){
 function wfInstructionForm(d,c){if(d.design)return wfDrawingInstructionForm(d,c);return `<div class="workflow-page"><div class="workflow-page-head"><div><h2>작업지시 초안</h2><p>AI가 대화 내용을 구조화했습니다. 발행 전 관리자가 모든 값을 확인합니다.</p></div><button class="ghost-button" data-workflow-action="back-chat">← 대화로 돌아가기</button></div><div class="instruction-form-layout"><section class="workflow-panel structured-form"><div class="form-section"><h3>작업 기본 정보</h3><div class="workflow-form-grid"><label>작업 구역<input id="wfZone" value="${esc(d.zone)}"></label><label>공종<input id="wfTask" value="${esc(d.task)}"></label><label class="wide">작업명<input id="wfTitle" value="${esc(d.title)}"></label><label>목표 작업량<input id="wfTarget" type="number" value="${d.target}"></label><label>단위<input id="wfUnit" value="${esc(d.unit)}"></label><label class="wide">작업 구간<input id="wfSegment" value="${esc(d.segment)}"></label></div></div><div class="form-section"><h3>완료·승인 판정 기준</h3><div class="criteria-inline"><label>바닥 Level 허용오차<input id="wfTolerance" type="number" value="${c.tolerance}"><span>mm</span></label><label>완료 기준<input id="wfCompletion" type="number" value="${c.completion}"><span>%</span></label><label>Evidence 완전성<input id="wfObservation" type="number" value="${c.observation}"><span>%</span></label></div></div><div class="form-section"><h3>장비·후속 작업</h3><div class="workflow-form-grid"><label>장비 제안<input id="wfEquipment" value="${esc(d.equipment)}"></label><label>후속 작업<input id="wfSuccessor" value="${esc(d.successor)}"></label></div></div><footer><span><b>발행 준비 완료</b> · 관리자 확인 시 Stage 자원을 검증하고 Isaac 실행 대기열로 전송합니다.</span><button class="primary-button" data-workflow-action="publish-instruction" ${workflowUI.publishing?'disabled':''}>${workflowUI.publishing?'Isaac 검증·전송 중…':'관리자 확인 · 작업 발행'}</button></footer></section><aside class="workflow-panel precheck"><h3>작업 준비 확인</h3>${[['작업 구역',d.zone],['목표 작업량',`${d.target}${d.unit}`],['완료 기준',c.name],['장비 배정',d.equipment]].map(x=>`<div><i>✓</i><span>${x[0]}</span><b>${esc(String(x[1]))}</b></div>`).join('')}<p>발행 후 작업 현황에서 실제 Isaac 상태를 추적할 수 있습니다.</p></aside></div></div>`;}
 
 function wfDesignUnit(unit){return unit==='m3'?'㎥':unit==='ea'?'개':'m';}
+function wfScenarioZoneId(design=approvedSitePlan?.design){return String(design?.zone_id||design?.phases?.[0]?.zone_id||'A');}
+function wfScenarioZoneTitle(design=approvedSitePlan?.design){return String(design?.zone_title||'관로 공사');}
+function wfPhaseStep(phase,index=-1){const order=Number(phase?.order);return Number.isFinite(order)&&order>0?order:index+1;}
+function wfPhaseBadge(phase,index=-1){return `${wfPhaseStep(phase,index)}단계`;}
+function wfPhaseCss(phase,index=-1){return `zone-${['a','b','c'][Math.max(0,wfPhaseStep(phase,index)-1)]||'a'}`;}
 function wfCurrentPhaseId(draft){const text=`${draft?.task||''} ${draft?.title||''}`;if(/되메우|복토/.test(text))return 'backfill';if(/관로 설치|관매설|배관 설치/.test(text))return 'pipe_installation';return 'excavation';}
+function wfReadyScenarioPhaseInstruction(scenarioRunId=''){
+  return [...(isaacInstructions||[])]
+    .filter(item=>item.status==='blocked'&&item.params?.phase_approval_ready&&item.params?.scenario_plan_id&&(!scenarioRunId||item.params?.scenario_run_id===scenarioRunId))
+    .sort((left,right)=>(Date.parse(right.params?.ready_at||right.updated_at||0)||0)-(Date.parse(left.params?.ready_at||left.updated_at||0)||0))[0]||null;
+}
+function wfOpenReadyScenarioPhasePlan(scenarioRunId=''){
+  const instruction=wfReadyScenarioPhaseInstruction(scenarioRunId);
+  const design=approvedSitePlan?.design;
+  if(!instruction||!design||design.plan_id!==instruction.params?.scenario_plan_id)return false;
+  const phase=(design.phases||[]).find(item=>item.id===instruction.params?.scenario_phase_id);
+  if(!phase)return false;
+  const nextPhase=(design.phases||[]).find(item=>Number(item.order)===Number(phase.order)+1);
+  workflowUI.draft={
+    sourceText:instruction.params?.source_text||`${design.title} ${phase.title}`,
+    summary:`Zone ${wfScenarioZoneId(design)} 관로 공사의 ${wfPhaseBadge(phase)} ${phase.title} 계획이 열렸습니다. 선행 공정 Evidence 승인 결과를 기준으로 장비·작업량·판정 기준을 확인한 뒤 하달합니다.`,
+    zone:`Zone ${wfScenarioZoneId(design)}`,
+    task:phase.title,
+    title:`${design.work_area_label} ${phase.title}`,
+    target:Number(phase.target_amount||0),
+    unit:phase.target_unit,
+    segment:design.station_range,
+    equipment:(phase.equipment||[]).join(' + '),
+    successor:nextPhase?.title||'관로 공사 완료',
+    scenarioRunId:instruction.params?.scenario_run_id||'',
+    design,
+  };
+  workflowUI.mode='form';
+  workflowUI.planView='drawing';
+  setIsaacPlanningOverlay(design);
+  navigate('workpackages');
+  renderAll();
+  window.scrollTo({top:0,behavior:'smooth'});
+  return true;
+}
 function wfPhaseCriteriaPanel(phases,draft=workflowUI.draft){
   const selected=phases.find(phase=>phase.id===wfCurrentPhaseId(draft))||phases[0];
   if(!selected)return '';
-  return `<div class="form-section phase-criteria-section"><div class="section-title-row"><div><h3>Zone ${esc(selected.zone_id)} · ${esc(selected.title)} 완료·승인 판정 기준</h3><p>현재 하달할 공정의 도면 검측 기준만 적용됩니다.</p></div><span>현재 공정</span></div><div class="phase-criteria-list">${(selected.acceptance_criteria||[]).map((criterion,index)=>`<div><i>${index+1}</i><span>${esc(criterion)}</span><b>${index===selected.acceptance_criteria.length-1?'Evidence':'검측'}</b></div>`).join('')}</div></div>`;
+  return `<div class="form-section phase-criteria-section"><div class="section-title-row"><div><h3>${wfPhaseBadge(selected)} ${esc(selected.title)} 완료·승인 판정 기준</h3><p>Zone ${esc(wfScenarioZoneId(draft?.design))}에서 현재 하달할 공정의 도면 검측 기준만 적용됩니다.</p></div><span>현재 공정</span></div><div class="phase-criteria-list">${(selected.acceptance_criteria||[]).map((criterion,index)=>`<div><i>${index+1}</i><span>${esc(criterion)}</span><b>${index===selected.acceptance_criteria.length-1?'Evidence':'검측'}</b></div>`).join('')}</div></div>`;
 }
 function wfPipelineDrawing(design){
   const source=(design.centerline||[]).map(point=>({station:Number(point.station_m),x:Number(point.x),y:Number(point.y),width:Number(point.width_m)})).filter(point=>Object.values(point).every(Number.isFinite));
@@ -83,19 +135,22 @@ function wfPipelineDrawing(design){
   const polygon=[...left,...right].map(point=>`${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
   const centerline=source.map(point=>{const projected=project(point);return `${projected.x.toFixed(1)},${projected.y.toFixed(1)}`;}).join(' ');
   const frontColors=['#2f96bd','#9b68cc','#35aa83'];
-  const fronts=(design.workfronts||[]).map((front,index)=>{const segment=source.filter(point=>point.station>=Number(front.station_start_m)-.01&&point.station<=Number(front.station_end_m)+.01);if(segment.length<2)return '';const line=segment.map(point=>{const projected=project(point);return `${projected.x.toFixed(1)},${projected.y.toFixed(1)}`;}).join(' ');const midpoint=project(segment[Math.floor(segment.length/2)]);const color=frontColors[index%frontColors.length];return `<polyline class="pipeline-front" points="${line}" style="--front:${color}"></polyline><g class="pipeline-zone-label" transform="translate(${midpoint.x.toFixed(1)} ${midpoint.y.toFixed(1)})"><rect x="-39" y="-15" width="78" height="30" rx="6"></rect><text text-anchor="middle" y="-1">ZONE A · F${index+1}</text><text class="equipment" text-anchor="middle" y="10">${esc(front.equipment_id)}</text></g>`;}).join('');
+  const fronts=(design.workfronts||[]).map((front,index)=>{const segment=source.filter(point=>point.station>=Number(front.station_start_m)-.01&&point.station<=Number(front.station_end_m)+.01);if(segment.length<2)return '';const line=segment.map(point=>{const projected=project(point);return `${projected.x.toFixed(1)},${projected.y.toFixed(1)}`;}).join(' ');const midpoint=project(segment[Math.floor(segment.length/2)]);const color=frontColors[index%frontColors.length];return `<polyline class="pipeline-front" points="${line}" style="--front:${color}"></polyline><g class="pipeline-zone-label" transform="translate(${midpoint.x.toFixed(1)} ${midpoint.y.toFixed(1)})"><rect x="-39" y="-15" width="78" height="30" rx="6"></rect><text text-anchor="middle" y="-1">FRONT F${index+1}</text><text class="equipment" text-anchor="middle" y="10">${esc(front.equipment_id)}</text></g>`;}).join('');
   const stations=source.map((point,index)=>{const projected=project(point);const anchor=index%2?'start':'end';const offset=index%2?10:-10;return `<circle class="pipeline-station" cx="${projected.x.toFixed(1)}" cy="${projected.y.toFixed(1)}" r="4"></circle><text class="pipeline-station-label" x="${(projected.x+offset).toFixed(1)}" y="${(projected.y-9).toFixed(1)}" text-anchor="${anchor}">STA ${point.station.toFixed(1)} · W ${point.width.toFixed(1)}m</text>`;}).join('');
-  return `<div class="pipeline-drawing"><svg viewBox="0 0 ${canvas.width} ${canvas.height}" role="img" aria-label="${esc(design.title)} 평면도"><defs><pattern id="drawingGrid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M 24 0 L 0 0 0 24" fill="none" stroke="#bfd7dd" stroke-width=".6"></path></pattern><pattern id="soilHatch" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><line x1="0" y1="0" x2="0" y2="12" stroke="#b9994f" stroke-width="2"></line></pattern></defs><rect width="100%" height="100%" fill="#f6fbfc"></rect><rect width="100%" height="100%" fill="url(#drawingGrid)"></rect><polygon class="pipeline-corridor" points="${polygon}"></polygon><polyline class="pipeline-centerline" points="${centerline}"></polyline>${fronts}${stations}<g class="pipeline-north" transform="translate(54 56)"><circle r="25"></circle><path d="M0 -18 L8 8 L0 3 L-8 8 Z"></path><text y="-28" text-anchor="middle">N</text></g><g class="pipeline-section" transform="translate(714 386)"><rect width="176" height="124" rx="8"></rect><text class="title" x="14" y="22">대표 단면</text><path class="ground" d="M14 48 H162"></path><path class="trench" d="M42 48 L58 101 H118 L134 48"></path><circle class="pipe" cx="88" cy="82" r="18"></circle><text x="14" y="116">깊이 ${design.design_depth_m}m · 관경 Ø${design.pipe_diameter_m}m</text></g><g class="pipeline-title"><text x="78" y="30">${esc(design.plan_id)} · REV.${esc(design.revision)}</text><text class="sub" x="78" y="48">${esc(design.station_range)} · L=${design.total_length_m}m · 좌표 단위 m</text></g></svg><div class="pipeline-drawing-legend"><span><i class="zone-a"></i>Zone A · 터파기</span><span><i class="zone-b"></i>Zone B · 관로 설치</span><span><i class="zone-c"></i>Zone C · 되메우기</span><span><i class="soil"></i>작업전선 1~3</span><b>Zone=공정 · Front=장비별 구간</b></div></div>`;
+  return `<div class="pipeline-drawing"><svg viewBox="0 0 ${canvas.width} ${canvas.height}" role="img" aria-label="${esc(design.title)} 평면도"><defs><pattern id="drawingGrid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M 24 0 L 0 0 0 24" fill="none" stroke="#bfd7dd" stroke-width=".6"></path></pattern><pattern id="soilHatch" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><line x1="0" y1="0" x2="0" y2="12" stroke="#b9994f" stroke-width="2"></line></pattern></defs><rect width="100%" height="100%" fill="#f6fbfc"></rect><rect width="100%" height="100%" fill="url(#drawingGrid)"></rect><polygon class="pipeline-corridor" points="${polygon}"></polygon><polyline class="pipeline-centerline" points="${centerline}"></polyline>${fronts}${stations}<g class="pipeline-north" transform="translate(54 56)"><circle r="25"></circle><path d="M0 -18 L8 8 L0 3 L-8 8 Z"></path><text y="-28" text-anchor="middle">N</text></g><g class="pipeline-section" transform="translate(714 386)"><rect width="176" height="124" rx="8"></rect><text class="title" x="14" y="22">대표 단면</text><path class="ground" d="M14 48 H162"></path><path class="trench" d="M42 48 L58 101 H118 L134 48"></path><circle class="pipe" cx="88" cy="82" r="18"></circle><text x="14" y="116">깊이 ${design.design_depth_m}m · 관경 Ø${design.pipe_diameter_m}m</text></g><g class="pipeline-title"><text x="78" y="30">${esc(design.plan_id)} · REV.${esc(design.revision)}</text><text class="sub" x="78" y="48">${esc(design.station_range)} · L=${design.total_length_m}m · 좌표 단위 m</text></g></svg><div class="pipeline-drawing-legend"><span><i class="zone-a"></i>Zone ${esc(wfScenarioZoneId(design))} · ${esc(wfScenarioZoneTitle(design))}</span><span><i class="zone-b"></i>1단계 터파기</span><span><i class="zone-c"></i>2단계 관로 설치 → 3단계 되메우기</span><span><i class="soil"></i>작업전선 1~3</span><b>Zone=대형 공사 구역 · Phase=내부 공정 · Front=장비별 구간</b></div></div>`;
 }
 
 function wfSequentialPhaseInstructionForm(d){
   const design=d.design;const phases=design.phases||[];
   const currentIndex=Math.max(0,phases.findIndex(phase=>phase.id===wfCurrentPhaseId(d)));
   const current=phases[currentIndex]||phases[0];
-  const flow=phases.map((phase,index)=>{const stateClass=index<currentIndex?'completed':index===currentIndex?'ready':'locked';const stateLabel=index<currentIndex?'승인 완료':index===currentIndex?'하달 대상':'선행 승인 후';return `<div class="scenario-phase ${stateClass}"><span>${esc(phase.zone_id)}</span><div><b>Zone ${esc(phase.zone_id)} · ${esc(phase.title)}</b><small>${num(phase.target_amount)}${wfDesignUnit(phase.target_unit)} · 약 ${phase.estimated_hours}h</small></div><em>${stateLabel}</em></div>${index<phases.length-1?'<i class="scenario-arrow">→</i>':''}`}).join('');
-  const resources=(current.equipment||[]).map(item=>`<div class="workfront-row"><span class="zone-token zone-${String(current.zone_id).toLowerCase()}">ZONE ${esc(current.zone_id)}</span><div><b>${esc(item)}</b><small>${esc(current.title)} 계획 장비</small></div><div><b>${num(current.target_amount)}${wfDesignUnit(current.target_unit)}</b><small>${esc(design.station_range)}</small></div><em class="waiting">발행 시 검증</em></div>`).join('');
+  const flow=phases.map((phase,index)=>{const stateClass=index<currentIndex?'completed':index===currentIndex?'ready':'locked';const stateLabel=index<currentIndex?'승인 완료':index===currentIndex?'하달 대상':'선행 승인 후';return `<div class="scenario-phase ${stateClass}"><span>${wfPhaseStep(phase,index)}</span><div><b>${wfPhaseBadge(phase,index)} · ${esc(phase.title)}</b><small>Zone ${esc(wfScenarioZoneId(design))} · ${num(phase.target_amount)}${wfDesignUnit(phase.target_unit)} · 약 ${phase.estimated_hours}h</small></div><em>${stateLabel}</em></div>${index<phases.length-1?'<i class="scenario-arrow">→</i>':''}`}).join('');
+  const registered=(isaacInstructions||[]).filter(item=>item.params?.scenario_run_id===d.scenarioRunId&&item.params?.scenario_phase_id===current.id);
+  const resources=registered.length
+    ?registered.map((item,index)=>{const params=item.params||{};const quantity=params.planned_quantity||{};return `<div class="workfront-row"><span class="zone-token ${wfPhaseCss(current,currentIndex)}">${esc(params.workfront_id||`F${index+1}`)}</span><div><b>${esc(params.equipment_name||'장비 미정')}</b><small>${esc(params.target_name||current.title)}</small></div><div><b>${num(quantity.value||0)}${wfDesignUnit(quantity.unit||current.target_unit)}</b><small>${esc(params.station_range||design.station_range)}</small></div><em class="ready">Stage 확인 완료</em></div>`;}).join('')
+    :(current.equipment||[]).map((item,index)=>`<div class="workfront-row"><span class="zone-token ${wfPhaseCss(current,currentIndex)}">F${index+1}</span><div><b>${esc(item)}</b><small>${esc(current.title)} 계획 장비</small></div><div><b>${num(current.target_amount)}${wfDesignUnit(current.target_unit)}</b><small>${esc(design.station_range)}</small></div><em class="waiting">발행 시 검증</em></div>`).join('');
   const totalHours=phases.reduce((sum,phase)=>sum+Number(phase.estimated_hours||0),0).toFixed(1);
-  return `<div class="workflow-page drawing-plan-page"><div class="workflow-page-head"><div><h2>도면 기반 작업 계획</h2><p>선행 공정 승인 후 열린 현재 공정만 검토하고 하달합니다.</p></div><button class="ghost-button" data-workflow-action="back-chat">← 대화로 돌아가기</button></div><div class="drawing-plan-layout"><section class="workflow-panel structured-form"><div class="drawing-reference"><div><span>CURRENT PHASE</span><b>Zone ${esc(current.zone_id)} · ${esc(current.title)}</b><small>${esc(design.plan_id)} · Rev.${esc(design.revision)}</small></div><dl><div><dt>작업 구간</dt><dd>${esc(design.station_range)}</dd></div><div><dt>목표 작업량</dt><dd>${num(current.target_amount)}${wfDesignUnit(current.target_unit)}</dd></div><div><dt>예상 시간</dt><dd>${current.estimated_hours}h</dd></div><div><dt>선행 공정</dt><dd>${(current.depends_on||[]).length?'승인 완료':'없음'}</dd></div></dl></div><div class="form-section"><h3>AI 작업 계획</h3><p class="plan-summary">${esc(d.summary)}</p><div class="scenario-flow">${flow}</div></div><div class="form-section"><div class="section-title-row"><div><h3>Zone ${esc(current.zone_id)} · ${esc(current.title)} 작업 자원</h3><p>현재 공정에 필요한 장비만 발행 시점의 Isaac Stage에서 검증합니다.</p></div><span>현재 공정</span></div><div class="workfront-list">${resources}</div></div>${wfPhaseCriteriaPanel(phases,d)}<input id="wfZone" type="hidden" value="${esc(d.zone)}"><input id="wfTask" type="hidden" value="${esc(d.task)}"><input id="wfTitle" type="hidden" value="${esc(d.title)}"><input id="wfTarget" type="hidden" value="${d.target}"><input id="wfUnit" type="hidden" value="${esc(d.unit)}"><input id="wfSegment" type="hidden" value="${esc(d.segment)}"><input id="wfEquipment" type="hidden" value="${esc(d.equipment)}"><input id="wfSuccessor" type="hidden" value="${esc(d.successor)}"><footer><span><b>현재 공정만 하달</b> · Zone ${esc(current.zone_id)} 승인 전에는 다음 공정이 열리지 않습니다.</span><button class="primary-button" data-workflow-action="publish-instruction" ${workflowUI.publishing?'disabled':''}>${workflowUI.publishing?'Isaac 자원 검증 중…':`계획 승인 · ${esc(current.title)} 하달`}</button></footer></section><aside class="drawing-plan-aside"><section class="workflow-panel plan-map-panel"><header><div><h3>${workflowUI.planView==='drawing'?'관로 공사 도면':'현재 공정 작업 구간'}</h3><p>Zone ${esc(current.zone_id)} · ${esc(current.title)}</p></div><div class="plan-view-toggle"><button class="${workflowUI.planView==='map'?'active':''}" data-workflow-action="set-plan-view" data-plan-view="map">현장 3D</button><button class="${workflowUI.planView==='drawing'?'active':''}" data-workflow-action="set-plan-view" data-plan-view="drawing">관로 도면</button></div></header>${workflowUI.planView==='drawing'?wfPipelineDrawing(design):wfMapFrame({controls:false,planning:true})}</section><section class="workflow-panel precheck"><h3>현재 공정 요약</h3>${[['Zone',current.zone_id],['공정',current.title],['목표',`${num(current.target_amount)}${wfDesignUnit(current.target_unit)}`],['전체 순 작업시간',`${totalHours}h`]].map(x=>`<div><i>✓</i><span>${x[0]}</span><b>${esc(String(x[1]))}</b></div>`).join('')}<p>과거 Zone의 판정 기준은 이 계획 화면에 다시 표시하지 않습니다.</p></section></aside></div></div>`;
+  return `<div class="workflow-page drawing-plan-page"><div class="workflow-page-head"><div><h2>도면 기반 작업 계획</h2><p>Zone ${esc(wfScenarioZoneId(design))} 관로 공사에서 선행 단계가 승인된 현재 공정만 검토하고 하달합니다.</p></div><button class="ghost-button" data-workflow-action="back-chat">← 대화로 돌아가기</button></div><div class="drawing-plan-layout"><section class="workflow-panel structured-form"><div class="drawing-reference"><div><span>CURRENT PHASE</span><b>${wfPhaseBadge(current,currentIndex)} · ${esc(current.title)}</b><small>Zone ${esc(wfScenarioZoneId(design))} · ${esc(wfScenarioZoneTitle(design))} · ${esc(design.plan_id)} Rev.${esc(design.revision)}</small></div><dl><div><dt>작업 구간</dt><dd>${esc(design.station_range)}</dd></div><div><dt>목표 작업량</dt><dd>${num(current.target_amount)}${wfDesignUnit(current.target_unit)}</dd></div><div><dt>예상 시간</dt><dd>${current.estimated_hours}h</dd></div><div><dt>선행 공정</dt><dd>${(current.depends_on||[]).length?'승인 완료':'없음'}</dd></div></dl></div><div class="form-section"><h3>AI 작업 계획</h3><p class="plan-summary">${esc(d.summary)}</p><div class="scenario-flow">${flow}</div></div><div class="form-section"><div class="section-title-row"><div><h3>${wfPhaseBadge(current,currentIndex)} · ${esc(current.title)} 작업 자원</h3><p>현재 공정에 필요한 장비만 발행 시점의 Isaac Stage에서 검증합니다.</p></div><span>Zone ${esc(wfScenarioZoneId(design))}</span></div><div class="workfront-list">${resources}</div></div>${wfPhaseCriteriaPanel(phases,d)}<input id="wfZone" type="hidden" value="${esc(d.zone)}"><input id="wfTask" type="hidden" value="${esc(d.task)}"><input id="wfTitle" type="hidden" value="${esc(d.title)}"><input id="wfTarget" type="hidden" value="${d.target}"><input id="wfUnit" type="hidden" value="${esc(d.unit)}"><input id="wfSegment" type="hidden" value="${esc(d.segment)}"><input id="wfEquipment" type="hidden" value="${esc(d.equipment)}"><input id="wfSuccessor" type="hidden" value="${esc(d.successor)}"><footer><span><b>현재 단계만 하달</b> · ${wfPhaseBadge(current,currentIndex)} 승인 전에는 다음 단계가 열리지 않습니다.</span><button class="primary-button" data-workflow-action="publish-instruction" ${workflowUI.publishing?'disabled':''}>${workflowUI.publishing?'Isaac 자원 검증 중…':`계획 승인 · ${wfPhaseBadge(current,currentIndex)} 하달`}</button></footer></section><aside class="drawing-plan-aside"><section class="workflow-panel plan-map-panel"><header><div><h3>${workflowUI.planView==='drawing'?'관로 공사 도면':'현재 공정 작업 구간'}</h3><p>Zone ${esc(wfScenarioZoneId(design))} · ${wfPhaseBadge(current,currentIndex)} ${esc(current.title)}</p></div><div class="plan-view-toggle"><button class="${workflowUI.planView==='map'?'active':''}" data-workflow-action="set-plan-view" data-plan-view="map">현장 3D</button><button class="${workflowUI.planView==='drawing'?'active':''}" data-workflow-action="set-plan-view" data-plan-view="drawing">관로 도면</button></div></header>${workflowUI.planView==='drawing'?wfPipelineDrawing(design):wfMapFrame({controls:false,planning:true})}</section><section class="workflow-panel precheck"><h3>현재 공정 요약</h3>${[['Zone',`${wfScenarioZoneId(design)} · ${wfScenarioZoneTitle(design)}`],['공정 단계',`${wfPhaseBadge(current,currentIndex)} · ${current.title}`],['목표',`${num(current.target_amount)}${wfDesignUnit(current.target_unit)}`],['전체 순 작업시간',`${totalHours}h`]].map(x=>`<div><i>✓</i><span>${x[0]}</span><b>${esc(String(x[1]))}</b></div>`).join('')}<p>완료된 단계의 판정 기준은 현재 계획 화면에 반복 표시하지 않습니다.</p></section></aside></div></div>`;
 }
 
 function wfDrawingInstructionForm(d,c){
@@ -104,8 +159,8 @@ function wfDrawingInstructionForm(d,c){
   const currentPhaseIndex=Math.max(0,phases.findIndex(phase=>phase.id===wfCurrentPhaseId(d)));
   const knownEquipment=new Set((stageInventory?.equipment||[]).filter(item=>item.active).map(item=>item.path));
   const knownTargets=new Set((stageInventory?.diggable_targets||[]).filter(item=>item.active).map(item=>item.path));
-  const flow=phases.map((phase,index)=>{const stateClass=index<currentPhaseIndex?'completed':index===currentPhaseIndex?'ready':'locked';const stateLabel=index<currentPhaseIndex?'승인 완료':index===currentPhaseIndex?'하달 대상':'선행 승인 후';return `<div class="scenario-phase ${stateClass}"><span>${esc(phase.zone_id)}</span><div><b>Zone ${esc(phase.zone_id)} · ${esc(phase.title)}</b><small>${num(phase.target_amount)}${wfDesignUnit(phase.target_unit)} · 약 ${phase.estimated_hours}h</small></div><em>${stateLabel}</em></div>${index<phases.length-1?'<i class="scenario-arrow">→</i>':''}`}).join('');
-  const frontRows=fronts.map((front,index)=>{const equipmentOk=knownEquipment.has(front.equipment_prim_path);const targetsOk=(front.target_prim_paths||[]).every(path=>knownTargets.has(path));const ready=stageInventory?.connected&&equipmentOk&&targetsOk;return `<div class="workfront-row"><span class="zone-token zone-a">ZONE A · F${index+1}</span><div><b>${esc(front.label)}</b><small>STA ${front.station_start_m} ~ ${front.station_end_m}m · ${num(front.target_volume_m3)}㎥</small></div><div><b>${esc(front.equipment_id)}</b><small>${front.target_prim_paths.length}개 굴착 Prim</small></div><em class="${ready?'ready':'waiting'}">${ready?'실행 가능':'자원 대기'}</em></div>`}).join('');
+  const flow=phases.map((phase,index)=>{const stateClass=index<currentPhaseIndex?'completed':index===currentPhaseIndex?'ready':'locked';const stateLabel=index<currentPhaseIndex?'승인 완료':index===currentPhaseIndex?'하달 대상':'선행 승인 후';return `<div class="scenario-phase ${stateClass}"><span>${wfPhaseStep(phase,index)}</span><div><b>${wfPhaseBadge(phase,index)} · ${esc(phase.title)}</b><small>Zone ${esc(wfScenarioZoneId(design))} · ${num(phase.target_amount)}${wfDesignUnit(phase.target_unit)} · 약 ${phase.estimated_hours}h</small></div><em>${stateLabel}</em></div>${index<phases.length-1?'<i class="scenario-arrow">→</i>':''}`}).join('');
+  const frontRows=fronts.map((front,index)=>{const equipmentOk=knownEquipment.has(front.equipment_prim_path);const targetsOk=(front.target_prim_paths||[]).every(path=>knownTargets.has(path));const ready=stageInventory?.connected&&equipmentOk&&targetsOk;return `<div class="workfront-row"><span class="zone-token zone-a">작업전선 F${index+1}</span><div><b>${esc(front.label)}</b><small>STA ${front.station_start_m} ~ ${front.station_end_m}m · ${num(front.target_volume_m3)}㎥</small></div><div><b>${esc(front.equipment_id)}</b><small>${front.target_prim_paths.length}개 굴착 Prim</small></div><em class="${ready?'ready':'waiting'}">${ready?'실행 가능':'자원 대기'}</em></div>`}).join('');
   const totalHours=phases.reduce((sum,phase)=>sum+Number(phase.estimated_hours||0),0).toFixed(1);
   return `<div class="workflow-page drawing-plan-page"><div class="workflow-page-head"><div><h2>도면 기반 작업 계획</h2><p>LLM이 승인 도면을 조회해 수량·장비·선후 공정을 구성했습니다. 아직 Isaac Stage에는 반영되지 않았습니다.</p></div><button class="ghost-button" data-workflow-action="back-chat">← 대화로 돌아가기</button></div><div class="drawing-plan-layout"><section class="workflow-panel structured-form"><div class="drawing-reference"><div><span>APPROVED DRAWING</span><b>${esc(design.plan_id)} · Rev.${esc(design.revision)}</b><small>${esc(design.title)} · ${esc(design.source_map)}</small></div><dl><div><dt>작업 구간</dt><dd>${esc(design.station_range)}</dd></div><div><dt>총 연장</dt><dd>${design.total_length_m}m</dd></div><div><dt>설계 깊이</dt><dd>${design.design_depth_m}m</dd></div><div><dt>관 외경</dt><dd>${design.pipe_diameter_m}m</dd></div></dl></div><div class="form-section"><h3>AI 작업 계획</h3><p class="plan-summary">${esc(d.summary)}</p><div class="scenario-flow">${flow}</div></div><div class="form-section"><div class="section-title-row"><div><h3>1단계 터파기 작업전선</h3><p>3대가 독립 구간을 작업하고 각각 Evidence Commit을 생성합니다.</p></div><span>${fronts.length}개 Work Package</span></div><div class="workfront-list">${frontRows}</div></div>${wfPhaseCriteriaPanel(phases)}<input id="wfZone" type="hidden" value="${esc(d.zone)}"><input id="wfTask" type="hidden" value="${esc(d.task)}"><input id="wfTitle" type="hidden" value="${esc(d.title)}"><input id="wfTarget" type="hidden" value="${d.target}"><input id="wfUnit" type="hidden" value="${esc(d.unit)}"><input id="wfSegment" type="hidden" value="${esc(d.segment)}"><input id="wfEquipment" type="hidden" value="${esc(d.equipment)}"><input id="wfSuccessor" type="hidden" value="${esc(d.successor)}"><footer><span><b>관리자 승인 시 1단계만 하달</b> · 관로 설치와 되메우기는 선행 Evidence 승인 전까지 잠깁니다.</span><button class="primary-button" data-workflow-action="publish-instruction" ${workflowUI.publishing?'disabled':''}>${workflowUI.publishing?'3개 작업전선 검증 중…':'계획 승인 · 터파기 3건 하달'}</button></footer></section><aside class="drawing-plan-aside"><section class="workflow-panel plan-map-panel"><header><div><h3>${workflowUI.planView==='drawing'?'관로 공사 도면':'도면 작업 예정 구간'}</h3><p>${workflowUI.planView==='drawing'?'중심선·STA·굴착 폭·대표 단면':'채움 토사 위의 관로 중심선과 3개 작업전선'}</p></div><div class="plan-view-toggle"><button class="${workflowUI.planView==='map'?'active':''}" data-workflow-action="set-plan-view" data-plan-view="map">현장 3D</button><button class="${workflowUI.planView==='drawing'?'active':''}" data-workflow-action="set-plan-view" data-plan-view="drawing">관로 도면</button></div></header>${workflowUI.planView==='drawing'?wfPipelineDrawing(design):wfMapFrame({controls:false,planning:true})}</section><section class="workflow-panel precheck"><h3>계획 요약</h3>${[['도면',`${design.plan_id} Rev.${design.revision}`],['총 공정','터파기 → 관로 설치 → 되메우기'],['예상 순 작업시간',`${totalHours}h`],['굴착 장비',`${fronts.length}대`]].map(x=>`<div><i>✓</i><span>${x[0]}</span><b>${esc(String(x[1]))}</b></div>`).join('')}<p>자원이 없는 작업전선도 삭제하지 않고 자원 대기 상태로 기록합니다.</p></section></aside></div></div>`;
 }
@@ -166,10 +221,16 @@ async function publishDrawingScenario(){
     if(!response.ok)throw new Error(payload.detail?.message||payload.detail||`SCENARIO_${response.status}`);
     const pending=(payload.work_packages||[]).filter(item=>item.status==='pending').length;
     const blocked=(payload.work_packages||[]).filter(item=>item.status==='blocked').length;
-    workflowUI.messages.push({role:'assistant',text:`도면 ${design.plan_id}의 터파기 작업전선 ${payload.work_packages.length}건을 하달했습니다. 실행 가능 ${pending}건, 자원 대기 ${blocked}건입니다.`});
+    const phaseId=wfCurrentPhaseId(draft);
+    const phase=(design.phases||[]).find(item=>item.id===phaseId);
+    const excavation=(payload.work_packages||[]).filter(item=>item.phase_id==='excavation').length;
+    const installation=(payload.work_packages||[]).filter(item=>item.phase_id==='pipe_installation').length;
+    workflowUI.messages.push({role:'assistant',text:phaseId==='excavation'
+      ?`도면 ${design.plan_id}의 Zone ${wfScenarioZoneId(design)} 관로 공사 1건을 등록했습니다. 1단계 터파기 ${excavation}건만 실행하며 2단계 관로 설치 ${installation}건은 Evidence 승인과 별도 계획 승인 전까지 잠깁니다.`
+      :`Zone ${phase?.zone_id||'-'} ${phase?.title||phaseId} 계획을 승인했습니다. 현재 공정 ${pending}건을 Isaac 실행 대기열로 하달했습니다.`});
     workflowUI.mode='compose';workflowUI.draft=null;setIsaacPlanningOverlay(null);
     await loadIsaacInstructions();navigate('execution');renderAll();
-    toast('도면 기반 터파기 하달 완료',`실행 가능 ${pending}건 · 자원 대기 ${blocked}건` ,blocked?'warning':'success');
+    toast(phaseId==='excavation'?'관로 공사 계획 등록 완료':`Zone ${phase?.zone_id||'-'} ${phase?.title||''} 계획 승인 완료`,`Isaac 실행 ${pending}건 · 선행 승인 대기 ${blocked}건`,pending?'success':'warning');
   }catch(error){toast('관로 계획 하달 실패',String(error.message||error),'danger');}
   finally{workflowUI.publishing=false;if(workflowUI.mode==='form')renderWorkPackages();}
 }
@@ -207,6 +268,15 @@ document.addEventListener('input',e=>{if(!e.target.matches('[data-equipment-sear
 document.addEventListener('change',e=>{if(!e.target.matches('[data-history-zone]'))return;workflowUI.historyZone=e.target.value;renderVersions();});
 document.addEventListener('click',e=>{const phase=e.target.closest('[data-review-phase]');if(!phase)return;workflowUI.reviewPhase=phase.dataset.reviewPhase;renderEvidence();});
 document.addEventListener('click',async e=>{
+  const scenarioRun=e.target.closest('[data-open-scenario-run]');
+  if(scenarioRun){workflowUI.scenarioRunId=scenarioRun.dataset.openScenarioRun||null;renderExecution();window.scrollTo({top:0,behavior:'smooth'});return;}
+  if(e.target.closest('[data-scenario-back]')){workflowUI.scenarioRunId=null;renderExecution();window.scrollTo({top:0,behavior:'smooth'});return;}
+  const scenarioPhase=e.target.closest('[data-open-scenario-phase]');
+  if(scenarioPhase){
+    const opened=wfOpenReadyScenarioPhasePlan(scenarioPhase.dataset.openScenarioPhase||'');
+    if(!opened)toast('다음 공정 계획을 열 수 없습니다.','선행 공정 Evidence 승인 상태와 도면 연결을 새로고침해 주세요.','warning');
+    return;
+  }
   const equipment=e.target.closest('[data-equipment-select]');
   if(equipment){workflowUI.equipmentId=equipment.dataset.equipmentSelect;renderEquipment();return;}
   const review=e.target.closest('[data-review-open]');
@@ -339,23 +409,248 @@ wfReviewWorkVisual=function(w){
   return `<div class="review-zone-head haul-zone-head"><div><span>ZONE H</span><b>반출·운반 운영 현황</b><small>공간 형상 판정이 아닌 반출 물량과 운반 이벤트를 집계합니다.</small></div><span class="review-result-badge active">운반 진행 중 · ${progress}%</span></div><div class="review-diff-toolbar haul-toolbar"><div class="profile-legend"><i class="actual-shape"></i>운반 완료 경로<i class="design-shape"></i>남은 계획 경로<i class="shallow-diff"></i>운영 경계</div><span>물량·회차 기준</span></div><div class="review-zone-visual haul-progress-visual"><img src="/static/assets/review/zone-h-haul-progress-v3.png" alt="Zone H 가적치장 반출·운반 진행 현황"><div class="review-approved-callout haul-callout"><b>${progress}% 운반 완료</b><span>남은 경로는 결함이 아닌 계획 구간입니다.</span></div><div class="scene-controls"><button>+</button><button>−</button><button>⌖</button></div></div><div class="haul-operation-summary"><div><span>계획 반출량</span><b>${target.toLocaleString()}㎥</b></div><div><span>누적 반출량</span><b>${completed.toLocaleString()}㎥</b></div><div><span>잔여 반출량</span><b>${remaining.toLocaleString()}㎥</b></div><div><span>운반 이벤트</span><b>${(evidence.missing||[]).includes('운반 종료 이벤트')?'수집 중':'정상 수집'}</b></div></div>`;
 };
 
-// Work status keeps every actual Isaac Work Package visible while hiding only
-// locally generated correction children from the top-level table.
-const renderExecutionBase=renderExecution;
+function wfScenarioRuns(){
+  const grouped=new Map();
+  for(const instruction of isaacInstructions||[]){
+    const params=instruction.params||{};
+    if(!params.scenario_run_id)continue;
+    if(!grouped.has(params.scenario_run_id))grouped.set(params.scenario_run_id,[]);
+    grouped.get(params.scenario_run_id).push(instruction);
+  }
+  return [...grouped.entries()].map(([id,instructions])=>({id,instructions})).sort((left,right)=>{
+    const newest=run=>Math.max(...run.instructions.map(item=>Date.parse(item.created_at||item.updated_at||0)||0));
+    return newest(right)-newest(left);
+  });
+}
+function wfScenarioPhaseState(members){
+  if(!members.length)return {label:'선행 공정 승인 후',kind:'locked',progress:0};
+  const statuses=members.map(item=>item.status);
+  const works=members.map(item=>(state.workPackages||[]).find(work=>work.id===item.params?.work_package_id)).filter(Boolean);
+  const progress=works.length?Math.round(works.reduce((sum,work)=>sum+wfProgress(work),0)/works.length):0;
+  if(statuses.every(value=>value==='approved'))return {label:'승인 완료',kind:'done',progress:100};
+  if(statuses.some(value=>value==='rejected'))return {label:'반려 · 보완 필요',kind:'warning',progress:100};
+  const remediation=wfRemediationInstruction(members);
+  if(remediation&&remediation.status!=='approved'){
+    const label=remediation.status==='blocked'?'보완 계획 승인 대기':remediation.status==='committed'?'보완 Evidence 재검증':remediation.status==='dispatched'?'보완 굴착 실행 중':'보완 굴착 대기';
+    return {label,kind:'warning',progress};
+  }
+  if(members.some(wfCommitNeedsRemediation))return {label:'목표량 미달 · 검토 필요',kind:'warning',progress:100};
+  if(statuses.some(value=>value==='committed'))return {label:'Evidence 검토 대기',kind:'review',progress:100};
+  if(statuses.some(value=>value==='dispatched'))return {label:'Isaac 실행 중',kind:'active',progress};
+  if(statuses.some(value=>value==='pending'))return {label:'Isaac 실행 대기',kind:'active',progress};
+  if(members.some(item=>item.params?.phase_approval_ready))return {label:'계획 승인 대기',kind:'review',progress:0};
+  return {label:'선행 공정 승인 대기',kind:'locked',progress:0};
+}
+function wfScenarioPhases(){
+  return approvedSitePlan?.design?.phases||[
+    {id:'excavation',order:1,zone_id:'A',title:'터파기',description:'굴착기 3대가 작업전선별 채움 토사를 제거합니다.',target_amount:1826.9,target_unit:'m3',estimated_hours:10.2,equipment:['EXC-001','EXC-002','EXC-003'],acceptance_criteria:['설계 굴착 저면 대비 ±50mm','미굴착 토사 체적 2% 이하','카메라·LiDAR·IMU Evidence 완전성 90% 이상']},
+    {id:'pipe_installation',order:2,zone_id:'A',title:'관로 설치',description:'승인된 굴착 저면의 설계 중심선에 관로를 설치합니다.',target_amount:79.2,target_unit:'m',estimated_hours:7.9,equipment:['EXC-001','EXC-002','EXC-003'],acceptance_criteria:['관 중심선 수평 편차 ±100mm','관저고 설계 편차 ±50mm','이음부 누락 0건']},
+    {id:'backfill',order:3,zone_id:'A',title:'되메우기',description:'관로 승인 후 굴착부를 층별 되메우고 다짐합니다.',target_amount:1737.4,target_unit:'m3',estimated_hours:9.7,equipment:['EXC-001','EXC-002','EXC-003'],acceptance_criteria:['층별 다짐도 90% 이상','최종 표면 편차 ±50mm','관로 보호층 최소 두께 300mm']},
+  ];
+}
+function wfScenarioDate(value){
+  const date=new Date(value||0);
+  return Number.isNaN(date.getTime())?'-':new Intl.DateTimeFormat('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(date);
+}
+function wfScenarioInstructionWork(instruction){
+  return (state.workPackages||[]).find(work=>work.id===instruction?.params?.work_package_id)||null;
+}
+function wfScenarioDetailMarkup(run){
+  const design=approvedSitePlan?.design||{};
+  const phases=wfScenarioPhases();
+  const phaseGroups=phases.map(phase=>{
+    const members=run.instructions.filter(item=>item.params?.scenario_phase_id===phase.id);
+    return {phase,members,state:wfScenarioPhaseState(members)};
+  });
+  const completed=phaseGroups.filter(group=>group.state.kind==='done').length;
+  const allDone=completed===phaseGroups.length;
+  const current=phaseGroups.find(group=>group.state.kind!=='done')||phaseGroups.at(-1);
+  const overall=allDone?100:Math.round(((completed+(current?.state.progress||0)/100)/Math.max(1,phaseGroups.length))*100);
+  const parentId=run.instructions[0]?.params?.scenario_parent_work_package_id||run.id;
+  const approvedCommits=run.instructions.filter(item=>item.status==='approved').length;
+  const totalCommits=run.instructions.length;
+  const phaseFlow=phaseGroups.map((group,index)=>`<div class="scenario-detail-phase ${group.state.kind} ${group===current?'current':''}"><span>${wfPhaseBadge(group.phase,index)}</span><div><b>${esc(group.phase.title)}</b><small>Zone ${esc(wfScenarioZoneId(design))} · ${esc(group.state.label)} · ${group.members.filter(item=>item.status==='approved').length}/${group.members.length||3} Commit</small></div><strong>${group.state.progress}%</strong></div>${index<phaseGroups.length-1?'<i class="scenario-detail-arrow">→</i>':''}`).join('');
+  const members=current?.members||[];
+  const workfrontRows=members.map((instruction,index)=>{
+    const params=instruction.params||{};
+    const work=wfScenarioInstructionWork(instruction);
+    const progress=work?wfProgress(work):['committed','approved','rejected'].includes(instruction.status)?100:0;
+    const stateInfo=wfScenarioPhaseState([instruction]);
+    const quantity=params.planned_quantity||{};
+    const commit=isaacLatestCommit(instruction);
+    const detail=commit
+      ?`<button class="ghost-button button-sm" data-isaac-detail="${esc(instruction.id)}">Evidence 보기</button>`
+      :`<span class="scenario-workfront-note">${esc(params.station_range||'실행 대기')}</span>`;
+    return `<div class="scenario-detail-workfront"><span class="zone-token ${wfPhaseCss(current.phase,phaseGroups.indexOf(current))}">${esc(params.workfront_id||`F${index+1}`)}</span><div><b>${esc(params.target_name||params.summary||`작업전선 ${index+1}`)}</b><small>${esc(params.station_range||'-')}</small></div><div><span>배정 장비</span><b>${esc(params.equipment_name||'-')}</b></div><div><span>계획량</span><b>${num(quantity.value||0)}${wfDesignUnit(quantity.unit||current.phase.target_unit)}</b></div><div><i class="scenario-progress" style="--p:${progress}%"></i><b>${progress}%</b></div><em class="${stateInfo.kind}">${esc(stateInfo.label)}</em>${detail}</div>`;
+  }).join('')||wfBlank('작업전선 미등록','현재 공정의 Work Package가 아직 생성되지 않았습니다.');
+  const missing=[...new Set(members.flatMap(item=>item.params?.missing_resources||[]).filter(Boolean))];
+  const rejected=members.filter(item=>item.status==='rejected').length;
+  const review=members.filter(item=>item.status==='committed').length;
+  const deficient=members.filter(wfCommitNeedsRemediation);
+  const remediation=wfRemediationInstruction(members);
+  const issues=[
+    ...missing.map(message=>({tone:'warning',title:'자원 확인 필요',message})),
+    ...(rejected?[{tone:'danger',title:`반려된 Commit ${rejected}건`,message:'보완 Work Package 발행 후 재검토가 필요합니다.'}]:[]),
+    ...deficient.map(item=>{const quality=isaacLatestCommit(item)?.result?.quality_assessment||{};return {tone:'danger',title:`${item.params?.equipment_name||'굴착 장비'} 목표 굴착량 미달`,message:`완료 ${num(quality.completed_volume_m3||0)}㎥ · 부족 ${num(quality.remaining_volume_m3||0)}㎥ · 다음 공정 LOCKED`};}),
+    ...(remediation&&remediation.status!=='approved'?[{tone:'warning',title:'보완 Work Package 진행 중',message:`${remediation.params?.equipment_name||'해당 장비'}만 부족량을 추가 굴착하고 Evidence를 재수집합니다.`}]:[]),
+    ...(review?[{tone:'review',title:`Evidence 검토 대기 ${review}건`,message:'모든 작업전선의 결과 승인 후 다음 공정이 열립니다.'}]:[]),
+  ];
+  if(!issues.length)issues.push({tone:'ok',title:'현재 차단 문제 없음',message:current?.state.kind==='done'?'전체 공정이 승인 완료되었습니다.':'현재 공정이 정상 순서로 진행 중입니다.'});
+  const issueMarkup=issues.map(issue=>`<div class="scenario-issue ${issue.tone}"><i>${issue.tone==='ok'?'✓':'!'}</i><div><b>${esc(issue.title)}</b><span>${esc(issue.message)}</span></div></div>`).join('');
+  const criteria=(current?.phase.acceptance_criteria||[]).map((criterion,index)=>`<div><i>${index+1}</i><span>${esc(criterion)}</span></div>`).join('');
+  const timeline=[];
+  phaseGroups.forEach(group=>{
+    const created=group.members.map(item=>item.created_at).filter(Boolean).sort()[0];
+    if(created)timeline.push({time:created,title:`${wfPhaseBadge(group.phase)} ${group.phase.title} 계획 등록`,kind:'plan'});
+    group.members.forEach(item=>{
+      const params=item.params||{};
+      (item.commits||[]).forEach(commit=>timeline.push({time:commit.created_at||item.updated_at,title:`${params.equipment_name||params.workfront_id||'작업전선'} Evidence Commit`,kind:item.status==='approved'?'done':'evidence'}));
+    });
+    if(group.state.kind==='done'){
+      const completedAt=group.members.map(item=>item.updated_at).filter(Boolean).sort().at(-1);
+      timeline.push({time:completedAt,title:`${wfPhaseBadge(group.phase)} ${group.phase.title} 승인 완료`,kind:'done'});
+    }
+  });
+  timeline.sort((a,b)=>(Date.parse(b.time)||0)-(Date.parse(a.time)||0));
+  const timelineMarkup=timeline.slice(0,10).map(item=>`<div class="scenario-activity ${item.kind}"><i></i><div><b>${esc(item.title)}</b><span>${wfScenarioDate(item.time)}</span></div></div>`).join('')||wfBlank('이력 없음','공정이 하달되면 실행 이력이 기록됩니다.');
+  const ready=members.some(item=>item.status==='blocked'&&item.params?.phase_approval_ready);
+  const committed=members.find(item=>item.status==='committed');
+  const deficientInstruction=members.find(wfCommitNeedsRemediation);
+  const remediationDraft=members.find(item=>item.params?.remediation_mode&&item.status==='blocked');
+  const remediationCommitted=members.find(item=>item.params?.remediation_mode&&item.status==='committed');
+  const remediationActive=members.find(item=>item.params?.remediation_mode&&['pending','dispatched'].includes(item.status));
+  const managerAction=ready
+    ?`<button class="primary-button" data-open-scenario-phase="${esc(run.id)}">${wfPhaseBadge(current.phase,phaseGroups.indexOf(current))} 계획 검토·승인</button>`
+    :remediationDraft
+      ?`<button class="primary-button" data-open-remediation="${esc(remediationDraft.id)}">AI 보완 계획 다시 열기</button>`
+      :remediationCommitted
+        ?`<button class="primary-button" data-isaac-detail="${esc(remediationCommitted.id)}">보완 Evidence 재검증</button>`
+        :remediationActive
+          ?`<button class="ghost-button" disabled>${esc(remediationActive.params?.equipment_name||'해당 장비')} 보완 굴착 실행 중</button>`
+          :deficientInstruction
+            ?`<button class="primary-button" data-isaac-detail="${esc(deficientInstruction.id)}">부족량 Evidence 검토</button>`
+            :committed
+      ?`<button class="primary-button" data-isaac-detail="${esc(committed.id)}">Evidence 검토 시작</button>`
+      :`<button class="ghost-button" disabled>${allDone?'전체 공정 승인 완료':current?.state.label||'대기'}</button>`;
+  return `<div class="workflow-page scenario-detail-page"><button class="workflow-back" data-scenario-back>← 작업 현황</button><div class="scenario-detail-heading"><div><span>PIPELINE CONSTRUCTION · ZONE ${esc(wfScenarioZoneId(design))}</span><h2>Zone ${esc(wfScenarioZoneId(design))} · ${esc(wfScenarioZoneTitle(design))} 상세</h2><p>${esc(parentId)} · ${esc(design.plan_id||run.instructions[0]?.params?.scenario_plan_id||'-')} Rev.${esc(design.revision||'-')}</p></div><em class="${current?.state.kind||'locked'}">${esc(allDone?'전체 공정 완료':current?.state.label||'대기')}</em></div><div class="workflow-kpis compact scenario-detail-kpis"><div><span>전체 공정</span><b>${overall}%</b><small>${completed}/${phases.length} 승인 완료</small></div><div><span>현재 공정 실행률</span><b>${current?.state.progress||0}%</b><small>${wfPhaseBadge(current?.phase,phaseGroups.indexOf(current))} · ${esc(current?.phase.title||'-')}</small></div><div><span>Evidence Commit</span><b>${approvedCommits}/${totalCommits}</b><small>승인 / 전체 작업전선</small></div><div><span>Isaac Stage</span><b>${stageInventory?.connected?'LIVE':'OFFLINE'}</b><small>${stageInventory?.connected?'실행 데이터 동기화 중':'Adapter 연결 대기'}</small></div></div><section class="workflow-panel scenario-detail-flow-panel"><header><div><h3>Zone ${esc(wfScenarioZoneId(design))} 내부 공정 흐름</h3><p>터파기·관로 설치·되메우기는 하나의 Zone에서 선행 Evidence 승인 후 순차적으로 열립니다.</p></div><span>${allDone?'COMPLETED':`CURRENT · ${wfPhaseBadge(current?.phase,phaseGroups.indexOf(current))}`}</span></header><div class="scenario-detail-flow">${phaseFlow}</div></section><div class="scenario-detail-layout"><main><section class="workflow-panel scenario-current-panel"><header><div><span>CURRENT PHASE</span><h3>${wfPhaseBadge(current?.phase,phaseGroups.indexOf(current))} · ${esc(current?.phase.title||'-')}</h3><p>${esc(current?.phase.description||'현재 공정 정보를 확인합니다.')}</p></div><dl><div><dt>목표량</dt><dd>${num(current?.phase.target_amount||0)}${wfDesignUnit(current?.phase.target_unit||'')}</dd></div><div><dt>예상시간</dt><dd>${num(current?.phase.estimated_hours||0)}h</dd></div><div><dt>작업 구간</dt><dd>${esc(design.station_range||'STA 0+000 ~ 0+079.2')}</dd></div></dl></header><div class="scenario-detail-workfront-head"><h4>작업전선·장비 상태</h4><span>${members.length}개 Work Package</span></div><div class="scenario-detail-workfronts">${workfrontRows}</div><div class="scenario-criteria"><h4>${wfPhaseBadge(current?.phase,phaseGroups.indexOf(current))} 완료·승인 판정 기준</h4><div>${criteria}</div></div></section><section class="workflow-panel scenario-activity-panel"><header><h3>공사 타임라인</h3><span>최근 ${Math.min(10,timeline.length)}건</span></header><div>${timelineMarkup}</div></section></main><aside><section class="workflow-panel scenario-map-panel"><header><div><h3>현재 작업 위치</h3><p>Zone ${esc(wfScenarioZoneId(design))} 경계와 작업전선을 현장 맵에서 확인합니다.</p></div></header>${wfMapFrame({controls:false})}</section><section class="workflow-panel scenario-gate-panel"><header><h3>관리자 게이트</h3><span class="${current?.state.kind||'locked'}">${esc(current?.state.label||'대기')}</span></header><div class="scenario-gate-summary"><div><span>현재 공정</span><b>${wfPhaseBadge(current?.phase,phaseGroups.indexOf(current))} · ${esc(current?.phase.title||'-')}</b></div><div><span>다음 공정</span><b>${allDone?'관로 공사 완료':esc(phaseGroups[phaseGroups.indexOf(current)+1]?.phase.title||'최종 승인')}</b></div></div>${managerAction}</section><section class="workflow-panel scenario-issue-panel"><header><h3>문제·차단 항목</h3><span>${issues.filter(issue=>issue.tone!=='ok').length}건</span></header><div>${issueMarkup}</div></section></aside></div></div>`;
+}
+
+function wfScenarioCompletionSummaryMarkup(run,groups){
+  const design=approvedSitePlan?.design||{};
+  const instructions=run?.instructions||[];
+  const commits=instructions.flatMap(instruction=>(instruction.commits||[]).map(commit=>({instruction,commit})));
+  const approvedCommits=commits.filter(({instruction,commit})=>commit.review_status==='approved'||instruction.status==='approved');
+  const remediation=instructions.filter(wfIsRemediationInstruction);
+  const primary=instructions.filter(instruction=>!wfIsRemediationInstruction(instruction));
+  const equipment=[...new Set(instructions.map(instruction=>instruction.params?.equipment_name).filter(Boolean))];
+  const completenessValues=groups.map(group=>group.completeness).filter(value=>Number.isFinite(value)&&value>0);
+  const completeness=completenessValues.length
+    ?Math.round(completenessValues.reduce((sum,value)=>sum+value,0)/completenessValues.length)
+    :(approvedCommits.length===commits.length&&commits.length?100:0);
+  const completionTimes=[
+    ...approvedCommits.map(({commit})=>commit.reviewed_at||commit.committed_at||commit.created_at),
+    ...instructions.map(instruction=>instruction.updated_at),
+  ].filter(Boolean).sort((left,right)=>(Date.parse(left)||0)-(Date.parse(right)||0));
+  const completedAt=completionTimes.at(-1)||'';
+  const zoneId=wfScenarioZoneId(design);
+  const phaseResults=groups.map((group,index)=>{
+    const approved=group.members.filter(instruction=>instruction.status==='approved').length;
+    const target=`${num(group.phase.target_amount||0)}${wfDesignUnit(group.phase.target_unit||'')}`;
+    return `<div class="scenario-completion-phase"><i>${index+1}</i><div><span>${wfPhaseBadge(group.phase,index)} · ${esc(group.phase.title)}</span><b>${target} 작업 · ${approved}/${group.members.length} Commit 승인</b></div>${group.remediationMembers.length?`<em>보완 ${group.remediationMembers.length}건 포함</em>`:'<em class="done">기준 충족</em>'}</div>`;
+  }).join('');
+  return `<section class="workflow-panel scenario-completion-panel"><div class="scenario-completion-hero"><i>✓</i><div><span>CONSTRUCTION RELEASE · MAIN MERGED</span><h3>Zone ${esc(zoneId)} 관로 공사가 완료되었습니다</h3><p>터파기 → 관로 설치 → 되메우기 결과와 Evidence가 모두 관리자 승인을 통과해 최종 현장 상태로 반영되었습니다.</p></div><em>공사 완료</em></div><div class="scenario-completion-summary-grid"><div><span>완료 공정</span><b>${groups.length}/${groups.length}</b><small>모든 선행 게이트 승인</small></div><div><span>승인 Commit</span><b>${approvedCommits.length}/${commits.length}</b><small>기본 ${primary.length} · 보완 ${remediation.length}</small></div><div><span>사용 장비</span><b>${equipment.length}대</b><small>${esc(equipment.join(' · ')||'-')}</small></div><div><span>Evidence 완결성</span><b>${completeness}%</b><small>카메라 · LiDAR · IMU</small></div><div><span>완료 구간</span><b>${esc(design.station_range||'STA 0+000 ~ 0+079.2')}</b><small>${num(design.total_length_m||79.2)}m 관로 공사</small></div><div><span>완료 시각</span><b>${wfScenarioDate(completedAt)}</b><small>Main Merge · Release</small></div></div><div class="scenario-completion-phase-list"><header><h4>공정별 완료 요약</h4><span>${remediation.length?`재작업 ${remediation.length}건 추적 완료`:'보완 작업 없음'}</span></header>${phaseResults}</div></section>`;
+}
+
+function wfDecorateCompletedScenarioDetail(page,run){
+  if(!page||!run)return;
+  const groups=wfConstructionPhaseGroups(run);
+  if(!groups.length||!groups.every(group=>group.state.kind==='done'))return;
+  const main=page.querySelector('.scenario-detail-layout>main');
+  if(main&&!main.querySelector('.scenario-completion-panel'))main.insertAdjacentHTML('afterbegin',wfScenarioCompletionSummaryMarkup(run,groups));
+
+  const kpis=page.querySelectorAll('.scenario-detail-kpis>div');
+  if(kpis[1])kpis[1].innerHTML=`<span>완료 공정</span><b>${groups.length}/${groups.length}</b><small>터파기 · 관로 설치 · 되메우기</small>`;
+  const completionTimes=(run.instructions||[]).map(instruction=>instruction.updated_at).filter(Boolean).sort((left,right)=>(Date.parse(left)||0)-(Date.parse(right)||0));
+  if(kpis[3])kpis[3].innerHTML=`<span>최종 상태</span><b>RELEASED</b><small>${wfScenarioDate(completionTimes.at(-1))} · Main Merge 완료</small>`;
+
+  const phasePanel=page.querySelector('.scenario-current-panel');
+  if(phasePanel){
+    phasePanel.classList.add('scenario-final-phase-panel');
+    const eyebrow=phasePanel.querySelector('header>div>span');
+    const title=phasePanel.querySelector('header h3');
+    const description=phasePanel.querySelector('header p');
+    if(eyebrow)eyebrow.textContent='FINAL PHASE RECORD';
+    if(title)title.textContent=`최종 공정 기록 · ${groups.at(-1)?.phase.title||'되메우기'}`;
+    if(description)description.textContent='전체 공사 완료 전 마지막 공정의 작업전선과 승인 Evidence를 기록으로 보존합니다.';
+  }
+
+  const mapTitle=page.querySelector('.scenario-map-panel header h3');
+  const mapDescription=page.querySelector('.scenario-map-panel header p');
+  if(mapTitle)mapTitle.textContent='완료 구간';
+  if(mapDescription)mapDescription.textContent=`승인되어 Main에 반영된 Zone ${wfScenarioZoneId(approvedSitePlan?.design||{})} 최종 현장 상태입니다.`;
+
+  const gateTitle=page.querySelector('.scenario-gate-panel header h3');
+  const gateStatus=page.querySelector('.scenario-gate-panel header span');
+  const gateFacts=page.querySelectorAll('.scenario-gate-summary>div');
+  if(gateTitle)gateTitle.textContent='최종 Release';
+  if(gateStatus){gateStatus.textContent='승인 완료';gateStatus.className='done';}
+  if(gateFacts[0])gateFacts[0].innerHTML='<span>공정 상태</span><b>3단계 전체 승인 완료</b>';
+  if(gateFacts[1])gateFacts[1].innerHTML='<span>게시 상태</span><b>Main Merge · Release 완료</b>';
+  const issueTitle=page.querySelector('.scenario-issue-panel header h3');
+  if(issueTitle)issueTitle.textContent='완료 점검';
+}
+
+function wfScenarioExecutionMarkup(run){
+  const design=approvedSitePlan?.design;
+  const phases=wfScenarioPhases();
+  const phaseRows=phases.map(phase=>{
+    const members=run.instructions.filter(item=>item.params?.scenario_phase_id===phase.id);
+    const phaseState=wfScenarioPhaseState(members);
+    const ready=members.some(item=>item.status==='blocked'&&item.params?.phase_approval_ready);
+    const equipment=[...new Set(members.map(item=>item.params?.equipment_name).filter(Boolean))];
+    const approvedCount=members.filter(item=>item.status==='approved').length;
+    const detail=ready
+      ?`<button class="secondary-button button-sm" data-open-scenario-phase="${esc(run.id)}">계획 검토·승인</button>`
+      :members.some(item=>item.status==='committed')
+        ?'<button class="ghost-button button-sm" data-page-link="evidence">Evidence 검토</button>'
+        :`<span>${members.length?`${approvedCount}/${members.length} Commit 승인`:'아직 미발행'}</span>`;
+    return `<div class="scenario-phase-row"><span><i class="zone-token ${wfPhaseCss(phase,phases.indexOf(phase))}">${wfPhaseBadge(phase,phases.indexOf(phase))}</i><b>${esc(phase.title)}</b></span><span>${esc((equipment.length?equipment:phase.equipment||[]).join(' · ')||'-')}</span><span><i class="scenario-progress" style="--p:${phaseState.progress}%"></i>${phaseState.progress}%</span><span><em class="${phaseState.kind}">${phaseState.label}</em></span><span>${detail}</span></div>`;
+  }).join('');
+  const phaseStates=phases.map(phase=>wfScenarioPhaseState(run.instructions.filter(item=>item.params?.scenario_phase_id===phase.id)));
+  const completed=phaseStates.filter(item=>item.kind==='done').length;
+  const allDone=completed===phases.length;
+  const current=phaseStates.find(item=>item.kind!=='done')||phaseStates.at(-1);
+  const currentIndex=Math.max(0,phaseStates.indexOf(current));
+  const overall=allDone?100:Math.round(((completed+(current?.progress||0)/100)/Math.max(1,phases.length))*100);
+  const parentId=run.instructions[0]?.params?.scenario_parent_work_package_id||run.id;
+  const currentPhase=phases[currentIndex]||phases[0];
+  const parentPhaseLabel=allDone?'전체 공정 완료':`현재: ${wfPhaseBadge(currentPhase,currentIndex)} · ${currentPhase?.title||'-'}`;
+  return `<article class="workflow-scenario-block"><button type="button" class="scenario-parent-row scenario-parent-button" data-open-scenario-run="${esc(run.id)}"><span><b>Zone ${esc(wfScenarioZoneId(design))} · ${esc(wfScenarioZoneTitle(design))}</b><small>${esc(parentId)} · ${esc(design?.plan_id||run.instructions[0]?.params?.scenario_plan_id||'-')}</small></span><span>${esc(parentPhaseLabel)}</span><span><i class="scenario-progress" style="--p:${overall}%"></i>${overall}%</span><span><em class="${current?.kind||'locked'}">${esc(current?.label||'대기')}</em></span><span>${completed}/${phases.length} 공정 완료<strong>상세 ›</strong></span></button><div class="scenario-phase-stack">${phaseRows}</div></article>`;
+}
+
+// A pipeline request is one construction job.  Its equipment-level Isaac
+// instructions remain available in Evidence, but Work Status groups them by
+// internal phase under one Zone parent instead of presenting unrelated jobs.
 renderExecution=function(){
-  renderExecutionBase();
-  const visibleWorks=(state.workPackages||[]).filter(work=>!work.parentWpId);
+  const page=$('#page-execution');if(!page)return;
+  const runs=wfScenarioRuns();
+  if(workflowUI.scenarioRunId){
+    const selectedRun=runs.find(run=>run.id===workflowUI.scenarioRunId);
+    if(selectedRun){page.innerHTML=wfScenarioDetailMarkup(selectedRun);wfDecorateCompletedScenarioDetail(page,selectedRun);return;}
+    workflowUI.scenarioRunId=null;
+  }
+  const scenarioWorkIds=new Set(runs.flatMap(run=>run.instructions.map(item=>item.params?.work_package_id).filter(Boolean)));
+  const ordinary=(state.workPackages||[]).filter(work=>!work.parentWpId&&!scenarioWorkIds.has(work.id));
+  const scenarioStates=runs.map(run=>{
+    const members=run.instructions;
+    const phases=['excavation','pipe_installation','backfill'];
+    const states=phases.map(id=>wfScenarioPhaseState(members.filter(item=>item.params?.scenario_phase_id===id)));
+    return states.find(item=>item.kind!=='done')||states.at(-1);
+  });
   const statusKinds=['active','review','warning','done'];
-  document.querySelectorAll('#page-execution .workflow-kpis.compact>div b').forEach((value,index)=>{
-    value.textContent=visibleWorks.filter(w=>wfStatus(w)[1]===statusKinds[index]).length;
-  });
-  document.querySelectorAll('#page-execution [data-review-open]').forEach(row=>{
-    const work=(state.workPackages||[]).find(w=>w.id===row.dataset.reviewOpen);
-    if(!work)return;
-    if(work.parentWpId){row.remove();return;}
-    const title=row.querySelector('b');
-    if(title)title.textContent=`Zone ${work.zone} · ${wfZoneDisplayName(work)}`;
-  });
+  const allKinds=[...scenarioStates.map(item=>item?.kind||'locked'),...ordinary.map(work=>wfStatus(work)[1])];
+  const ordinaryRows=ordinary.map(work=>{const status=wfStatus(work);const progress=wfProgress(work);return `<button class="workflow-table-row" ${wfInstructionForWork(work)?`data-real-wp-detail="${esc(wfInstructionForWork(work).id)}"`:`data-review-open="${esc(work.id)}"`}><span><b>Zone ${esc(work.zone)} · ${esc(wfZoneDisplayName(work))}</b><small>${esc(work.id)}</small></span><span>${esc(wfEquipmentLabel(work)||'-')}</span><span><i style="--p:${progress}%"></i>${progress}%</span><span><em class="${status[1]}">${status[0]}</em></span><span>${status[1]==='warning'?'후속 공정 잠김':'영향 없음'} ›</span></button>`;}).join('');
+  page.innerHTML=`<div class="workflow-page"><div class="workflow-page-head"><div><h2>작업 현황</h2><p>Zone은 독립된 대형 공사 구역입니다. Zone A 관로 공사 안에서 1단계 터파기 → 2단계 관로 설치 → 3단계 되메우기를 순차 관리합니다.</p></div><button class="primary-button" data-page-link="workpackages">+ 새 작업 지시</button></div><div class="workflow-kpis compact">${['진행 중','검토 대기','보완 중','완료'].map((label,index)=>`<div><span>${label}</span><b>${allKinds.filter(kind=>kind===statusKinds[index]).length}</b></div>`).join('')}</div><section class="workflow-panel workflow-table"><div class="workflow-table-head"><span>Zone / 공사</span><span>장비</span><span>진척도</span><span>상태</span><span>후속 영향</span></div>${runs.map(wfScenarioExecutionMarkup).join('')}${ordinaryRows||(!runs.length?wfBlank('작업 없음','작업 지시를 발행하면 여기에 표시됩니다.'):'')}</section></div>`;
 };
 
 // Make the meaning of the percentage explicit in the review list.
@@ -431,6 +726,7 @@ function wfHistoryEvents(works){
         const completeness=Number(commitEvidence.quality?.completeness_ratio);
         events.push({
           id:`${commit.id}:commit`,workId:work.id,zone,type:failed?'warning':'main',time:wfHistoryTimestamp(commit.committed_at),
+          instructionId:instruction.id,commitId:commit.id,
           occurredAt:commit.committed_at,title:failed?'Isaac 실행 실패':'실행 Commit · Evidence 수신',
           desc:failed?(result.error||'Adapter 실행 오류'):`작업 전·후 센서와 Stage 결과를 Commit했습니다.`,
           status:failed?'조치 필요':'검토 대기',
@@ -441,12 +737,14 @@ function wfHistoryEvents(works){
         if(commit.review_status==='approved'){
           events.push({
             id:`${commit.id}:approved`,workId:work.id,zone,type:'merge',time:wfHistoryTimestamp(commit.reviewed_at),occurredAt:commit.reviewed_at,
+            instructionId:instruction.id,commitId:commit.id,
             title:'관리자 승인 · Merge',desc:'검토한 Isaac 결과를 공식 Site Work Map에 반영했습니다.',status:'승인 완료',
             actual:'PASS',criterion:'센서 Evidence 관리자 판정',impact:'공식 맵 반영 · 다음 공정 READY',trace:`MERGE / ${commit.id}`,
           });
         }else if(commit.review_status==='rejected'){
           events.push({
             id:`${commit.id}:rejected`,workId:work.id,zone,type:'warning',time:wfHistoryTimestamp(commit.reviewed_at),occurredAt:commit.reviewed_at,
+            instructionId:instruction.id,commitId:commit.id,
             title:'관리자 반려 · Conflict',desc:commit.review_note||'실행 결과가 반려되었습니다.',status:'반려',
             actual:commit.review_note||'Conflict',criterion:'센서 Evidence 관리자 판정',impact:'공식 맵 미반영 · 후속 공정 LOCKED',trace:`REJECT / ${commit.id}`,
           });
@@ -492,7 +790,10 @@ function wfHistoryWorks(){
 function wfHistoryDetail(event){
   if(!event)return `<aside class="workflow-panel history-event-detail">${wfBlank('이벤트를 선택하세요','왼쪽 작업 이력에서 확인할 이벤트를 선택해 주세요.')}</aside>`;
   const tone=['warning','branch'].includes(event.type)?'warning':event.type==='merge'?'done':event.type==='active'?'active':'main';
-  return `<aside class="workflow-panel history-event-detail"><header><div><span class="history-detail-type ${tone}">${event.status}</span><h3>${esc(event.title)}</h3><p>${esc(event.desc)}</p></div></header><div class="history-detail-grid"><div><span>작업</span><b>Zone ${esc(event.zone)} · ${esc(event.workId)}</b></div><div><span>발생 시각</span><b>${esc(event.time)}</b></div><div><span>결과 값</span><b>${esc(event.actual)}</b></div><div><span>판정 기준</span><b>${esc(event.criterion)}</b></div><div class="wide"><span>후속 영향</span><b class="${tone}">${esc(event.impact)}</b></div></div><section class="history-trace"><span>추적 정보</span><code>${esc(event.trace)}</code><small>Plan v1.0 · Shared DB · 불변 이벤트</small></section></aside>`;
+  const evidenceAction=event.instructionId&&event.commitId
+    ?`<section class="history-evidence-entry"><div><span>COMMIT EVIDENCE</span><b>센서 원본과 작업 전·후 결과</b><small>카메라 · 3D LiDAR · IMU · 실행 이벤트 · 판정값</small></div><button class="primary-button" data-isaac-detail="${esc(event.instructionId)}" data-isaac-commit="${esc(event.commitId)}">Commit 상세·Evidence 열기 →</button></section>`
+    :'';
+  return `<aside class="workflow-panel history-event-detail"><header><div><span class="history-detail-type ${tone}">${event.status}</span><h3>${esc(event.title)}</h3><p>${esc(event.desc)}</p></div></header><div class="history-detail-grid"><div><span>작업</span><b>Zone ${esc(event.zone)} · ${esc(event.workId)}</b></div><div><span>발생 시각</span><b>${esc(event.time)}</b></div><div><span>결과 값</span><b>${esc(event.actual)}</b></div><div><span>판정 기준</span><b>${esc(event.criterion)}</b></div><div class="wide"><span>후속 영향</span><b class="${tone}">${esc(event.impact)}</b></div></div>${evidenceAction}<section class="history-trace"><span>추적 정보</span><code>${esc(event.trace)}</code><small>Plan v1.0 · Shared DB · 불변 이벤트</small></section></aside>`;
 }
 
 renderVersions=function(){
@@ -556,6 +857,344 @@ document.addEventListener('submit',event=>{
   event.preventDefault();
   workflowUI.historyQuery=event.target.querySelector('[data-history-search]').value;
   renderVersions();
+});
+
+// ---------------------------------------------------------------------------
+// Construction-centric review and history
+// ---------------------------------------------------------------------------
+// Review and History intentionally use the scenario hierarchy already shown in
+// Work Status.  Equipment instructions remain traceable evidence, but they are
+// no longer presented as unrelated top-level jobs.
+function wfConstructionLabel(run){
+  const first=run?.instructions?.[0];
+  const planId=first?.params?.scenario_plan_id||approvedSitePlan?.design?.plan_id||'관로 공사';
+  const revision=approvedSitePlan?.design?.revision;
+  return revision?`${planId} · Rev.${revision}`:planId;
+}
+
+function wfIsRemediationInstruction(instruction){
+  return Boolean(instruction?.params?.remediation_mode);
+}
+
+function wfCompactTraceId(value){
+  const text=String(value||'');
+  return text?text.slice(0,8):'-';
+}
+
+function wfRemediationForInstruction(group,instruction){
+  const direct=(group?.remediationMembers||[]).find(item=>item.params?.remediation_parent_instruction_id===instruction?.id);
+  if(direct)return direct;
+  const params=instruction?.params||{};
+  return (group?.remediationMembers||[]).find(item=>{
+    const candidate=item.params||{};
+    return candidate.equipment_name===params.equipment_name&&candidate.workfront_id===params.workfront_id;
+  })||null;
+}
+
+function wfRemediationFacts(remediation,parentCommit){
+  const facts=remediation?.params?.remediation_facts||{};
+  const quality=parentCommit?.result?.quality_assessment||{};
+  return {
+    planned:Number(facts.planned_volume_m3??quality.planned_volume_m3??0),
+    completed:Number(facts.completed_volume_m3??quality.initial_completed_volume_m3??quality.completed_volume_m3??0),
+    remaining:Number(facts.remaining_volume_m3??quality.initial_remaining_volume_m3??quality.remaining_volume_m3??0),
+    measured:Number(facts.measured_completion_ratio??quality.initial_measured_completion_ratio??quality.measured_completion_ratio??0),
+    required:Number(facts.required_completion_ratio??quality.required_completion_ratio??0.98),
+  };
+}
+
+function wfRemediationResolved(remediation){
+  const commit=isaacLatestCommit(remediation);
+  return Boolean(remediation&&(remediation.status==='approved'||commit?.review_status==='approved'));
+}
+
+function wfRemediationLineageMarkup(group,instruction,parentCommit){
+  const remediation=wfRemediationForInstruction(group,instruction);
+  if(!remediation)return '';
+  const correctionCommit=isaacLatestCommit(remediation);
+  const facts=wfRemediationFacts(remediation,parentCommit);
+  const resolved=wfRemediationResolved(remediation);
+  const measured=Math.round(facts.measured*100);
+  const required=Math.round(facts.required*100);
+  const correctionTitle=correctionCommit
+    ?resolved?'재작업 Commit · 기준 충족':'재작업 Commit · 재검증 대기'
+    :'재작업 Commit 대기';
+  const correctionState=correctionCommit?(resolved?'승인 완료':'검토 대기'):'실행 대기';
+  const correctionKind=resolved?'resolved':correctionCommit?'review':'waiting';
+  return `<div class="remediation-lineage"><div class="remediation-lineage-head"><div><b>재작업 연결 이력</b><span>최초 결과의 부족 원인부터 보완 승인까지 한 작업전선으로 추적합니다.</span></div><em class="${resolved?'done':'warning'}">${resolved?'보완 완료':'보완 진행'}</em></div><div class="remediation-lineage-flow"><div class="remediation-step issue"><i>1</i><div><b>최초 Commit · 목표량 미달</b><small>${wfCompactTraceId(remediation.params?.remediation_parent_commit_id||parentCommit?.id)} · 완료 ${num(facts.completed)}㎥ / 목표 ${num(facts.planned)}㎥</small><span>부족 ${num(facts.remaining)}㎥ · 달성률 ${measured}% / 기준 ${required}%</span></div><em>검토 필요</em></div><i class="remediation-arrow">→</i><div class="remediation-step correction"><i>2</i><div><b>보완 Work Package 하달</b><small>${esc(remediation.params?.equipment_name||instruction.params?.equipment_name||'해당 장비')} · ${esc(remediation.params?.workfront_id||instruction.params?.workfront_id||'동일 작업전선')}</small><span>부족량 ${num(facts.remaining)}㎥만 추가 굴착</span></div><em>재작업 지시</em></div><i class="remediation-arrow">→</i><div class="remediation-step ${correctionKind}"><i>3</i><div><b>${correctionTitle}</b><small>${wfCompactTraceId(correctionCommit?.id)} · 원 Commit과 연결</small><span>${resolved?'재검증 통과 · 공정 완료 처리':'카메라·LiDAR·IMU Evidence 재검증'}</span></div><em>${correctionState}</em></div></div></div>`;
+}
+
+function wfConstructionPhaseGroups(run){
+  return wfScenarioPhases().map(phase=>{
+    const members=(run?.instructions||[]).filter(item=>item.params?.scenario_phase_id===phase.id);
+    const primaryMembers=members.filter(item=>!wfIsRemediationInstruction(item));
+    const remediationMembers=members.filter(wfIsRemediationInstruction);
+    const works=members.map(wfScenarioInstructionWork).filter(Boolean);
+    const commits=members.flatMap(item=>item.commits||[]);
+    const latestCommits=members.map(isaacLatestCommit).filter(Boolean);
+    const approved=primaryMembers.filter(item=>item.status==='approved').length;
+    const committed=members.filter(item=>item.status==='committed').length;
+    const rejected=members.filter(item=>item.status==='rejected'||wfCommitNeedsRemediation(item)).length;
+    const completenessValues=latestCommits.map(commit=>{
+      const value=Number(commit?.evidence?.quality?.completeness_ratio);
+      if(Number.isFinite(value))return value<=1?value*100:value;
+      return null;
+    }).filter(value=>value!=null);
+    const completeness=completenessValues.length
+      ?Math.round(completenessValues.reduce((sum,value)=>sum+value,0)/completenessValues.length)
+      :0;
+    return {
+      key:`${run.id}::${phase.id}`,run,phase,members,primaryMembers,remediationMembers,works,commits,latestCommits,
+      approved,committed,rejected,completeness,state:wfScenarioPhaseState(members),
+    };
+  });
+}
+
+function wfSelectedConstructionRun(scopeKey){
+  const runs=wfScenarioRuns();
+  if(!runs.length)return null;
+  return runs.find(run=>run.id===scopeKey)||runs[0];
+}
+
+function wfPhaseReviewTone(group){
+  if(group.rejected)return {label:'보완 필요',kind:'warning'};
+  if(group.committed)return {label:'검토 대기',kind:'review'};
+  if(group.state.kind==='done')return {label:'승인 완료',kind:'done'};
+  if(group.state.kind==='active')return {label:'실행 중',kind:'active'};
+  return {label:group.state.label||'선행 공정 대기',kind:group.state.kind||'locked'};
+}
+
+function wfPhaseReviewPriority(groups){
+  const order={warning:0,review:1,active:2,locked:3,done:4};
+  return [...groups].sort((left,right)=>(order[wfPhaseReviewTone(left).kind]??9)-(order[wfPhaseReviewTone(right).kind]??9))[0]||null;
+}
+
+function wfPhaseReviewDetail(group){
+  const phase=group.phase;
+  const tone=wfPhaseReviewTone(group);
+  const workfronts=group.primaryMembers||group.members.filter(item=>!wfIsRemediationInstruction(item));
+  const total=Math.max(workfronts.length,phase.equipment?.length||0,1);
+  const next=wfScenarioPhases()[wfScenarioPhases().findIndex(item=>item.id===phase.id)+1];
+  const rows=workfronts.map((instruction,index)=>{
+    const params=instruction.params||{};
+    const work=wfScenarioInstructionWork(instruction);
+    const commit=isaacLatestCommit(instruction);
+    const remediation=wfRemediationForInstruction(group,instruction);
+    const correctionCommit=isaacLatestCommit(remediation);
+    const resolved=wfRemediationResolved(remediation);
+    const memberState=remediation
+      ?wfScenarioPhaseState([instruction,remediation])
+      :wfScenarioPhaseState([instruction]);
+    const progress=work?wfProgress(work):['committed','approved','rejected'].includes(instruction.status)?100:0;
+    const quality=Number(commit?.evidence?.quality?.completeness_ratio);
+    const evidencePct=Number.isFinite(quality)?Math.round(quality<=1?quality*100:quality):0;
+    const action=commit&&remediation
+      ?`<div class="phase-review-actions"><button class="ghost-button button-sm" data-isaac-detail="${esc(instruction.id)}">최초 Evidence</button>${correctionCommit?`<button class="ghost-button button-sm" data-isaac-detail="${esc(remediation.id)}">재작업 Evidence</button>`:''}</div>`
+      :commit
+        ?`<button class="ghost-button button-sm" data-isaac-detail="${esc(instruction.id)}">Evidence 검토</button>`
+      :`<span class="phase-review-wait">${instruction.status==='blocked'?'계획 승인 전':'Commit 대기'}</span>`;
+    const stateLabel=resolved?'보완 완료 · 승인':memberState.label;
+    return `<article class="phase-review-workfront ${remediation?'has-remediation':''}"><div class="phase-review-member"><span class="zone-token ${wfPhaseCss(phase)}">${esc(params.workfront_id||`F${index+1}`)}</span><div><b>${esc(params.equipment_name||`작업 장비 ${index+1}`)}</b><small>${esc(params.station_range||params.target_name||'-')}</small></div><div><span>실행률</span><b>${progress}%</b></div><div><span>Evidence</span><b>${evidencePct?`${evidencePct}%`:'대기'}</b></div><em class="${memberState.kind}">${esc(stateLabel)}</em>${action}</div>${wfRemediationLineageMarkup(group,instruction,commit)}</article>`;
+  }).join('')||wfBlank('아직 하달되지 않은 공정','선행 공정 승인 후 Work Package와 장비 Evidence가 생성됩니다.');
+  const criteria=(phase.acceptance_criteria||[]).map((criterion,index)=>`<div><i>${index+1}</i><span>${esc(criterion)}</span></div>`).join('');
+  const pending=group.members.filter(item=>item.status==='committed');
+  const firstPending=pending[0];
+  const gateAction=firstPending
+    ?`<button class="primary-button" data-isaac-detail="${esc(firstPending.id)}">검토 대기 Evidence 열기</button>`
+    :group.rejected
+      ?'<button class="ghost-button" data-page-link="execution">보완 작업 상태 확인</button>'
+      :`<button class="ghost-button" disabled>${tone.kind==='done'?'공정 승인 완료':esc(tone.label)}</button>`;
+  const commitBreakdown=group.remediationMembers.length
+    ?`원 작업 ${workfronts.length} + 보완 ${group.remediationMembers.length}`
+    :`원 작업 ${workfronts.length}`;
+  return `<div class="workflow-page phase-review-detail"><button class="workflow-back" data-review-group-back>← 공정 검토 목록</button><div class="workflow-page-head"><div><span class="page-eyebrow">CONSTRUCTION REVIEW GATE · ZONE ${esc(wfScenarioZoneId())}</span><h2>${wfPhaseBadge(phase)} · ${esc(phase.title)} 검토</h2><p>Zone ${esc(wfScenarioZoneId())} ${esc(wfScenarioZoneTitle())} · 장비별 결과를 하나의 공정 단계 승인 단위로 묶어 검토합니다.</p></div><span class="status-chip ${tone.kind}">${esc(tone.label)}</span></div><div class="workflow-kpis compact phase-review-kpis"><div><span>작업전선</span><b>${workfronts.length}/${total}</b><small>원 작업 기준</small></div><div><span>승인 작업전선</span><b>${group.approved}/${total}</b><small>보완 완료 포함</small></div><div><span>Evidence 완전성</span><b>${group.completeness}%</b><small>카메라·LiDAR·IMU</small></div><div><span>다음 공정</span><b>${next?wfPhaseBadge(next):'완료'}</b><small>${next?esc(next.title):'관로 공사 Release'}</small></div></div><div class="phase-review-layout"><main><section class="workflow-panel phase-review-members"><header><div><h3>작업전선 Evidence</h3><p>원 작업과 보완 작업을 분리하지 않고 동일 작업전선의 재작업 이력으로 연결합니다.</p></div><span>${group.commits.length} Commit · ${commitBreakdown}</span></header><div>${rows}</div></section><section class="workflow-panel phase-review-criteria"><header><h3>${wfPhaseBadge(phase)} 완료·승인 판정 기준</h3><span>${criteria?`${(phase.acceptance_criteria||[]).length}개 기준`:'기준 대기'}</span></header><div>${criteria||wfBlank('판정 기준 없음','공정 계획에서 승인 기준을 먼저 등록해 주세요.')}</div></section></main><aside><section class="workflow-panel phase-review-gate"><header><div><span>PHASE MERGE GATE</span><h3>${esc(phase.title)} 공정 판정</h3></div><em class="${tone.kind}">${esc(tone.label)}</em></header><dl><div><dt>실행 상태</dt><dd>${esc(group.state.label)}</dd></div><div><dt>검토 대기</dt><dd>${group.committed}건</dd></div><div><dt>보완 이력</dt><dd>${group.remediationMembers.length}건</dd></div><div><dt>후속 공정</dt><dd>${tone.kind==='done'?'READY':'LOCKED'}</dd></div></dl>${gateAction}</section><section class="workflow-panel phase-review-flow"><h3>Zone A 공사 흐름</h3>${wfConstructionPhaseGroups(group.run).map((item,index)=>{const itemTone=wfPhaseReviewTone(item);return `<div class="${item.key===group.key?'current':''}"><span class="zone-token ${wfPhaseCss(item.phase,index)}">${wfPhaseBadge(item.phase,index)}</span><b>${esc(item.phase.title)}</b><em class="${itemTone.kind}">${esc(itemTone.label)}</em></div>`;}).join('')}</section></aside></div></div>`;
+}
+
+function wfPhaseReviewList(run){
+  const groups=wfConstructionPhaseGroups(run);
+  const priority=wfPhaseReviewPriority(groups);
+  const counts={review:0,warning:0,active:0,done:0,locked:0};
+  groups.forEach(group=>{const kind=wfPhaseReviewTone(group).kind;counts[kind]=(counts[kind]||0)+1;});
+  const overall=Math.round(groups.reduce((sum,group)=>sum+group.state.progress,0)/Math.max(1,groups.length));
+  return `<div class="workflow-page construction-review-page"><div class="workflow-page-head"><div><h2>검토·승인</h2><p>Zone A 관로 공사의 장비별 Commit을 공정 단계로 모아 승인하고 다음 단계를 Release합니다.</p></div><label class="construction-run-select"><span>공사 선택</span><select data-review-run>${wfScenarioRuns().map(item=>`<option value="${esc(item.id)}" ${item.id===run.id?'selected':''}>${esc(wfConstructionLabel(item))}</option>`).join('')}</select></label></div><div class="workflow-kpis compact"><div><span>검토 대기 공정</span><b>${counts.review||0}</b><small>관리자 판정 필요</small></div><div><span>보완 필요 공정</span><b>${counts.warning||0}</b><small>Conflict / 부족량</small></div><div><span>진행 중 공정</span><b>${counts.active||0}</b><small>Isaac 실행·수집</small></div><div><span>승인 완료 공정</span><b>${counts.done||0}/${groups.length}</b><small>전체 공정 ${overall}%</small></div></div><div class="construction-review-layout"><section class="workflow-panel construction-review-card"><header><div><span>ZONE ${esc(wfScenarioZoneId())} · PIPELINE CONSTRUCTION</span><h3>${esc(wfScenarioZoneTitle())}</h3><p>${esc(wfConstructionLabel(run))} · 1단계 터파기 → 2단계 관로 설치 → 3단계 되메우기</p></div><strong>${overall}%</strong></header><div class="phase-review-list">${groups.map((group,index)=>{const tone=wfPhaseReviewTone(group);const workfronts=group.primaryMembers||[];const total=Math.max(workfronts.length,group.phase.equipment?.length||0,1);const correction=group.remediationMembers.length?` · 보완 ${group.remediationMembers.length}건 연결`:'';return `<button class="phase-review-row ${tone.kind}" data-review-group="${esc(group.key)}"><span class="zone-token ${wfPhaseCss(group.phase,index)}">${wfPhaseBadge(group.phase,index)}</span><div><b>${esc(group.phase.title)}</b><small>${esc(group.state.label)} · ${group.approved}/${total} 작업전선 승인${correction}</small></div><div><span>Evidence</span><b>${group.completeness||0}%</b></div><div><i style="--p:${group.state.progress}%"></i><b>${group.state.progress}%</b></div><em class="${tone.kind}">${esc(tone.label)}</em><strong>상세 ›</strong></button>`;}).join('')}</div></section><aside class="workflow-panel construction-review-priority"><header><span>NEXT REVIEW</span><h3>우선 검토 공정</h3></header>${priority?`<div class="priority-zone"><span class="zone-token ${wfPhaseCss(priority.phase)}">${wfPhaseBadge(priority.phase)}</span><div><b>${esc(priority.phase.title)}</b><small>${esc(wfPhaseReviewTone(priority).label)}</small></div></div><dl><div><dt>검토 대기</dt><dd>${priority.committed} Commit</dd></div><div><dt>보완 이력</dt><dd>${priority.remediationMembers.length}건</dd></div><div><dt>Evidence</dt><dd>${priority.completeness}%</dd></div></dl><button class="primary-button" data-review-group="${esc(priority.key)}">공정 검토 열기 →</button>`:wfBlank('검토 대상 없음','현재 공사의 모든 공정이 승인되었습니다.')}</aside></div><p class="construction-scope-note">이 화면은 선택한 Zone의 관로 공사만 표시합니다. 다른 위치의 독립 작업은 Zone B 등 별도 공사로 분리됩니다.</p></div>`;
+}
+
+renderEvidence=function(){
+  const page=$('#page-evidence');if(!page)return;
+  const run=wfSelectedConstructionRun(workflowUI.reviewRunId);
+  if(!run){page.innerHTML=`<div class="workflow-page"><div class="workflow-page-head"><div><h2>검토·승인</h2><p>공사 단위 Evidence 검토를 준비합니다.</p></div></div>${wfBlank('진행 중인 공사 없음','관로 공사 계획을 하달하면 Zone별 검토 게이트가 생성됩니다.')}</div>`;return;}
+  workflowUI.reviewRunId=run.id;
+  const groups=wfConstructionPhaseGroups(run);
+  const selected=groups.find(group=>group.key===workflowUI.reviewGroupKey);
+  page.innerHTML=selected?wfPhaseReviewDetail(selected):wfPhaseReviewList(run);
+};
+
+function wfConstructionHistoryEvents(run){
+  const uniqueWorks=[];
+  const seen=new Set();
+  const phaseByWorkId=new Map();
+  const instructionByWorkId=new Map();
+  const remediationByParentId=new Map();
+  (run?.instructions||[]).forEach(instruction=>{
+    const work=wfScenarioInstructionWork(instruction);
+    if(work)phaseByWorkId.set(work.id,String(instruction.params?.scenario_phase_id||''));
+    if(work)instructionByWorkId.set(work.id,instruction);
+    if(wfIsRemediationInstruction(instruction)&&instruction.params?.remediation_parent_instruction_id){
+      remediationByParentId.set(instruction.params.remediation_parent_instruction_id,instruction);
+    }
+    if(work&&!seen.has(work.id)){seen.add(work.id);uniqueWorks.push(work);}
+  });
+  return wfHistoryEvents(uniqueWorks).map((event,index)=>{
+    const instruction=instructionByWorkId.get(event.workId);
+    const remediation=instruction?remediationByParentId.get(instruction.id):null;
+    let enriched={...event};
+    if(remediation&&event.id.endsWith(':commit')){
+      const parentCommit=(instruction.commits||[]).find(commit=>commit.id===remediation.params?.remediation_parent_commit_id)||isaacLatestCommit(instruction);
+      const facts=wfRemediationFacts(remediation,parentCommit);
+      enriched={
+        ...enriched,
+        type:'warning',
+        title:'최초 Commit · 목표 굴착량 미달',
+        desc:`${instruction.params?.equipment_name||'해당 장비'} 작업 결과가 완료 기준에 미달하여 보완 Work Package가 생성되었습니다.`,
+        status:'검토 필요',
+        actual:`완료 ${num(facts.completed)}㎥ / 목표 ${num(facts.planned)}㎥ · 부족 ${num(facts.remaining)}㎥`,
+        criterion:`굴착 달성률 ${Math.round(facts.measured*100)}% / 기준 ${Math.round(facts.required*100)}%`,
+        impact:'보완 Work Package 하달 · 다음 공정 LOCKED',
+        trace:`DEFICIT / ${parentCommit?.id||instruction.id}`,
+      };
+    }else if(remediation&&event.id.endsWith(':approved')){
+      const correctionCommit=isaacLatestCommit(remediation);
+      enriched={
+        ...enriched,
+        title:'원 Commit 완료 처리',
+        desc:'연결된 재작업 Commit이 재검증을 통과하여 최초 미달 Commit을 완료 상태로 닫았습니다.',
+        status:'보완 연계 완료',
+        actual:`재작업 Commit ${wfCompactTraceId(correctionCommit?.id)}`,
+        criterion:'부족량 추가 굴착 · Evidence 재검증 통과',
+        impact:'원 작업과 보완 작업을 하나의 작업전선 이력으로 병합',
+        trace:`REMEDIATED / ${event.trace}`,
+      };
+    }else if(wfIsRemediationInstruction(instruction)){
+      const parentInstruction=(run?.instructions||[]).find(item=>item.id===instruction.params?.remediation_parent_instruction_id);
+      const parentCommit=(parentInstruction?.commits||[]).find(commit=>commit.id===instruction.params?.remediation_parent_commit_id)||isaacLatestCommit(parentInstruction);
+      const facts=wfRemediationFacts(instruction,parentCommit);
+      if(event.id.endsWith(':issued')){
+        enriched={
+          ...enriched,type:'branch',title:'보완 Work Package 하달',status:'재작업 지시',
+          desc:`${instruction.params?.equipment_name||'해당 장비'}만 동일 작업전선의 부족량을 추가 굴착하도록 하달했습니다.`,
+          actual:`부족량 ${num(facts.remaining)}㎥`,criterion:'최초 Commit 목표량 미달',impact:'재굴착 후 센서 Evidence 재수집',
+          trace:`CORRECTION / ${instruction.id} ← ${instruction.params?.remediation_parent_commit_id}`,
+        };
+      }else if(event.id.endsWith(':dispatched')){
+        enriched={...enriched,title:'보완 굴착 실행',desc:'보완 Work Package를 원 장비에 재하달하여 부족 구간만 굴착했습니다.',status:'재작업 실행'};
+      }else if(event.id.endsWith(':commit')){
+        enriched={
+          ...enriched,type:'active',title:'재작업 Commit · 기준 충족',status:event.status==='조치 필요'?'재검증 필요':'재검증 대기',
+          desc:'부족량 굴착 결과와 카메라·LiDAR·IMU Evidence를 원 Commit에 연결해 재커밋했습니다.',
+          actual:`추가 굴착 ${num(facts.remaining)}㎥`,criterion:'원 완료 기준 재적용',impact:'관리자 재검증 후 원 작업 완료 처리',
+          trace:`RECOMMIT / ${event.trace} ← ${instruction.params?.remediation_parent_commit_id}`,
+        };
+      }else if(event.id.endsWith(':approved')){
+        enriched={
+          ...enriched,title:'재검증 통과 · 보완 Merge',desc:'추가 굴착 결과가 기준을 충족하여 보완 브랜치를 원 작업전선에 병합했습니다.',
+          status:'보완 승인',actual:'부족량 0㎥ · PASS',criterion:'목표 굴착량·Evidence 완전성 충족',impact:'터파기 작업전선 완료 · 다음 공정 READY',
+          trace:`MERGE CORRECTION / ${event.trace}`,
+        };
+      }
+    }
+    return {...enriched,phaseId:phaseByWorkId.get(event.workId)||'',sortTime:wfHistoryTimeValue(enriched,index)};
+  }).sort((a,b)=>a.sortTime-b.sortTime);
+}
+
+function wfHistoryEventButton(event,label){
+  if(!event)return '<span class="git-node empty">Commit 대기</span>';
+  const selected=event.id===workflowUI.historyEventId?'selected':'';
+  const evidenceClass=event.instructionId&&event.commitId?'has-evidence':'';
+  const evidenceAttributes=event.instructionId&&event.commitId
+    ?` data-isaac-detail="${esc(event.instructionId)}" data-isaac-commit="${esc(event.commitId)}" title="Commit 상세 Evidence 열기"`
+    :'';
+  return `<button class="git-node ${event.type} ${selected} ${evidenceClass}" data-history-event="${esc(event.id)}"${evidenceAttributes}><i></i><span><b>${esc(label||event.title)}</b><small>${esc(event.time)} · ${esc(event.status)}</small></span>${evidenceAttributes?'<em>Evidence ›</em>':''}</button>`;
+}
+
+function wfConstructionGitGraph(run,groups,events){
+  const visibleGroups=workflowUI.historyZone==='ALL'?groups:groups.filter(group=>group.phase.id===workflowUI.historyZone);
+  return `<div class="construction-git-root"><div class="git-main-node"><i></i><div><span>main</span><b>관로 공사 계획 승인</b><small>${esc(wfConstructionLabel(run))}</small></div></div>${visibleGroups.map(group=>{
+    const tone=wfPhaseReviewTone(group);
+    const memberBranches=group.primaryMembers.map((instruction,index)=>{
+      const params=instruction.params||{};
+      const work=wfScenarioInstructionWork(instruction);
+      const memberEvents=events.filter(event=>event.workId===work?.id);
+      const commitEvent=[...memberEvents].reverse().find(event=>event.id.endsWith(':commit'));
+      const decisionEvent=[...memberEvents].reverse().find(event=>event.id.endsWith(':approved')||event.id.endsWith(':rejected'));
+      const fallback=[...memberEvents].reverse().find(event=>event.id.endsWith(':dispatched')||event.id.endsWith(':issued'));
+      const remediation=wfRemediationForInstruction(group,instruction);
+      if(remediation){
+        const remediationWork=wfScenarioInstructionWork(remediation);
+        const remediationEvents=events.filter(event=>event.workId===remediationWork?.id);
+        const remediationIssued=remediationEvents.find(event=>event.id.endsWith(':issued'));
+        const remediationCommit=[...remediationEvents].reverse().find(event=>event.id.endsWith(':commit'));
+        const remediationDecision=[...remediationEvents].reverse().find(event=>event.id.endsWith(':approved')||event.id.endsWith(':rejected'));
+        return `<div class="equipment-git-branch has-remediation"><div class="equipment-git-label"><span>${esc(params.workfront_id||`F${index+1}`)}</span><b>${esc(params.equipment_name||'장비 미배정')}</b><small>재작업 1회 · 원인 연결</small></div><div class="equipment-git-line remediation-path">${wfHistoryEventButton(commitEvent||fallback,'최초 Commit · 목표량 미달')}${wfHistoryEventButton(remediationIssued,'보완 Work Package 하달')}${wfHistoryEventButton(remediationCommit,remediationCommit?'재작업 Commit · 기준 충족':'재작업 Commit 대기')}${remediationDecision?wfHistoryEventButton(remediationDecision,'재검증 승인 · Merge'):''}</div></div>`;
+      }
+      return `<div class="equipment-git-branch"><div class="equipment-git-label"><span>${esc(params.workfront_id||`F${index+1}`)}</span><b>${esc(params.equipment_name||'장비 미배정')}</b></div><div class="equipment-git-line">${wfHistoryEventButton(commitEvent||fallback,commitEvent?'Evidence Commit':'작업 하달')}${decisionEvent?wfHistoryEventButton(decisionEvent,decisionEvent.type==='merge'?'승인':'반려'):''}</div></div>`;
+    }).join('')||`<div class="equipment-git-branch empty"><span>선행 공정 승인 후 Work Package가 생성됩니다.</span></div>`;
+    const mergeEvent=[...events].reverse().find(event=>event.phaseId===group.phase.id&&event.type==='merge');
+    const phaseIndex=groups.indexOf(group);
+    const branchKey=`${run.id}:${group.phase.id}`;
+    const expanded=workflowUI.historyBranchesOpen.has(branchKey);
+    const branchBodyId=`history-branch-${String(run.id).replace(/[^a-zA-Z0-9_-]/g,'-')}-${String(group.phase.id).replace(/[^a-zA-Z0-9_-]/g,'-')}`;
+    return `<section class="phase-git-block ${wfPhaseCss(group.phase,phaseIndex)} ${tone.kind} ${expanded?'expanded':'collapsed'}"><header><button type="button" class="phase-git-toggle" data-history-branch-toggle="${esc(branchKey)}" aria-expanded="${expanded}" aria-controls="${esc(branchBodyId)}"><span class="zone-token ${wfPhaseCss(group.phase,phaseIndex)}">${wfPhaseBadge(group.phase,phaseIndex)}</span><div><b>${esc(group.phase.title)} 브랜치</b><small>Zone ${esc(wfScenarioZoneId())} · ${esc(group.state.label)} · 장비 Commit ${group.commits.length}건</small></div><em class="${tone.kind}">${esc(tone.label)}</em><i class="phase-git-chevron" aria-hidden="true"></i></button></header><div class="phase-git-content" id="${esc(branchBodyId)}" ${expanded?'':'hidden'}><div class="equipment-git-branches">${memberBranches}</div><div class="phase-git-merge"><i></i>${mergeEvent?wfHistoryEventButton(mergeEvent,`${wfPhaseBadge(group.phase,phaseIndex)} Merge`):`<span class="git-node empty">${tone.kind==='locked'?'선행 공정 승인 대기':'관리자 Merge 대기'}</span>`}</div></div></section>`;
+  }).join('')}<div class="git-release-node ${groups.every(group=>group.state.kind==='done')?'done':''}"><i></i><div><span>release</span><b>관로 공사 최종 완료</b><small>${groups.filter(group=>group.state.kind==='done').length}/${groups.length} 공정 Merge</small></div></div></div>`;
+}
+
+renderVersions=function(){
+  workflowUI.historyStatus=workflowUI.historyStatus||'ALL';
+  const runs=wfScenarioRuns();
+  const run=wfSelectedConstructionRun(workflowUI.historyRunId);
+  const page=$('#page-versions');if(!page)return;
+  if(!run){page.innerHTML=`<div class="workflow-page"><div class="workflow-page-head"><div><h2>작업 이력</h2><p>공사별 Commit과 승인 Merge 흐름을 추적합니다.</p></div></div>${wfBlank('기록된 관로 공사 없음','관로 공사를 하달하면 Git graph 이력이 생성됩니다.')}</div>`;return;}
+  workflowUI.historyRunId=run.id;
+  const groups=wfConstructionPhaseGroups(run);
+  if(workflowUI.historyZone!=='ALL'&&!groups.some(group=>group.phase.id===workflowUI.historyZone))workflowUI.historyZone='ALL';
+  const allEvents=wfConstructionHistoryEvents(run);
+  let events=workflowUI.historyZone==='ALL'?allEvents:allEvents.filter(event=>event.phaseId===workflowUI.historyZone);
+  if(workflowUI.historyStatus==='ACTION')events=events.filter(event=>['warning','branch'].includes(event.type));
+  if(workflowUI.historyStatus==='DONE')events=events.filter(event=>event.type==='merge');
+  if(workflowUI.historyStatus==='ACTIVE')events=events.filter(event=>['main','active'].includes(event.type));
+  if(!events.some(event=>event.id===workflowUI.historyEventId))workflowUI.historyEventId=events.at(-1)?.id||null;
+  const selected=events.find(event=>event.id===workflowUI.historyEventId)||null;
+  const commitCount=run.instructions.reduce((sum,item)=>sum+(item.commits||[]).length,0);
+  const mergeCount=allEvents.filter(event=>event.type==='merge').length;
+  const conflictCount=allEvents.filter(event=>['warning','branch'].includes(event.type)).length;
+  page.innerHTML=`<div class="workflow-page construction-history-page"><div class="workflow-page-head"><div><h2>작업 이력</h2><p>Zone A 관로 공사의 Phase 브랜치, 장비별 Evidence Commit, 관리자 Merge를 한 그래프로 추적합니다.</p></div><label class="construction-run-select"><span>공사 선택</span><select data-history-run>${runs.map(item=>`<option value="${esc(item.id)}" ${item.id===run.id?'selected':''}>${esc(wfConstructionLabel(item))}</option>`).join('')}</select></label></div><div class="history-filter-bar construction-history-filter"><label><span>공정 단계</span><select data-history-zone><option value="ALL">전체 공정</option>${groups.map((group,index)=>`<option value="${esc(group.phase.id)}" ${workflowUI.historyZone===group.phase.id?'selected':''}>${wfPhaseBadge(group.phase,index)} · ${esc(group.phase.title)}</option>`).join('')}</select></label><label><span>이벤트</span><select data-history-status><option value="ALL" ${workflowUI.historyStatus==='ALL'?'selected':''}>전체 이벤트</option><option value="ACTIVE" ${workflowUI.historyStatus==='ACTIVE'?'selected':''}>작업·Commit</option><option value="ACTION" ${workflowUI.historyStatus==='ACTION'?'selected':''}>Conflict·보완</option><option value="DONE" ${workflowUI.historyStatus==='DONE'?'selected':''}>승인·Merge</option></select></label><div class="history-scope-explain"><b>Zone ${esc(wfScenarioZoneId())} · ${esc(wfScenarioZoneTitle())}</b><span>다른 위치의 독립 작업은 별도 Zone 공사로 분리됩니다.</span></div></div><div class="git-summary"><div><span>Evidence Commit</span><b>${commitCount}</b></div><div><span>Conflict·보완</span><b>${conflictCount}</b></div><div><span>승인 Merge</span><b>${mergeCount}</b></div><div><span>완료 공정</span><b>${groups.filter(group=>group.state.kind==='done').length}/${groups.length}</b></div></div><div class="construction-history-layout"><section class="workflow-panel construction-git-panel"><header><div><span>GIT-LIKE CONSTRUCTION GRAPH · ZONE ${esc(wfScenarioZoneId())}</span><h3>${esc(wfScenarioZoneTitle())} · main</h3><p>Commit을 누르면 해당 시점의 카메라·LiDAR·IMU Evidence 상세가 열립니다.</p></div><code>${esc(run.id.slice(0,18))}</code></header>${wfConstructionGitGraph(run,groups,events)}</section>${wfHistoryDetail(selected)}</div></div>`;
+};
+
+document.addEventListener('click',event=>{
+  const branchToggle=event.target.closest('[data-history-branch-toggle]');
+  if(branchToggle){
+    const branchKey=branchToggle.dataset.historyBranchToggle;
+    if(workflowUI.historyBranchesOpen.has(branchKey))workflowUI.historyBranchesOpen.delete(branchKey);
+    else workflowUI.historyBranchesOpen.add(branchKey);
+    renderVersions();
+    return;
+  }
+  const phase=event.target.closest('[data-review-group]');
+  if(phase){workflowUI.reviewGroupKey=phase.dataset.reviewGroup;renderEvidence();window.scrollTo({top:0,behavior:'smooth'});return;}
+  if(event.target.closest('[data-review-group-back]')){workflowUI.reviewGroupKey=null;renderEvidence();window.scrollTo({top:0,behavior:'smooth'});}
+});
+
+document.addEventListener('change',event=>{
+  if(event.target.matches('[data-review-run]')){
+    workflowUI.reviewRunId=event.target.value;
+    workflowUI.reviewGroupKey=null;
+    renderEvidence();
+  }
+  if(event.target.matches('[data-history-run]')){
+    workflowUI.historyRunId=event.target.value;
+    workflowUI.historyEventId=null;
+    workflowUI.historyZone='ALL';
+    renderVersions();
+  }
 });
 
 // app.js booted first; redraw with the workflow renderers now installed.

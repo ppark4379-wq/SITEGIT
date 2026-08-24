@@ -891,16 +891,117 @@ def test_real_prim_work_package_uses_live_inventory_and_only_masks_map_after_app
         "source": "stage-readback",
     }
     commit = _commit(manager_client, instruction, result=result)
-    assert not any(item["type"] == "removed_prim" for item in _map_objects(manager_client))
+    assert not any(
+        item["type"] == "removed_prim"
+        and item["prim_path"] == result["target_prim_path"]
+        for item in _map_objects(manager_client)
+    )
 
     approved = manager_client.post(
         f"/api/v1/isaac/commits/{commit['id']}/review",
         json={"decision": "approved", "note": "전후 증거 확인"},
     )
     assert approved.status_code == 200, approved.text
-    removed = next(item for item in _map_objects(manager_client) if item["type"] == "removed_prim")
+    removed = next(
+        item
+        for item in _map_objects(manager_client)
+        if item["type"] == "removed_prim"
+        and item["prim_path"] == result["target_prim_path"]
+    )
     assert removed["prim_path"].endswith("soil_pile_A")
     assert removed["size"] == {"x": 6.0, "y": 5.0, "z": 3.0}
+
+
+def test_parallel_excavation_legacy_delta_replays_cut_and_deposited_soil(manager_client):
+    """Already-approved parallel jobs remain replayable after the delta schema fix."""
+
+    target_path = "/World/Diggable/Pipeline/TrenchFill_01"
+    deposit_path = "/World/Diggable/TrenchFill_01_MovedSoil_05"
+    _publish_test_stage_inventory(
+        manager_client,
+        target_path=target_path,
+        target_name="TrenchFill_01",
+        target_size={"x": 8, "y": 7, "z": 1.6},
+    )
+    instruction_response = manager_client.post(
+        "/api/v1/isaac/instructions",
+        json={
+            "project_id": PROJECT_ID,
+            "kind": "excavate_prim",
+            "params": {
+                "label": "Zone A 터파기 작업전선 1",
+                "equipment_prim_path": "/World/Armature",
+                "equipment_name": "EXC-001",
+                "target_name": "TrenchFill_01",
+                "target_prim_path": target_path,
+                "work_package_id": "WP-PIPELINE-LEGACY-01",
+            },
+        },
+    )
+    assert instruction_response.status_code == 201, instruction_response.text
+    instruction = instruction_response.json()
+    target_position = {"x": -20, "y": -30, "z": 0.8}
+    target_size = {"x": 8, "y": 7, "z": 1.6}
+    deposit_position = {"x": -14, "y": -31, "z": 1.2}
+    deposit_size = {"x": 4, "y": 3, "z": 2.4}
+    geometry = {
+        "format": "sitegit-triangle-mesh-v1",
+        "points": [[-16, -32, 0], [-12, -32, 0], [-14, -29, 2.4]],
+        "face_vertex_counts": [3],
+        "face_vertex_indices": [0, 1, 2],
+    }
+    commit = _commit(
+        manager_client,
+        instruction,
+        result={
+            "operation": "pipeline_excavation",
+            "simulator": "isaac-sim",
+            "source": "stage-readback",
+            "target_prim_path": target_path,
+            "target_position": target_position,
+            "target_bounds_size": target_size,
+            "target_active_after": False,
+            "terrain_deformation": {"available": True},
+            # This is the format emitted by the first parallel-excavation run.
+            "map_changes": [
+                {"prim_path": target_path, "active": False, "operation": "excavate"}
+            ],
+            "scoops": [
+                {
+                    "terrain_deformation": {
+                        "targets": [
+                            {
+                                "target_prim_path": target_path,
+                                "position": target_position,
+                                "size": target_size,
+                            }
+                        ]
+                    },
+                    "moved_soil": {
+                        "prim_path": deposit_path,
+                        "position": deposit_position,
+                        "size": deposit_size,
+                        "geometry": geometry,
+                    },
+                }
+            ],
+        },
+    )
+
+    approved = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/review",
+        json={"decision": "approved", "note": "병렬 터파기 증거 확인"},
+    )
+    assert approved.status_code == 200, approved.text
+
+    objects = _map_objects(manager_client)
+    removed = next(item for item in objects if item["prim_path"] == target_path)
+    deposit = next(item for item in objects if item["prim_path"] == deposit_path)
+    assert removed["type"] == "removed_prim"
+    assert removed["position"] == {key: float(value) for key, value in target_position.items()}
+    assert deposit["type"] == "soil_deposit"
+    assert deposit["position"] == {key: float(value) for key, value in deposit_position.items()}
+    assert deposit["geometry"] == geometry
 
 
 def test_excavation_cannot_be_approved_without_real_stage_readback(manager_client):

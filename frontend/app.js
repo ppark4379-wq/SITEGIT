@@ -521,6 +521,8 @@ function applyPage(){
 }
 
 const DYNAMIC_ZONE_COLORS=['#d99620','#2ca66f','#3478cf','#b74983','#7658c7','#d45f3f','#2c9ca6','#70823b'];
+const SCENARIO_PHASE_ORDER={excavation:1,pipe_installation:2,backfill:3};
+const SCENARIO_ZONE_COLORS={A:DYNAMIC_ZONE_COLORS[0],B:DYNAMIC_ZONE_COLORS[1],C:DYNAMIC_ZONE_COLORS[2]};
 function afterMapFeatureCutover(value){
   const timestamp=Date.parse(value||'');
   return Number.isFinite(timestamp)&&timestamp>=Date.parse(MAP_FEATURE_CUTOVER_AT);
@@ -529,6 +531,33 @@ function dynamicMapInstructions(){
   return (isaacInstructions||[])
     .filter(instruction=>afterMapFeatureCutover(instruction.created_at))
     .sort((a,b)=>(Date.parse(a.created_at)||0)-(Date.parse(b.created_at)||0)||String(a.id).localeCompare(String(b.id)));
+}
+function activeDynamicZoneInstructions(instructions=dynamicMapInstructions()){
+  const ordinary=[];
+  const scenarioRuns=new Map();
+  instructions.forEach(instruction=>{
+    const runId=String(instruction?.params?.scenario_run_id||'');
+    if(!runId){ordinary.push(instruction);return;}
+    if(!scenarioRuns.has(runId))scenarioRuns.set(runId,[]);
+    scenarioRuns.get(runId).push(instruction);
+  });
+  scenarioRuns.forEach(members=>{
+    const phases=new Map();
+    members.forEach(instruction=>{
+      const params=instruction.params||{};
+      const phaseId=String(params.scenario_phase_id||'excavation');
+      if(!phases.has(phaseId))phases.set(phaseId,[]);
+      phases.get(phaseId).push(instruction);
+    });
+    const ordered=[...phases.entries()].sort((left,right)=>{
+      const leftOrder=Number(left[1][0]?.params?.scenario_phase_order||SCENARIO_PHASE_ORDER[left[0]]||999);
+      const rightOrder=Number(right[1][0]?.params?.scenario_phase_order||SCENARIO_PHASE_ORDER[right[0]]||999);
+      return leftOrder-rightOrder;
+    });
+    const active=ordered.find(([,phaseMembers])=>!phaseMembers.every(item=>item.status==='approved'));
+    if(active)ordinary.push(...active[1]);
+  });
+  return ordinary.sort((a,b)=>(Date.parse(a.created_at)||0)-(Date.parse(b.created_at)||0)||String(a.id).localeCompare(String(b.id)));
 }
 function normalizedDynamicZoneId(value){
   return String(value||'').replace(/^zone\s*/i,'').trim().toUpperCase();
@@ -588,7 +617,10 @@ function dynamicInstructionGeometry(instruction){
   };
 }
 function dynamicMapZones(){
-  const instructions=dynamicMapInstructions();
+  // A scenario registers A/B/C together, but the Zone layer represents the
+  // current construction phase only. Approved phases remain visible through
+  // Work/Timeline geometry, while their operational mask advances A -> B -> C.
+  const instructions=activeDynamicZoneInstructions();
   const grouped=new Map();
   instructions.forEach((instruction,index)=>{
     const geometry=dynamicInstructionGeometry(instruction);
@@ -620,7 +652,7 @@ function dynamicMapZones(){
       id:group.zoneId,
       label:`ZONE ${group.zoneId}`,
       title:group.instructions.length>1?`${group.title} 외 ${group.instructions.length-1}건`:group.title,
-      color:DYNAMIC_ZONE_COLORS[index%DYNAMIC_ZONE_COLORS.length],
+      color:SCENARIO_ZONE_COLORS[group.zoneId]||DYNAMIC_ZONE_COLORS[index%DYNAMIC_ZONE_COLORS.length],
       position:{x:(bounds.minX+bounds.maxX)/2,y:(bounds.minY+bounds.maxY)/2,z:bounds.maxZ},
       size:{x:bounds.maxX-bounds.minX,y:bounds.maxY-bounds.minY,z:Math.max(.5,bounds.maxZ-bounds.minZ)},
       status:latest.status,
@@ -816,7 +848,7 @@ function renderDashboard(){
           <div class="map-toolbar"><div class="segmented"><button class="${activeMapLayer==='work'?'active':''}" data-map-layer="work">Work</button><button class="${activeMapLayer==='zone'?'active':''}" data-map-layer="zone">Zone</button><button class="${activeMapLayer==='evidence'?'active':''}" data-map-layer="evidence">Evidence</button><button class="${activeMapLayer==='constraint'?'active':''}" data-map-layer="constraint">Constraint</button><button class="${activeMapLayer==='timeline'?'active':''}" data-map-layer="timeline">Timeline</button></div><button class="ghost-button button-sm" data-action="fit-map">화면 맞춤</button></div>
         </div>
         <div class="site-map-wrap isaac-map">
-          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html?v=20260820-drawing-xray-6" title="Isaac Sim pipeline construction site 3D viewer" loading="eager"></iframe>
+          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html?v=20260823-current-ui-1" title="Isaac Sim pipeline construction site 3D viewer" loading="eager"></iframe>
           <div class="map-info-float">${mapInfoMarkup(wp)}</div>
           <div class="isaac-map-note">${stageInventory.connected?`Isaac Stage 연결 · 객체 ${(stageInventory.scene_objects||[]).length}개 · 1초 갱신`:'Isaac Stage 연결 대기'} · 좌클릭 회전 · 우클릭 이동 · 휠 확대</div>
           <div class="map-timeline-shell ${activeMapLayer==='timeline'?'active':''}" id="mapTimelineControl">${timelineControlMarkup()}</div>
@@ -1126,7 +1158,10 @@ document.addEventListener('click',e=>{
   const editW=e.target.closest('[data-edit-wp]'); if(editW){openWpModal(editW.dataset.editWp);return}
   const approveIsaac=e.target.closest('[data-isaac-approve]'); if(approveIsaac){reviewIsaacCommit(approveIsaac.dataset.isaacApprove,'approved');return}
   const rejectIsaac=e.target.closest('[data-isaac-reject]'); if(rejectIsaac){reviewIsaacCommit(rejectIsaac.dataset.isaacReject,'rejected');return}
-  const detailIsaac=e.target.closest('[data-isaac-detail]'); if(detailIsaac){openIsaacEvidence(detailIsaac.dataset.isaacDetail);return}
+  const remediateIsaac=e.target.closest('[data-isaac-remediation]'); if(remediateIsaac){createIsaacRemediation(remediateIsaac.dataset.isaacRemediation);return}
+  const dispatchRemediation=e.target.closest('[data-remediation-dispatch]'); if(dispatchRemediation){dispatchIsaacRemediation(dispatchRemediation.dataset.remediationDispatch);return}
+  const openRemediation=e.target.closest('[data-open-remediation]'); if(openRemediation){loadRemediationPlan(openRemediation.dataset.openRemediation);return}
+  const detailIsaac=e.target.closest('[data-isaac-detail]'); if(detailIsaac){openIsaacEvidence(detailIsaac.dataset.isaacDetail,detailIsaac.dataset.isaacCommit);return}
   const detailRealWp=e.target.closest('[data-real-wp-detail]'); if(detailRealWp){openRealWorkPackageDetail(detailRealWp.dataset.realWpDetail);return}
   const mapLayer=e.target.closest('[data-map-layer]'); if(mapLayer){setIsaacMapLayer(mapLayer.dataset.mapLayer);return}
   const action=e.target.closest('[data-action]'); if(action){handleAction(action.dataset.action);return}
@@ -1362,7 +1397,7 @@ function addEvent(type,title,desc){state.events.unshift({time:nowTime(),type,tit
 /* Isaac 폐루프 — 웹 지시 → Isaac 실행 → Commit → 관리자 승인 → 맵 반영 */
 const ISAAC_STATUS_TEXT={blocked:'자원 대기',pending:'Isaac 대기',dispatched:'Isaac 실행 중',committed:'승인 대기',approved:'Merge 완료',rejected:'Conflict'};
 const ISAAC_STATUS_BADGE={blocked:'warning',pending:'neutral',dispatched:'info',committed:'warning',approved:'accepted',rejected:'danger'};
-function isaacLatestCommit(instruction){return (instruction.commits||[]).at(-1)||null}
+function isaacLatestCommit(instruction){return (instruction?.commits||[]).at(-1)||null}
 function isaacPositionText(instruction){
   const commit=isaacLatestCommit(instruction);
   if(instruction.kind==='excavate_prim')return commit?.result?.target_prim_path||instruction.params?.target_prim_path||'-';
@@ -1443,9 +1478,10 @@ function syncAiWorkPackageStatuses(){
       if(instruction.kind==='generated_script'){
         const bindings=instruction.params?.resource_bindings||{};
         const missing=instruction.params?.missing_resources||[];
+        const plannedTarget=Math.max(0,Number(instruction.params?.planned_quantity?.value||1));
         wp={
           id:workPackageId,zone:instruction.params?.zone_id||'-',name:instruction.params?.summary||'AI Code Work Package',
-          task:'GENERATED_SCRIPT',length:0,target:1,raw:0,qualified:0,remaining:1,status:instruction.status,version:1,
+          task:'GENERATED_SCRIPT',length:0,target:plannedTarget,raw:0,qualified:0,remaining:plannedTarget,status:instruction.status,version:1,
           eta:instruction.status==='blocked'?'자원 대기':'Isaac 대기',risk:instruction.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,color:'#d95757',
           completionThreshold:100,observationThreshold:100,toleranceMm:0,assignments:[],
           isaacInstructionId:instruction.id,sourceText:instruction.params?.source_text||instruction.note||'',
@@ -1484,11 +1520,21 @@ function syncAiWorkPackageStatuses(){
     }
     const next=statusMap[instruction.status]||wp.status;
     if(wp.status!==next){wp.status=next;changed=true}
+    const progress=instruction.params?.execution_progress;
+    if(instruction.status==='dispatched'&&progress){
+      const livePercent=Math.max(0,Math.min(100,Math.round(Number(progress.progress_ratio||0)*100)));
+      if(wp.raw!==livePercent){wp.raw=livePercent;changed=true}
+      const target=Number(wp.target||1);
+      const remaining=Math.max(0,target*(1-livePercent/100));
+      if(wp.remaining!==remaining){wp.remaining=remaining;changed=true}
+      const nextEta=`${Number(progress.step_index||0)}/${Number(progress.step_count||0)}회 굴착 중`;
+      if(wp.eta!==nextEta){wp.eta=nextEta;changed=true}
+    }
     const commit=isaacLatestCommit(instruction);
     if(commit?.status==='succeeded'&&wp.raw!==100){wp.raw=100;changed=true}
     if(instruction.status==='approved'&&wp.qualified!==100){wp.qualified=100;wp.remaining=0;wp.eta='완료';changed=true}
     else if(instruction.status==='committed'&&wp.eta!=='승인 대기'){wp.eta='승인 대기';changed=true}
-    else if(instruction.status==='dispatched'&&wp.eta!=='Isaac 실행 중'){wp.eta='Isaac 실행 중';changed=true}
+    else if(instruction.status==='dispatched'&&!progress&&wp.eta!=='Isaac 실행 중'){wp.eta='Isaac 실행 중';changed=true}
   });
   return changed;
 }
@@ -1510,6 +1556,7 @@ function isaacInstructionRow(instruction){
   const workPackageId=instruction.params?.work_package_id;
   const failed=commit&&commit.status==='failed';
   const pendingReview=instruction.status==='committed'&&commit&&commit.review_status==='pending';
+  const needsRemediation=pendingReview&&commit.result?.quality_assessment?.status==='needs_remediation';
   const detail=failed
     ?`실행 실패 · ${esc(commit.result?.error||'원인 미기록')}`
     :generated
@@ -1526,11 +1573,11 @@ function isaacInstructionRow(instruction){
       <span>${detail}</span>
       <small>${workPackageId?`${esc(workPackageId)} · `:''}${esc(instruction.created_by_username||'-')} 발행${commit?.reviewed_by?` · ${esc(commit.reviewed_by)} 판정`:''}</small>
     </div>
-    <span class="badge ${ISAAC_STATUS_BADGE[instruction.status]||'neutral'}">${ISAAC_STATUS_TEXT[instruction.status]||instruction.status}</span>
+    <span class="badge ${needsRemediation?'danger':(ISAAC_STATUS_BADGE[instruction.status]||'neutral')}">${needsRemediation?'검토 필요':(ISAAC_STATUS_TEXT[instruction.status]||instruction.status)}</span>
     ${commit?`<button class="isaac-evidence-button" data-isaac-detail="${esc(instruction.id)}">증거</button>`:''}
     ${pendingReview?`<div class="isaac-row-actions">
-      <button class="secondary-button button-sm" data-isaac-approve="${esc(commit.id)}">✓ 승인</button>
-      <button class="ghost-button button-sm" data-isaac-reject="${esc(commit.id)}">반려</button>
+      ${needsRemediation?`<button class="secondary-button button-sm" data-isaac-detail="${esc(instruction.id)}">부족량 확인</button>`:`<button class="secondary-button button-sm" data-isaac-approve="${esc(commit.id)}">✓ 승인</button>
+      <button class="ghost-button button-sm" data-isaac-reject="${esc(commit.id)}">반려</button>`}
     </div>`:''}
   </div>`;
 }
@@ -1805,6 +1852,20 @@ function imuComparisonPanel(beforeData,afterData){
       ${sensorMetric('작업 후 각속도',angularSpeedAfter==null?'-':angularSpeedAfter.toFixed(4),'rad/s',angularSpeedAfter!=null&&angularSpeedAfter>.5?'warn':'')}
       ${sensorMetric('프레임 진행',before.available&&after.available?num(after.physicsStep-before.physicsStep):'-','steps',before.available&&after.available&&after.physicsStep<=before.physicsStep?'bad':'')}
     </div>
+    <div class="depth-corroboration-option">
+      <div class="depth-corroboration-copy">
+        <span>OPTIONAL SENSOR FUSION</span>
+        <h4>LiDAR + IMU·기구학 깊이 교차검증</h4>
+        <p>LiDAR 지형 깊이에 장비 자세와 버킷 팁 최저점 추정값을 함께 대조하는 보조 Evidence 옵션입니다.</p>
+      </div>
+      <div class="depth-corroboration-example" aria-label="10미터 굴착 깊이 교차검증 예시">
+        <div><span>목표 깊이</span><strong>10.00 m</strong></div>
+        <div><span>LiDAR 확인</span><strong>10.01 m</strong></div>
+        <div><span>IMU·기구학 추정</span><strong>10.02 m</strong></div>
+        <div class="depth-corroboration-pass"><span>교차 판정</span><strong>목표 충족</strong></div>
+      </div>
+      <div class="depth-corroboration-disclaimer"><b>DEMO · 예시값</b><span>센서 융합 확장 가능성을 보여주는 보조 정보이며, 실제 승인 판정에는 아직 사용하지 않습니다.</span></div>
+    </div>
   </section>`;
 }
 function lidarPhasePanel(title,data){
@@ -1889,6 +1950,31 @@ function executionMetricCards(result,evidence){
     ${metric('Evidence 완결성',Number.isFinite(completeness)?`${Math.round(completeness*100)}%`:'기존 형식',(quality.missing_sensor_types||[]).length?`미수집: ${(quality.missing_sensor_types||[]).map(item=>esc(item)).join(', ')}`:'필수 센서 수집 완료')}
   </div>`;
 }
+function excavationQualityPanel(result){
+  const quality=result?.quality_assessment||{};
+  if(!quality.status)return '';
+  const needsRemediation=quality.status==='needs_remediation';
+  const measured=Math.round(Number(quality.measured_completion_ratio||0)*1000)/10;
+  const required=Math.round(Number(quality.required_completion_ratio||0)*1000)/10;
+  const planned=Number(quality.planned_volume_m3||0);
+  const completed=Number(quality.completed_volume_m3||0);
+  const remaining=Number(quality.remaining_volume_m3||0);
+  const equipment=String(quality.equipment_prim_path||'').split('/').pop()?.replaceAll('_','-')||'-';
+  return `<section class="excavation-quality-panel ${needsRemediation?'needs-remediation':'passed'}">
+    <div class="excavation-quality-title">
+      <i>${needsRemediation?'!':'✓'}</i>
+      <div><span>EXCAVATION QUALITY GATE</span><h3>${needsRemediation?'목표 굴착량 미달 · 검토 필요':'목표 굴착량 충족'}</h3><p>${needsRemediation?'원 지시는 완료로 제출됐지만 Isaac Stage 실측값이 승인 기준에 미달합니다.':'Isaac Stage 실측값이 현재 공정의 승인 기준을 충족했습니다.'}</p></div>
+      <strong>${measured}% / 기준 ${required}%</strong>
+    </div>
+    <div class="excavation-quality-metrics">
+      <div><span>계획 굴착량</span><b>${num(planned)} ㎥</b></div>
+      <div><span>실측 완료량</span><b>${num(completed)} ㎥</b></div>
+      <div><span>부족 작업량</span><b>${num(remaining)} ㎥</b></div>
+      <div><span>보완 대상 장비</span><b>${esc(equipment)}</b></div>
+    </div>
+    ${needsRemediation?'<small>카메라·LiDAR 증거를 확인한 뒤 AI 보완 작업 초안을 만들 수 있습니다. 수량과 대상 Prim은 LLM이 아니라 Stage 실측값으로 고정됩니다.</small>':''}
+  </section>`;
+}
 function executionEventTimeline(evidence){
   const events=evidence.events||[];
   if(!events.length)return '<div class="execution-event-empty">기존 Commit에는 실행 이벤트가 없습니다.</div>';
@@ -1897,15 +1983,29 @@ function executionEventTimeline(evidence){
     <div><strong>${esc(event.event_type||'-')}</strong><small>${esc(event.work_state||'-')}</small></div>
   </div>`).join('')}</div>`;
 }
-function openIsaacEvidence(instructionId){
+function openIsaacEvidence(instructionId,commitId=''){
   const instruction=isaacInstructions.find(item=>item.id===instructionId);
-  const commit=instruction&&isaacLatestCommit(instruction);
+  const commit=instruction&&((instruction.commits||[]).find(item=>item.id===commitId)||isaacLatestCommit(instruction));
   if(!instruction||!commit)return;
   const evidence=commit.evidence||{};
   const result=commit.result||{};
   const bindings=instruction.params?.resource_bindings||{};
   const equipmentPath=instruction.params?.equipment_prim_path||bindings.equipment||'-';
   const targetPath=instruction.params?.target_prim_path||bindings.target||result.target_prim_path||'-';
+  const needsRemediation=result.quality_assessment?.status==='needs_remediation';
+  const dateLabel=value=>{
+    if(!value)return '-';
+    const parsed=new Date(value);
+    return Number.isNaN(parsed.getTime())?String(value):parsed.toLocaleString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  };
+  const reviewLabels={approved:'승인 · Merge',rejected:'반려 · Conflict',pending:'검토 대기'};
+  const workPackageId=instruction.params?.work_package_id||instruction.id;
+  const workfront=instruction.params?.workfront_id||instruction.params?.label||'-';
+  const equipmentName=instruction.params?.equipment_name||primShortName(equipmentPath);
+  const parentCommitId=instruction.params?.remediation_parent_commit_id||'';
+  const lineage=parentCommitId
+    ?`원 Commit ${parentCommitId.slice(0,12)}…의 부족 굴착량을 보완한 재작업 Commit`
+    :(needsRemediation?'목표량 미달로 보완 Work Package가 필요한 원 Commit':'독립 실행 Commit');
   openModal({
     eyebrow:'ISAAC EXECUTION COMMIT',
     title:'작업 전·후 증거 검토',
@@ -1915,7 +2015,19 @@ function openIsaacEvidence(instructionId){
       <span>${esc(equipmentPath)} → ${esc(targetPath)}</span>
       <small>실행 원본: ${esc(result.simulator||'-')} · 검증: ${esc(result.source||'-')}</small>
     </div>
+    <section class="commit-provenance">
+      <header><div><span>HISTORICAL COMMIT</span><h3>${esc(commit.id)}</h3></div><em class="${esc(commit.review_status||'pending')}">${esc(reviewLabels[commit.review_status]||commit.review_status||'검토 대기')}</em></header>
+      <dl>
+        <div><dt>Commit 시각</dt><dd>${esc(dateLabel(commit.committed_at||commit.created_at))}</dd></div>
+        <div><dt>Work Package</dt><dd>${esc(workPackageId)}</dd></div>
+        <div><dt>작업전선 · 장비</dt><dd>${esc(workfront)} · ${esc(equipmentName)}</dd></div>
+        <div><dt>관리자 판정</dt><dd>${esc(commit.reviewed_by||'-')} · ${esc(dateLabel(commit.reviewed_at))}</dd></div>
+        <div class="wide"><dt>Commit 계보</dt><dd>${esc(lineage)}</dd></div>
+        ${commit.review_note?`<div class="wide note"><dt>검토 메모</dt><dd>${esc(commit.review_note)}</dd></div>`:''}
+      </dl>
+    </section>
     ${executionMetricCards(result,evidence)}
+    ${excavationQualityPanel(result)}
     <section class="sensor-review-section camera-review-section">
       <div class="sensor-review-heading">
         <div><span>EQUIPMENT CAMERA</span><h3>장비 카메라 작업 전·후</h3></div>
@@ -1930,7 +2042,7 @@ function openIsaacEvidence(instructionId){
     ${lidarComparisonPanel(evidence.before,evidence.after,result)}
     ${imuComparisonPanel(evidence.before,evidence.after)}
     <section class="execution-events"><div class="execution-events-head"><h3>실행 이벤트</h3><span>${num((evidence.events||[]).length)}건</span></div>${executionEventTimeline(evidence)}</section>`,
-    footer:`<button class="ghost-button" data-modal-close>닫기</button>${commit.review_status==='pending'?`<button class="ghost-button" data-isaac-reject="${esc(commit.id)}">반려 · Conflict</button><button class="secondary-button" data-isaac-approve="${esc(commit.id)}">증거 확인 · 승인</button>`:''}`,
+    footer:`<button class="ghost-button" data-modal-close>닫기</button>${commit.review_status==='pending'?(needsRemediation?`<button class="secondary-button" data-isaac-remediation="${esc(commit.id)}">AI 보완 작업 초안</button>`:`<button class="ghost-button" data-isaac-reject="${esc(commit.id)}">반려 · Conflict</button><button class="secondary-button" data-isaac-approve="${esc(commit.id)}">증거 확인 · 승인</button>`):''}`,
   });
   $$('[data-evidence-image]',$('#modalBody')).forEach(image=>image.addEventListener('error',()=>{
     image.hidden=true;
@@ -1971,21 +2083,97 @@ function openRealWorkPackageDetail(instructionId){
     footer:`<button class="ghost-button" data-modal-close>닫기</button>${commit?`<button class="secondary-button" data-isaac-detail="${esc(instruction.id)}">Evidence 검토</button>`:''}`,
   });
 }
+function responseDetailMessage(payload,fallback){
+  const detail=payload?.detail;
+  if(typeof detail==='string')return detail;
+  if(detail&&typeof detail.message==='string')return detail.message;
+  return fallback;
+}
+function openRemediationPlan(instruction){
+  const params=instruction?.params||{};
+  const narrative=params.remediation_narrative||{};
+  const facts=params.remediation_facts||{};
+  const bindings=params.resource_bindings||{};
+  const steps=Array.isArray(narrative.action_steps)?narrative.action_steps:[];
+  const equipment=String(bindings.equipment||'').split('/').pop()?.replaceAll('_','-')||'-';
+  openModal({
+    eyebrow:'AI CORRECTIVE WORK PLAN',
+    title:'굴착 부족분 보완 작업',
+    modalClass:'remediation-plan-modal',
+    body:`<section class="remediation-plan-summary">
+      <div><span>${params.llm_assisted?'LLM 보조 계획':'규칙 기반 대체 계획'} · ${esc(params.compiler_model||'-')}</span><h3>${esc(narrative.title||'보완 굴착 작업')}</h3><p>${esc(narrative.summary||'Isaac Stage 실측 부족분을 보완합니다.')}</p></div>
+      <em>관리자 승인 대기</em>
+    </section>
+    <div class="remediation-fact-grid">
+      <div><span>배정 장비</span><b>${esc(equipment)}</b><small>${esc(bindings.equipment||'-')}</small></div>
+      <div><span>작업 대상</span><b>${esc(String(bindings.target||'').split('/').pop()||'-')}</b><small>${esc(bindings.target||'-')}</small></div>
+      <div><span>원 계획량</span><b>${num(facts.planned_volume_m3||0)} ㎥</b></div>
+      <div class="critical"><span>추가 굴착량</span><b>${num(facts.remaining_volume_m3||0)} ㎥</b></div>
+    </div>
+    <section class="remediation-steps"><h3>보완 작업 흐름</h3>${steps.map((step,index)=>`<div><i>${index+1}</i><span>${esc(step)}</span></div>`).join('')}</section>
+    <div class="remediation-manager-note"><strong>관리자 확인</strong><p>${esc(narrative.manager_note||'대상과 부족량을 확인한 뒤 해당 장비 한 대에만 재작업을 하달합니다.')}</p></div>
+    <p class="remediation-safety-note">LLM은 설명만 작성합니다. 장비·대상 Prim·부족 작업량은 승인된 원 Commit과 Isaac Stage 실측값에서 고정되며 임의로 변경되지 않습니다.</p>`,
+    footer:`<button class="ghost-button" data-modal-close>취소</button><button class="secondary-button" data-remediation-dispatch="${esc(instruction.id)}">승인 · ${esc(equipment)} 보완 작업 하달</button>`,
+  });
+}
+async function loadRemediationPlan(instructionId){
+  try{
+    const instruction=(isaacInstructions||[]).find(item=>item.id===instructionId);
+    if(!instruction)throw new Error('보완 Work Package를 찾을 수 없습니다. 새로고침 후 다시 시도하세요.');
+    openRemediationPlan(instruction);
+  }catch(error){toast('보완 계획을 열지 못했습니다',error.message,'danger')}
+}
+async function createIsaacRemediation(commitId){
+  try{
+    const response=await apiFetch(`/isaac/commits/${encodeURIComponent(commitId)}/remediation`,{method:'POST',body:'{}'});
+    const payload=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(responseDetailMessage(payload,`REMEDIATION_${response.status}`));
+    await loadIsaacInstructions();
+    openRemediationPlan(payload);
+  }catch(error){
+    if(error.message!=='AUTH_REQUIRED')toast('보완 계획 생성 실패',String(error.message||error),'danger');
+  }
+}
+async function dispatchIsaacRemediation(instructionId){
+  const button=document.querySelector(`[data-remediation-dispatch="${CSS.escape(instructionId)}"]`);
+  if(button){button.disabled=true;button.textContent='Isaac 자원 확인 중…';}
+  try{
+    const response=await apiFetch(`/isaac/instructions/${encodeURIComponent(instructionId)}/dispatch-remediation`,{method:'POST',body:'{}'});
+    const payload=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(responseDetailMessage(payload,`DISPATCH_REMEDIATION_${response.status}`));
+    await loadIsaacInstructions();
+    closeModal();
+    addEvent('warning','굴착 보완 작업 하달',`${payload.params?.equipment_name||'지정 굴착기'} 한 대가 부족 구간만 재작업합니다.`);
+    toast('보완 작업 하달 완료','EXC-002가 부족 굴착량을 보완한 뒤 새 Evidence Commit을 제출합니다.','success');
+    renderAll();
+  }catch(error){
+    if(button){button.disabled=false;button.textContent='승인 · 보완 작업 하달';}
+    if(error.message!=='AUTH_REQUIRED')toast('보완 작업 하달 실패',String(error.message||error),'danger');
+  }
+}
 async function reviewIsaacCommit(commitId,decision){
   const note=decision==='rejected'?(prompt('반려 사유를 입력하세요.')||'').slice(0,500):null;
   if(decision==='rejected'&&!note){toast('반려 취소','사유를 입력해야 반려할 수 있습니다.','warning');return}
+  const reviewedInstruction=(isaacInstructions||[]).find(item=>(item.commits||[]).some(commit=>commit.id===commitId));
+  const scenarioRunId=reviewedInstruction?.params?.scenario_run_id||'';
+  const scenarioZoneId=reviewedInstruction?.params?.zone_id||'A';
   try{
     const response=await apiFetch(`/isaac/commits/${encodeURIComponent(commitId)}/review`,{
       method:'POST',body:JSON.stringify({decision,note}),
     });
     if(response.status===409){toast('이미 판정된 결과','다른 관리자가 먼저 처리했습니다.','warning');await loadIsaacInstructions();return}
-    if(!response.ok){const payload=await response.json().catch(()=>({}));throw new Error(typeof payload.detail==='string'?payload.detail:`REVIEW_${response.status}`)}
+    if(!response.ok){const payload=await response.json().catch(()=>({}));throw new Error(responseDetailMessage(payload,`REVIEW_${response.status}`))}
     await loadIsaacInstructions();
     closeModal();
     if(decision==='approved'){
       reloadIsaacMapObjects();
       addEvent('success','Isaac 결과 승인','승인된 작업 결과가 Site Work Map에 반영됐습니다.');
-      toast('승인 완료','맵에 작업 결과가 반영됐습니다.','success');
+      const nextPhaseOpened=typeof wfOpenReadyScenarioPhasePlan==='function'&&wfOpenReadyScenarioPhasePlan(scenarioRunId);
+      toast(
+        nextPhaseOpened?'선행 공정 승인 완료':'승인 완료',
+        nextPhaseOpened?`Zone ${scenarioZoneId}의 다음 공정 단계 작업량·장비·판정 기준을 검토하고 계획 승인해 주세요.`:'맵에 작업 결과가 반영됐습니다.',
+        'success',
+      );
     }else{
       reloadIsaacMapObjects();
       addEvent('warning','Isaac Conflict 등록',`반려 사유: ${note}`);
@@ -1993,7 +2181,7 @@ async function reviewIsaacCommit(commitId,decision){
     }
     renderAll();
   }catch(error){
-    if(error.message!=='AUTH_REQUIRED')toast('판정 실패','서버 연결과 권한을 확인하세요.','danger');
+    if(error.message!=='AUTH_REQUIRED')toast('판정 실패',String(error.message||'서버 연결과 권한을 확인하세요.'),'danger');
   }
 }
 
@@ -2204,7 +2392,7 @@ document.addEventListener('click',event=>{
   if(remoteCanEdit)return;
   const button=event.target.closest('button');
   if(!button)return;
-  const allowed=button.matches('.nav-item,#mobileMenuBtn,#logoutBtn,#notificationsBtn,#profileBtn,#closeModalBtn,[data-modal-close],[data-select-wp],[data-wp-id],[data-zone],[data-page-link],[data-review-open],[data-review-back],[data-review-phase],[data-settings-tab],[data-equipment-select],[data-isaac-detail],[data-real-wp-detail],[data-history-event],[data-map-layer],[data-action="fit-map"],[data-action="manage-drawings"],[data-workflow-action="refresh"]');
+  const allowed=button.matches('.nav-item,#mobileMenuBtn,#logoutBtn,#notificationsBtn,#profileBtn,#closeModalBtn,[data-modal-close],[data-select-wp],[data-wp-id],[data-zone],[data-page-link],[data-review-open],[data-review-back],[data-review-phase],[data-settings-tab],[data-equipment-select],[data-isaac-detail],[data-real-wp-detail],[data-history-event],[data-map-layer],[data-action="fit-map"],[data-action="manage-drawings"],[data-workflow-action="refresh"],[data-isaac-remediation],[data-remediation-dispatch],[data-open-remediation]');
   if(allowed)return;
   event.preventDefault();
   event.stopImmediatePropagation();

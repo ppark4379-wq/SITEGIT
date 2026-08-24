@@ -426,6 +426,7 @@ def load_equipment(
     asset_path: str | Path,
     *,
     prim_path: str = DEFAULT_EQUIPMENT_PRIM_PATH,
+    equipment_id: str = "EXC-001",
     position: tuple[float, float, float] = (0.0, 0.0, 0.0),
     simulation_app: Any = None,
     settle_frames: int = 180,
@@ -481,7 +482,7 @@ def load_equipment(
         for _ in range(10):
             simulation_app.update()
     equipment_prim = stage.GetPrimAtPath(prim_path)
-    equipment_prim.SetCustomDataByKey("sitegitEquipmentId", "EXC-001")
+    equipment_prim.SetCustomDataByKey("sitegitEquipmentId", str(equipment_id))
     equipment_prim.SetCustomDataByKey("sitegitAssetPath", str(asset))
     equipment_prim.SetCustomDataByKey(
         "sitegitAssetMetersPerUnit", asset_meters_per_unit

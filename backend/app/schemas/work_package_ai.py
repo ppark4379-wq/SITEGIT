@@ -108,6 +108,8 @@ class PlanningDesignPreview(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     source_map: str = Field(min_length=1, max_length=160)
     work_area_id: str = Field(min_length=1, max_length=120)
+    zone_id: str = Field(min_length=1, max_length=80)
+    zone_title: str = Field(min_length=1, max_length=120)
     work_area_label: str = Field(min_length=1, max_length=160)
     station_range: str = Field(min_length=1, max_length=120)
     total_length_m: float = Field(gt=0)
@@ -133,6 +135,15 @@ class PlanningWorkPackagePlan(BaseModel):
     successor_title: str = Field(default="후속 작업 미지정", max_length=120)
     summary: str = Field(min_length=1, max_length=500)
     clarification_question: str = Field(default="", max_length=300)
+
+
+class RemediationNarrative(BaseModel):
+    """LLM-authored wording around Backend-owned corrective-work facts."""
+
+    title: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=500)
+    action_steps: list[str] = Field(min_length=2, max_length=6)
+    manager_note: str = Field(min_length=1, max_length=300)
 
 
 class PlanningWorkPackageDraft(BaseModel):

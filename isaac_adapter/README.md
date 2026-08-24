@@ -30,6 +30,72 @@ SimulationApp 부팅 후에만 import되므로 프로젝트 `.venv`로는 안 �
 E:\isaacsim\python.bat E:\SITEGIT\isaac_adapter\isaac_runner.py
 ```
 
+Backend도 실행한 뒤 웹의 도면 기반 계획에서 **계획 승인 · 터파기 3건 하달**을 누르면,
+세 지시는 같은 `execution_group_id`로 묶입니다. Runner는 `EXC-001~003`과 세 작업전선을
+모두 준비한 다음 작업 전 Evidence를 촬영하고, 기본 5회의 굴착 사이클을 같은
+타임라인에서 실행합니다. 작업이 끝나면 작업전선마다 독립 Evidence Commit을 남깁니다.
+이때 웹과 분리된 아래 데모 러너는 함께 실행하지 마세요.
+
+관로 공사 요청 한 건은 하나의 `scenario_run_id` 아래 다음 순서로 진행됩니다.
+
+1. Zone A 관로 공사의 1단계 터파기 3건 실행 → 작업전선별 Evidence Commit 검토
+2. 세 Commit 모두 승인 → 2단계 관로 설치 계획 검토·승인 버튼 활성화
+3. 2단계 계획 승인 → 관로 설치 3건 실행 및 Evidence Commit 검토
+4. 세 Commit 모두 승인 → 3단계 되메우기 계획 검토·승인 버튼 활성화
+5. 3단계 계획 승인 → 되메우기 3건 실행 및 Evidence Commit 검토
+6. 마지막 세 Commit 승인 → 상위 관로 공사 진행률 100%, 전체 공정 완료
+
+후속 공정은 선행 Evidence 승인만으로 즉시 실행되지 않습니다. 관리자가 작업 현황에서
+해당 Zone의 **계획 검토·승인**을 눌러 작업량·장비·공정별 판정 기준을 다시 확인해야
+Runner가 그 그룹을 가져갑니다. Zone A의 3단계 실행은 굴착 때 생성된 실제 `MovedSoil` Mesh를
+5단계로 소모하면서 `TrenchFill_01~08`을 복원하고, 작업전선마다 카메라·LiDAR·IMU
+Evidence와 Stage read-back 결과를 별도 Commit합니다.
+
+### 웹과 분리된 굴착기 3대 데모
+
+Backend, Work Package, Commit을 사용하지 않고 Isaac Sim 안에서만 작업 동작을 먼저
+확인하려면 저장소 루트에서 다음 파일을 실행합니다.
+
+```powershell
+.\start_sitegit_excavator_demo.bat
+```
+
+독립 시나리오 실행 파일은 기본적으로 최대화된 일반 창에 Viewport만 표시합니다.
+`Alt+Tab`으로 웹에 전환하거나 제목 표시줄에서 창을 복원·이동할 수 있습니다.
+`F7`로 Isaac 편집 UI를 잠시 복구하고 `F11`로 선택적으로 전체 화면을 켤 수 있습니다.
+처음부터 Stage·Property·Content 패널을 표시하려면 `-EditorUi`를 붙입니다.
+
+```powershell
+.\start_sitegit_excavator_demo.bat -EditorUi
+```
+
+이 데모는 `contracts/site_plans/demolition_pipeline_v1.json`의 남·중앙·북 작업전선을
+읽어 `EXC-001~003`을 관로 양쪽에 엇갈려 배치합니다. 준비 이동이 끝나면 세 장비의
+Arm 애니메이션을 같은 타임라인에 걸어 기본 5회의 굴착·선회·배토·정면 복귀를 동시에 실행합니다.
+각 버킷 사이클 직후 토사 Mesh가 한 단계씩 낮아지고 제거 체적만큼의 토사가 옆에
+나뉘어 쌓입니다. 마지막 버킷은 가장자리까지 굴착 저면으로 정리하므로 기본 실행에서는
+세 구간이 모두 파입니다. `-IntentionalDefect`를 지정하면 중앙 `EXC-002`만 최종 누적
+굴착률이 낮아져 미굴착 결함이 남습니다. 실행이 끝난 Stage는 일시 정지되며 Isaac 창을 닫을 때까지
+확인할 수 있습니다.
+
+```powershell
+# 애니메이션을 짧게 검증
+.\start_sitegit_excavator_demo.bat -Fast
+
+# 굴착 횟수를 바꿔 단계별 지형 감소 확인
+.\start_sitegit_excavator_demo.bat -Scoops 6
+
+# 가운데 작업전선에 의도적인 미굴착을 남기는 검토 시나리오
+.\start_sitegit_excavator_demo.bat -IntentionalDefect
+
+# GUI를 닫고 결과 Stage도 따로 저장
+.\start_sitegit_excavator_demo.bat -CloseOnFinish `
+  -SaveUsd E:\SiteGitData\isaac\three-excavator-demo\result.usda
+```
+
+결과 요약은 `SITEGIT_DATA_ROOT/isaac/three-excavator-demo/report.json`에 기록됩니다.
+이 실행 파일은 API 호출이나 웹 맵 반영을 하지 않습니다.
+
 ### 승인 Stage 저장과 다음 작업 복원
 
 Runner는 작업이 끝나면 현재 Stage를 자동으로
@@ -50,6 +116,26 @@ Commit 검토 중에는 다음 Work Package를 가져오지 않습니다. 승인
 `--usd`를 직접 지정하면 자동 HEAD보다 해당 파일이 우선하며, `--no-site`는 자동 복원을
 비활성화합니다.
 
+### Zone A phase 2 pipe-installation demo
+
+The excavation demo always exports
+`SITEGIT_DATA_ROOT/isaac/three-excavator-demo/excavated-stage.usda`, allowing the
+next construction phase to continue from the exact excavated geometry.
+
+```powershell
+.\start_sitegit_pipeline_demo.bat
+
+# Short animation smoke check
+.\start_sitegit_pipeline_demo.bat -Fast
+```
+
+The demo places one short handling pipe beside each work front's spoil bank.
+The physical excavators remain on stable upper ground, pick up one prop each,
+face the trench, and lower all three from above. The props then disappear and
+the complete drawing-aligned route appears in one frame. The resulting Stage
+and report are stored under
+`SITEGIT_DATA_ROOT/isaac/pipeline-installation-demo`.
+
 ### Authored excavator sensor mount
 
 Keep the clean excavator asset in `SITEGIT_EQUIPMENT_ASSET`. If a separate USD
@@ -59,8 +145,17 @@ placement reference:
 ```dotenv
 SITEGIT_SENSOR_REFERENCE_USD=E:\path\to\excavator_lidar.usd
 SITEGIT_SENSOR_REFERENCE_PRIM=/World/LidarMount
-SITEGIT_CAMERA_OFFSET_FROM_LIDAR=0.35,0,0.15
+SITEGIT_CAMERA_OFFSET_FROM_LIDAR=0.65,0.10,0.25
+SITEGIT_CAMERA_PITCH_DEG=24
+SITEGIT_CAMERA_FOCAL_LENGTH_MM=12
 SITEGIT_CAMERA_LEVEL_HORIZON=true
+SITEGIT_LIDAR_HORIZONTAL_FOV_DEG=130
+SITEGIT_LIDAR_VERTICAL_MIN_DEG=-70
+SITEGIT_LIDAR_VERTICAL_MAX_DEG=10
+SITEGIT_LIDAR_HORIZONTAL_RAYS=101
+SITEGIT_LIDAR_VERTICAL_RAYS=31
+SITEGIT_LIDAR_MIN_RANGE_M=0.35
+SITEGIT_LIDAR_MAX_RANGE_M=25
 ```
 
 The adapter reads only the referenced Prim transform. It does not compose the
@@ -70,6 +165,14 @@ site. `/World/Equipment/EXC_001/SiteGitSensors/RaycastLidar` and its sibling
 levelling acts like a camera gimbal and keeps roll at zero on sloped terrain,
 while LiDAR is refreshed before each evidence image so the green points in the
 image belong to the same before/after phase.
+
+The standalone three-excavator demo applies this same fixed mount to all three
+machines and writes clean before/after PNG images plus world-space LiDAR PLY
+files under `SITEGIT_DATA_ROOT/isaac/three-excavator-demo/sensors/EXC-00X`.
+The tuned 82.3 by 52.3 degree camera view includes the bucket, trench face, and
+excavated floor; the LiDAR covers 130 degrees horizontally, -70 to +10 degrees
+vertically, and 0.35 to 25 metres. Use `-SkipSensors` only when a fast motion-only
+run is needed.
 
 현장 지형(`SITEGIT_DATA_ROOT/isaac/assets/construction_site_demolition.usdz`)이 함께
 올라오고, 확정된 좌표계는 `SITEGIT_DATA_ROOT/isaac/site_frame.json`에 기록됩니다.

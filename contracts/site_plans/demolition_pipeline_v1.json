@@ -12,6 +12,8 @@
   },
   "work_area": {
     "id": "PIPE-CORRIDOR-01",
+    "zone_id": "A",
+    "zone_title": "관로 공사",
     "label": "기존 굴착부 되메움 관로 구간",
     "aliases": [
       "관로 구간",
@@ -27,6 +29,10 @@
       "type": "demo_concrete_pipe",
       "outside_diameter_m": 1.2,
       "design_length_m": 79.2,
+      "installation_station_start_m": 0.0,
+      "installation_station_end_m": 79.2,
+      "terminal_grade_start_m": 16.0,
+      "terminal_grade_end_m": 65.5,
       "centerline_tolerance_mm": 100
     },
     "centerline": [
@@ -66,6 +72,12 @@
         "equipment_id": "EXC-002",
         "equipment_prim_path": "/World/Equipment/EXC_002",
         "target_volume_m3": 517.1,
+        "demo_quality_scenario": {
+          "type": "intentional_under_excavation",
+          "requested_completion_ratio": 0.68,
+          "required_completion_ratio": 0.98,
+          "description": "Demo defect: the center excavator leaves measurable residual soil for a corrective-work review."
+        },
         "target_prim_paths": [
           "/World/Diggable/Pipeline/TrenchFill_04",
           "/World/Diggable/Pipeline/TrenchFill_05",
@@ -111,7 +123,7 @@
     },
     {
       "id": "pipe_installation",
-      "zone_id": "B",
+      "zone_id": "A",
       "order": 2,
       "title": "관로 설치",
       "work_type": "pipe_installation",
@@ -129,7 +141,7 @@
     },
     {
       "id": "backfill",
-      "zone_id": "C",
+      "zone_id": "A",
       "order": 3,
       "title": "되메우기",
       "work_type": "pipeline_backfill",
@@ -147,8 +159,9 @@
     }
   ],
   "planning_assumptions": [
-    "Zone은 장비별 구역이 아니라 공정 단위이며 A=터파기, B=관로 설치, C=되메우기입니다.",
-    "Zone A의 굴착기 3대는 작업전선 1~3에서 개별 Commit을 생성하고 Zone A Timeline에 함께 집계됩니다.",
+    "Zone은 독립된 대형 공사 구역 단위이며 이 도면의 관로 공사 전체가 Zone A입니다.",
+    "Zone A 내부 공정은 1단계 터파기, 2단계 관로 설치, 3단계 되메우기 순서로 진행됩니다.",
+    "굴착기 3대는 Zone A의 작업전선 1~3에서 개별 Commit을 생성하고 공정 단계별 Timeline에 함께 집계됩니다.",
     "초기 채움 토사는 Isaac의 TrenchFill_01~08 Prim과 동일한 형상입니다.",
     "굴착 생산성은 굴착기 1대당 시간당 60m3인 데모 가정입니다.",
     "관로 설치와 되메우기는 선행 공정의 관리자 승인 후에만 시작합니다.",

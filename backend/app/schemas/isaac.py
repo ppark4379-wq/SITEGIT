@@ -245,6 +245,18 @@ class ReviewDecision(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class InstructionProgressUpdate(BaseModel):
+    """Live progress reported by the Isaac Adapter during one work front."""
+
+    phase: str = Field(default="excavating", min_length=1, max_length=80)
+    step_index: int = Field(ge=0, le=1000)
+    step_count: int = Field(ge=1, le=1000)
+    progress_ratio: float = Field(ge=0.0, le=1.0)
+    removed_volume_m3: float = Field(default=0.0, ge=0.0)
+    installed_length_m: float = Field(default=0.0, ge=0.0)
+    backfilled_volume_m3: float = Field(default=0.0, ge=0.0)
+
+
 class CommitResponse(BaseModel):
     id: str
     instruction_id: str

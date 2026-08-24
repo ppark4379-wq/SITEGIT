@@ -110,19 +110,21 @@ class SensorRigConfig:
     camera_mount_offset_m: tuple[float, float, float] = (2.45, -0.986, 2.15)
     # Camera placement in the SiteGit LiDAR frame (+X right, +Y forward,
     # +Z up). It is rigidly attached next to the LiDAR.
-    camera_offset_from_lidar_m: tuple[float, float, float] = (0.35, 0.0, 0.15)
+    # The camera is offset to the right and above the LiDAR so the boom does
+    # not hide the trench centre in before/after evidence.
+    camera_offset_from_lidar_m: tuple[float, float, float] = (0.65, 0.10, 0.25)
     camera_resolution: tuple[int, int] = (960, 540)
-    camera_pitch_degrees: float = 18.0
-    camera_focal_length_mm: float = 18.0
+    camera_pitch_degrees: float = 24.0
+    camera_focal_length_mm: float = 12.0
     camera_warmup_frames: int = 60
     camera_level_horizon: bool = True
-    lidar_horizontal_fov_degrees: float = 120.0
-    lidar_vertical_min_degrees: float = -75.0
-    lidar_vertical_max_degrees: float = 15.0
-    lidar_horizontal_rays: int = 81
-    lidar_vertical_rays: int = 25
-    lidar_min_range_m: float = 0.2
-    lidar_max_range_m: float = 20.0
+    lidar_horizontal_fov_degrees: float = 130.0
+    lidar_vertical_min_degrees: float = -70.0
+    lidar_vertical_max_degrees: float = 10.0
+    lidar_horizontal_rays: int = 101
+    lidar_vertical_rays: int = 31
+    lidar_min_range_m: float = 0.35
+    lidar_max_range_m: float = 25.0
     lidar_draw_points: bool = True
     lidar_point_width_m: float = 0.035
     # A physical IMU is created directly below the excavator RigidBody. Its XY
@@ -145,7 +147,7 @@ class SensorRigConfig:
             "SITEGIT_CAMERA_MOUNT_OFFSET",
         )
         camera_from_lidar = parse_number_tuple(
-            os.getenv("SITEGIT_CAMERA_OFFSET_FROM_LIDAR", "0.35,0,0.15"),
+            os.getenv("SITEGIT_CAMERA_OFFSET_FROM_LIDAR", "0.65,0.10,0.25"),
             3,
             "SITEGIT_CAMERA_OFFSET_FROM_LIDAR",
         )
@@ -175,25 +177,25 @@ class SensorRigConfig:
                 camera_from_lidar[2],
             ),
             camera_resolution=resolution,
-            camera_pitch_degrees=float(os.getenv("SITEGIT_CAMERA_PITCH_DEG", "18")),
-            camera_focal_length_mm=float(os.getenv("SITEGIT_CAMERA_FOCAL_LENGTH_MM", "18")),
+            camera_pitch_degrees=float(os.getenv("SITEGIT_CAMERA_PITCH_DEG", "24")),
+            camera_focal_length_mm=float(os.getenv("SITEGIT_CAMERA_FOCAL_LENGTH_MM", "12")),
             camera_warmup_frames=int(os.getenv("SITEGIT_CAMERA_WARMUP_FRAMES", "60")),
             camera_level_horizon=_bool_setting(
                 os.getenv("SITEGIT_CAMERA_LEVEL_HORIZON", "true")
             ),
             lidar_horizontal_fov_degrees=float(
-                os.getenv("SITEGIT_LIDAR_HORIZONTAL_FOV_DEG", "120")
+                os.getenv("SITEGIT_LIDAR_HORIZONTAL_FOV_DEG", "130")
             ),
             lidar_vertical_min_degrees=float(
-                os.getenv("SITEGIT_LIDAR_VERTICAL_MIN_DEG", "-75")
+                os.getenv("SITEGIT_LIDAR_VERTICAL_MIN_DEG", "-70")
             ),
             lidar_vertical_max_degrees=float(
-                os.getenv("SITEGIT_LIDAR_VERTICAL_MAX_DEG", "15")
+                os.getenv("SITEGIT_LIDAR_VERTICAL_MAX_DEG", "10")
             ),
-            lidar_horizontal_rays=int(os.getenv("SITEGIT_LIDAR_HORIZONTAL_RAYS", "81")),
-            lidar_vertical_rays=int(os.getenv("SITEGIT_LIDAR_VERTICAL_RAYS", "25")),
-            lidar_min_range_m=float(os.getenv("SITEGIT_LIDAR_MIN_RANGE_M", "0.2")),
-            lidar_max_range_m=float(os.getenv("SITEGIT_LIDAR_MAX_RANGE_M", "20")),
+            lidar_horizontal_rays=int(os.getenv("SITEGIT_LIDAR_HORIZONTAL_RAYS", "101")),
+            lidar_vertical_rays=int(os.getenv("SITEGIT_LIDAR_VERTICAL_RAYS", "31")),
+            lidar_min_range_m=float(os.getenv("SITEGIT_LIDAR_MIN_RANGE_M", "0.35")),
+            lidar_max_range_m=float(os.getenv("SITEGIT_LIDAR_MAX_RANGE_M", "25")),
             lidar_draw_points=_bool_setting(os.getenv("SITEGIT_LIDAR_DRAW_POINTS", "true")),
             lidar_point_width_m=float(os.getenv("SITEGIT_LIDAR_POINT_WIDTH_M", "0.035")),
             imu_height_above_tracks_m=float(
@@ -292,8 +294,8 @@ class EquipmentSensorRig:
             self.config.lidar_vertical_rays,
         )
 
-    def initialize(self) -> dict[str, Any]:
-        """Create the attached mount/camera and initialize its RGB annotator."""
+    def initialize(self, *, include_imu: bool = True) -> dict[str, Any]:
+        """Create the attached camera/LiDAR mount and optional physical IMU."""
 
         from isaacsim.core.utils.rotations import lookat_to_quatf
         from isaacsim.sensors.camera import Camera
@@ -304,6 +306,7 @@ class EquipmentSensorRig:
         equipment = self.stage.GetPrimAtPath(self.equipment_prim_path)
         if not equipment.IsValid():
             raise ValueError(f"equipment Prim not found: {self.equipment_prim_path}")
+        equipment_name = self.equipment_prim_path.rsplit("/", 1)[-1]
 
         anchor_value = equipment.GetCustomDataByKey("sitegitEquipmentAnchor")
         if isinstance(anchor_value, dict) and all(
@@ -327,11 +330,26 @@ class EquipmentSensorRig:
             equipment_world,
             anchor,
         )
+        # Derive yaw from the physical equipment front, but build a unit-scale
+        # world frame. The imported root carries a 0.01 normalization scale;
+        # composing that scale into the sensor frame would shrink a 0.65 m
+        # camera offset to only 6.5 mm and place the camera inside the body.
+        equipment_front = equipment_world.TransformDir(Gf.Vec3d(0.0, 0.0, 1.0))
+        forward_x = float(equipment_front[0])
+        forward_y = float(equipment_front[1])
+        forward_length = math.hypot(forward_x, forward_y)
+        if forward_length <= 1e-6:
+            forward_x, forward_y = 0.0, -1.0
+        else:
+            forward_x /= forward_length
+            forward_y /= forward_length
+        sensor_yaw_degrees = math.degrees(math.atan2(-forward_x, forward_y))
         desired_world = Gf.Matrix4d(1.0)
-        # The imported excavator's boom points toward site -Y. Rotate the
-        # sensor frame so its conventional +Y-forward rays face the boom.
         desired_world.SetRotateOnly(
-            Gf.Rotation(Gf.Vec3d(0.0, 0.0, 1.0), 180.0).GetQuat()
+            Gf.Rotation(
+                Gf.Vec3d(0.0, 0.0, 1.0),
+                sensor_yaw_degrees,
+            ).GetQuat()
         )
         desired_world.SetTranslateOnly(desired_position)
         mount_local = desired_world * equipment_world.GetInverse()
@@ -350,6 +368,13 @@ class EquipmentSensorRig:
 
         camera = UsdGeom.Camera.Define(self.stage, Sdf.Path(self.camera_path))
         camera.CreateFocalLengthAttr().Set(self.config.camera_focal_length_mm)
+        horizontal_aperture_mm = 20.955
+        vertical_aperture_mm = horizontal_aperture_mm * (
+            float(self.config.camera_resolution[1])
+            / float(self.config.camera_resolution[0])
+        )
+        camera.CreateHorizontalApertureAttr().Set(horizontal_aperture_mm)
+        camera.CreateVerticalApertureAttr().Set(vertical_aperture_mm)
         camera.CreateClippingRangeAttr().Set(Gf.Vec2f(0.1, 1000.0))
         pitch = math.radians(self.config.camera_pitch_degrees)
         if placement["source"] == "legacy-anchor-offset":
@@ -386,7 +411,7 @@ class EquipmentSensorRig:
 
         self._camera = Camera(
             prim_path=self.camera_path,
-            name="sitegit_equipment_camera",
+            name=f"sitegit_{equipment_name.lower()}_camera",
             resolution=self.config.camera_resolution,
         )
         self._camera.initialize(attach_rgb_annotator=True)
@@ -394,32 +419,34 @@ class EquipmentSensorRig:
         # The equipment root was made the dynamic rigid body before this rig
         # starts. Put the IMU near the upper-frame centre derived from the exact
         # left/right track faces and express that point in equipment-local axes.
-        from equipment_physics import track_visual_bounds
+        imu_world_position = None
+        if include_imu:
+            from equipment_physics import track_visual_bounds
 
-        track_bounds = track_visual_bounds(self.stage, self.equipment_prim_path)
-        imu_world_position = Gf.Vec3d(
-            (float(track_bounds["min"][0]) + float(track_bounds["max"][0])) * 0.5,
-            (float(track_bounds["min"][1]) + float(track_bounds["max"][1])) * 0.5,
-            float(track_bounds["max"][2]) + self.config.imu_height_above_tracks_m,
-        )
-        imu_local_position = equipment_world.GetInverse().Transform(imu_world_position)
-        self._imu = IMUSensor(
-            prim_path=self.imu_path,
-            name="sitegit_equipment_imu",
-            frequency=self.config.imu_frequency_hz,
-            translation=np.asarray(
-                [float(imu_local_position[index]) for index in range(3)],
-                dtype=np.float64,
-            ),
-            orientation=np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
-        )
-        if self.physics_world is not None:
-            # Isaac registers newly created physics sensors during World.reset.
-            # Adding it to the Scene also ensures later resets reinitialize it.
-            self.physics_world.scene.add(self._imu)
-            self.physics_world.reset()
-        else:
-            self._imu.initialize()
+            track_bounds = track_visual_bounds(self.stage, self.equipment_prim_path)
+            imu_world_position = Gf.Vec3d(
+                (float(track_bounds["min"][0]) + float(track_bounds["max"][0])) * 0.5,
+                (float(track_bounds["min"][1]) + float(track_bounds["max"][1])) * 0.5,
+                float(track_bounds["max"][2]) + self.config.imu_height_above_tracks_m,
+            )
+            imu_local_position = equipment_world.GetInverse().Transform(imu_world_position)
+            self._imu = IMUSensor(
+                prim_path=self.imu_path,
+                name=f"sitegit_{equipment_name.lower()}_imu",
+                frequency=self.config.imu_frequency_hz,
+                translation=np.asarray(
+                    [float(imu_local_position[index]) for index in range(3)],
+                    dtype=np.float64,
+                ),
+                orientation=np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            )
+            if self.physics_world is not None:
+                # Isaac registers newly created physics sensors during World.reset.
+                # Adding it to the Scene also ensures later resets reinitialize it.
+                self.physics_world.scene.add(self._imu)
+                self.physics_world.reset()
+            else:
+                self._imu.initialize()
         self._pump_updates(self.config.camera_warmup_frames)
         # A saved working Stage may contain the previous run's green points.
         # Start every runner session with an explicitly empty visualization.
@@ -433,16 +460,57 @@ class EquipmentSensorRig:
             "lidar_points_prim_path": self.lidar_points_path,
             "mount_position_m": [float(value) for value in desired_position],
             "camera_position_m": [float(value) for value in camera_position],
-            "imu_position_m": [float(value) for value in imu_world_position],
+            "imu_position_m": (
+                [float(value) for value in imu_world_position]
+                if imu_world_position is not None
+                else None
+            ),
+            "imu_enabled": include_imu,
             "placement_source": placement["source"],
             "sensor_reference_usd": placement.get("reference_usd"),
             "sensor_reference_prim_path": placement.get("reference_prim_path"),
             "camera_offset_from_lidar_m": list(self.config.camera_offset_from_lidar_m),
             "camera_level_horizon": self.config.camera_level_horizon,
             "camera_resolution": list(self.config.camera_resolution),
+            "camera_pitch_degrees": self.config.camera_pitch_degrees,
+            "camera_focal_length_mm": self.config.camera_focal_length_mm,
+            "camera_horizontal_fov_degrees": round(
+                math.degrees(
+                    2.0
+                    * math.atan(
+                        horizontal_aperture_mm
+                        / (2.0 * self.config.camera_focal_length_mm)
+                    )
+                ),
+                3,
+            ),
+            "camera_vertical_fov_degrees": round(
+                math.degrees(
+                    2.0
+                    * math.atan(
+                        vertical_aperture_mm
+                        / (2.0 * self.config.camera_focal_length_mm)
+                    )
+                ),
+                3,
+            ),
             "lidar_ray_count": len(self._directions),
+            "lidar_horizontal_fov_degrees": self.config.lidar_horizontal_fov_degrees,
+            "lidar_vertical_fov_degrees": [
+                self.config.lidar_vertical_min_degrees,
+                self.config.lidar_vertical_max_degrees,
+            ],
+            "lidar_range_m": [
+                self.config.lidar_min_range_m,
+                self.config.lidar_max_range_m,
+            ],
             "imu_frequency_hz": self.config.imu_frequency_hz,
         }
+
+    def clear_lidar_visualization(self) -> None:
+        """Remove the previous scan before taking a clean RGB evidence frame."""
+
+        self._draw_points([])
 
     def _resolve_mount_position(
         self,
@@ -804,18 +872,32 @@ class EquipmentSensorRig:
         """Wait for this camera's render product using Kit's async engine."""
 
         import omni.replicator.core as rep
+        import numpy as np
+
+        def has_rendered_content(pixels: Any) -> bool:
+            if pixels is None or int(getattr(pixels, "size", 0)) <= 0:
+                return False
+            if hasattr(pixels, "numpy"):
+                pixels = pixels.numpy()
+            values = np.asarray(pixels)
+            if values.ndim != 3 or values.shape[2] < 3:
+                return False
+            # Newly created off-screen products can briefly return a correctly
+            # sized all-black buffer. Do not mistake that allocation for a
+            # rendered evidence frame when cycling through three cameras.
+            return float(np.max(values[:, :, :3], initial=0.0)) > 1.0
 
         # A regular Kit update is not guaranteed to render an off-screen
         # product.  Replicator's synchronous step explicitly renders every
         # attached product and is the supported standalone/headless path.
-        for _ in range(3):
+        for _ in range(8):
             rep.orchestrator.step(
                 delta_time=0.0,
                 rt_subframes=4,
                 pause_timeline=False,
             )
             pixels = self._camera.get_rgba(device="cpu")
-            if pixels is not None and int(getattr(pixels, "size", 0)) > 0:
+            if has_rendered_content(pixels):
                 return
 
         import omni.kit.async_engine
