@@ -143,7 +143,7 @@ async def create_instruction(
         if not inventory.connected or equipment is None or target is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Excavation paths must match the current live Isaac Stage inventory.",
+                detail="Excavation paths must match the current live field inventory.",
             )
     instruction = ExecutionsService.create_instruction(
         db,
@@ -347,7 +347,7 @@ async def create_remediation_instruction(
             "planned_quantity": {
                 "value": remaining_volume,
                 "unit": "m3",
-                "source": "Isaac Stage read-back remediation gap",
+                "source": "Sensor read-back remediation gap",
             },
             "remediation_facts": {
                 "planned_volume_m3": planned_volume,
@@ -413,7 +413,7 @@ async def dispatch_remediation_instruction(
     active_targets = {item.path for item in inventory.diggable_targets if item.active}
     missing = []
     if not inventory.connected:
-        missing.append("Isaac Stage 연결 없음")
+        missing.append("현장 작업 시스템 연결 없음")
     if equipment_path not in active_equipment:
         missing.append(f"장비 Prim 없음: {equipment_path}")
     missing.extend(path for path in target_paths if path not in active_targets)

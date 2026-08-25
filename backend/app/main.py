@@ -34,7 +34,11 @@ async def prevent_stale_frontend_cache(request: Request, call_next):
 
     response = await call_next(request)
     path = request.url.path
-    if path in {"/", "/login", "/favicon.ico"} or path.startswith("/static/"):
+    if (
+        path in {"/", "/login", "/favicon.ico", settings.api_prefix}
+        or path.startswith("/static/")
+        or path.startswith(f"{settings.api_prefix}/")
+    ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"

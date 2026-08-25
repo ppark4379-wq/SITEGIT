@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "scenario_type": "soil_relocation",
+  "plan_id": "DEMOLITION-SOIL-RELOCATION-V1",
+  "project_id": "SASANG-001",
+  "revision": "A",
+  "title": "현장 동측 토사 이동 후보 계획",
+  "source_map": "construction-site-demolition",
+  "coordinate_system": {
+    "name": "현장 로컬 좌표계",
+    "up_axis": "Z",
+    "linear_unit": "m"
+  },
+  "work_area": {
+    "id": "SOIL-RELOCATION-CANDIDATE-01",
+    "zone_id": "B",
+    "zone_assignment_mode": "create_on_approval",
+    "location_confirmation_required": true,
+    "location_confirmation_prompt": "현장 동측 공터의 기존 흙더미와 바로 옆 적치 위치를 말씀하신 것이 맞습니까?",
+    "zone_title": "토사 이동",
+    "label": "현장 동측 토사 이동 후보 구역",
+    "aliases": [
+      "동측 흙더미 옮기기",
+      "오른쪽 흙더미 이동",
+      "토사 적치 위치 변경",
+      "저 위치 흙 옮기기"
+    ],
+    "station_range": "현장 동측 후보 작업면",
+    "total_length_m": 17.0,
+    "design_depth_m": 3.0,
+    "bounds": {"min_x": 20.0, "max_x": 49.0, "min_y": 45.0, "max_y": 75.0},
+    "centerline": [
+      {"station_m": 0.0, "x": 30.0, "y": 56.0, "z": 0.1, "width_m": 8.0},
+      {"station_m": 9.0, "x": 30.0, "y": 65.0, "z": 0.1, "width_m": 8.0},
+      {"station_m": 17.0, "x": 38.0, "y": 65.0, "z": 0.1, "width_m": 8.0}
+    ],
+    "relocation": {
+      "source_prim_path": "/World/Diggable/SoilRelocationCandidate_01",
+      "source_position": {"station_m": 0.0, "x": 30.0, "y": 56.0, "z": 0.1, "width_m": 8.0},
+      "source_size_m": [8.0, 7.0, 3.0],
+      "destination_position": {"station_m": 17.0, "x": 38.0, "y": 65.0, "z": 0.1, "width_m": 8.0},
+      "equipment_id": "EXC-004",
+      "equipment_prim_path": "/World/Equipment/EXC_004",
+      "equipment_position": {"station_m": 9.0, "x": 30.0, "y": 65.0, "z": 0.1, "width_m": 8.0},
+      "swing_degrees": 90.0,
+      "tracks_stationary": true,
+      "scoop_count": 5
+    },
+    "workfronts": [
+      {
+        "id": "SOIL-CANDIDATE-FRONT-01",
+        "zone_id": "B",
+        "label": "토사 이동 작업전선 1 · 동측",
+        "station_start_m": 0.0,
+        "station_end_m": 17.0,
+        "equipment_id": "EXC-004",
+        "equipment_prim_path": "/World/Equipment/EXC_004",
+        "target_volume_m3": 42.0,
+        "target_prim_paths": ["/World/Diggable/SoilRelocationCandidate_01"],
+        "bounds": {"min_x": 20.0, "max_x": 49.0, "min_y": 45.0, "max_y": 75.0}
+      }
+    ]
+  },
+  "workflow": [
+    {
+      "id": "soil_relocation",
+      "zone_id": "B",
+      "order": 1,
+      "title": "토사 이동",
+      "work_type": "stationary_soil_relocation",
+      "description": "굴착기 궤도를 고정하고 상부체를 선회해 기존 흙더미를 바로 옆 지정 적치 위치로 옮깁니다.",
+      "target_amount": 42.0,
+      "target_unit": "m3",
+      "estimated_hours": 0.5,
+      "equipment": ["EXC-004"],
+      "depends_on": [],
+      "acceptance_criteria": [
+        "이동 토사량 목표 대비 95% 이상",
+        "최종 적치 중심 위치 오차 0.5m 이하",
+        "카메라·LiDAR·IMU Evidence 완전성 90% 이상"
+      ]
+    }
+  ],
+  "planning_assumptions": [
+    "초기 도면에는 활성 Zone이 없으며, 관리자 위치 확인과 작업 하달 시 다음 Zone ID인 B를 생성합니다.",
+    "EXC-004는 작업 중 궤도 위치를 변경하지 않습니다.",
+    "굴착기 상부체만 원토 위치와 적치 위치 사이를 왕복 선회합니다.",
+    "원토를 5회로 나누어 굴착하고 지정 위치에 적치합니다.",
+    "좌표는 최초 현장 시연에서 육안 확인 후 미세 조정할 수 있습니다."
+  ]
+}

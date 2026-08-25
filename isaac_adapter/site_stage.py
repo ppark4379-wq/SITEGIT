@@ -300,6 +300,8 @@ def create_diggable_soil_pile(
     zone_id: str = "C",
     diggable_id: str = "ZoneC-SoilPile-01",
     display_color: str = "#6B4F2A",
+    surface_material_path: str | None = None,
+    texture_world_scale_m: float = 3.0,
     simulation_app: Any = None,
     surface_height: Callable[[float, float, float], float] | None = None,
 ) -> dict[str, Any]:
@@ -307,17 +309,69 @@ def create_diggable_soil_pile(
 
     import math
 
-    from pxr import Gf, Sdf, UsdGeom, UsdPhysics
+    from pxr import Gf, Sdf, UsdGeom, UsdPhysics, UsdShade
 
     if any(value <= 0 for value in size):
         raise ValueError("토사 더미 크기는 모두 0보다 커야 합니다.")
     if max(size[0], size[1]) > 25.0:
         raise ValueError("데모 토사 더미의 가로·세로 크기는 25m 이하여야 합니다.")
 
+    if texture_world_scale_m <= 0:
+        raise ValueError("texture_world_scale_m must be greater than zero")
+
+    color_text = str(display_color).lstrip("#")
+    if len(color_text) != 6:
+        raise ValueError("Soil display color must use #RRGGBB format")
+    try:
+        color_value = Gf.Vec3f(
+            int(color_text[0:2], 16) / 255.0,
+            int(color_text[2:4], 16) / 255.0,
+            int(color_text[4:6], 16) / 255.0,
+        )
+    except ValueError as error:
+        raise ValueError("Soil display color must use #RRGGBB format") from error
+
+    def apply_surface_appearance(mesh_schema: Any) -> None:
+        """Give both new and restored mounds the same site-soil appearance."""
+
+        mesh_schema.CreateDisplayColorAttr().Set([color_value])
+        mesh_points = list(mesh_schema.GetPointsAttr().Get() or [])
+        if mesh_points:
+            texture_scale = float(texture_world_scale_m)
+            st = UsdGeom.PrimvarsAPI(mesh_schema).CreatePrimvar(
+                "st",
+                Sdf.ValueTypeNames.TexCoord2fArray,
+                UsdGeom.Tokens.vertex,
+            )
+            st.Set(
+                [
+                    Gf.Vec2f(
+                        float(point[0]) / texture_scale + 0.5,
+                        float(point[1]) / texture_scale + 0.5,
+                    )
+                    for point in mesh_points
+                ]
+            )
+        if surface_material_path:
+            material_prim = stage.GetPrimAtPath(str(surface_material_path))
+            if material_prim.IsValid():
+                UsdShade.MaterialBindingAPI.Apply(mesh_schema.GetPrim()).Bind(
+                    UsdShade.Material(material_prim)
+                )
+                mesh_schema.GetPrim().SetCustomDataByKey(
+                    "sitegitMaterialPath", str(surface_material_path)
+                )
+        mesh_schema.GetPrim().SetCustomDataByKey(
+            "sitegitSoilPileAppearanceVersion", 1
+        )
+
     prepare_stage(stage)
     UsdGeom.Xform.Define(stage, Sdf.Path(DIGGABLE_ROOT_PATH))
     existing = stage.GetPrimAtPath(prim_path)
     if existing.IsValid():
+        existing_mesh = UsdGeom.Mesh(existing)
+        if existing_mesh:
+            apply_surface_appearance(existing_mesh)
         position_range = _world_range(stage, prim_path)
         return {
             "prim_path": prim_path,
@@ -374,18 +428,7 @@ def create_diggable_soil_pile(
     mesh.CreateFaceVertexIndicesAttr(faces)
     mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
     mesh.CreateDoubleSidedAttr(True)
-    color_text = str(display_color).lstrip("#")
-    if len(color_text) != 6:
-        raise ValueError("토사 색상은 #RRGGBB 형식이어야 합니다.")
-    try:
-        color_value = Gf.Vec3f(
-            int(color_text[0:2], 16) / 255.0,
-            int(color_text[2:4], 16) / 255.0,
-            int(color_text[4:6], 16) / 255.0,
-        )
-    except ValueError as error:
-        raise ValueError("토사 색상은 #RRGGBB 형식이어야 합니다.") from error
-    mesh.CreateDisplayColorAttr([color_value])
+    apply_surface_appearance(mesh)
     mesh.CreateExtentAttr(
         [
             Gf.Vec3f(float(-radius_x * 1.05), float(-radius_y * 1.05), 0.0),
@@ -398,7 +441,9 @@ def create_diggable_soil_pile(
     prim = mesh.GetPrim()
     prim.SetCustomDataByKey("sitegitDiggable", True)
     prim.SetCustomDataByKey("sitegitDiggableId", str(diggable_id))
-    prim.SetCustomDataByKey("sitegitZoneId", zone_id)
+    normalized_zone_id = str(zone_id).strip()
+    if normalized_zone_id:
+        prim.SetCustomDataByKey("sitegitZoneId", normalized_zone_id)
     prim.SetCustomDataByKey("sitegitDisplayColor", f"#{color_text.upper()}")
     UsdPhysics.CollisionAPI.Apply(prim)
 

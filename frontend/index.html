@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="theme-color" content="#0d3d5c" />
   <title>SiteGit v2 — Autonomous Work Assurance</title>
-  <meta name="description" content="사상구 공개 발주 데이터를 기반으로 만든 SiteGit 자율화 건설장비 작업운영·검증 컨셉 프로토타입" />
-  <link rel="stylesheet" href="/static/styles.css?v=20260824-history-collapse-1" />
+  <meta name="description" content="승인 도면과 현장 장비·센서 데이터를 연결한 SiteGit 자율화 작업운영·검증 시스템" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260825-history-graph-1" />
   <link rel="stylesheet" href="/static/review-layout.css?v=20260819-review-layout-7" />
   <link rel="stylesheet" href="/static/dashboard-progress.css?v=20260819-daily-progress-1" />
+  <link rel="stylesheet" href="/static/readability.css?v=20260825-readability-1" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -26,7 +27,7 @@
       <div class="project-mini" id="projectMini">
         <span class="pulse-dot"></span>
         <div>
-          <strong>사상구 데모 현장</strong>
+          <strong>관로 시공 통합 데모</strong>
           <small>Plan v1.0 · Shared Local DB</small>
         </div>
       </div>
@@ -74,7 +75,7 @@
           </div>
         </div>
         <div class="topbar-actions">
-          <div class="sync-indicator syncing" id="syncIndicator"><span></span>공동 DB 연결 중</div><div class="source-pill"><span></span> 실제 공개값 + 시뮬레이션 데이터</div>
+          <div class="sync-indicator syncing" id="syncIndicator"><span></span>공동 DB 연결 중</div><div class="source-pill"><span></span> 승인 도면 + 현장 작업 데이터</div>
           <button class="icon-button" id="notificationsBtn" aria-label="알림">🔔<span class="tiny-badge">3</span></button>
           <button class="profile-button" id="profileBtn">
             <span class="avatar">현</span>
@@ -121,7 +122,7 @@
         <div class="onboarding-message">
           <div class="step-kicker">무인화 시대의 Gray Zone</div>
           <h2>건설사의 계획을 장비가 수행할 작업으로,<br/>장비의 결과를 사람이 믿을 근거로.</h2>
-          <p>사상구 공개 발주 데이터와 HD현대 건설기계 공개 제원을 기반으로 구성한 컨셉 프로토타입입니다.</p>
+          <p>승인 관로 도면과 현장 장비 3대를 연결한 작업 계획·실행·증거·승인 과정입니다.</p>
         </div>
         <div class="flow-preview" aria-hidden="true">
           <div><span>01</span><b>Site Data</b></div><i>→</i>
@@ -130,10 +131,10 @@
           <div><span>04</span><b>Evidence & Release</b></div>
         </div>
         <div class="origin-legend compact">
-          <span class="origin public">PUBLIC PROJECT</span>
-          <span class="origin manufacturer">MANUFACTURER SPEC</span>
+          <span class="origin public">APPROVED DRAWING</span>
+          <span class="origin manufacturer">FIELD SYSTEM</span>
           <span class="origin assumed">ASSUMED</span>
-          <span class="origin simulated">SIMULATED</span>
+          <span class="origin simulated">SENSOR DATA</span>
         </div>
       </div>
       <div class="onboarding-panel">
@@ -153,7 +154,7 @@
 
   <input type="file" id="jsonImportInput" accept="application/json" class="hidden-input" />
 
-  <script src="/static/app.js?v=20260824-history-collapse-1"></script>
-  <script src="/static/workflow-ui.js?v=20260824-history-collapse-1"></script>
+  <script src="/static/app.js?v=20260825-field-copy-1"></script>
+  <script src="/static/workflow-ui.js?v=20260825-generic-pages-1"></script>
 </body>
 </html>

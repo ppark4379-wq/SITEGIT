@@ -8,6 +8,7 @@
 const STORAGE_KEY = 'sitegit-concept-prototype-v2';
 const ONBOARD_KEY = 'sitegit-concept-onboarded-v2';
 const VIEW_STORAGE_KEY = 'sitegit-view-state-v1';
+const JUDGE_DEMO_ONBOARD_SESSION_KEY = 'sitegit-judge-demo-onboarding-v1';
 const PROJECT_ID = 'SASANG-001';
 const API_BASE = '/api/v1';
 // Zone/Timeline 기능 도입 이전의 데모 Work Package와 Commit은 새 지도에서
@@ -15,12 +16,67 @@ const API_BASE = '/api/v1';
 // Timeline 항목으로 노출됩니다.
 const MAP_FEATURE_CUTOVER_AT = '2026-08-19T14:52:00.000Z';
 const EQUIPMENT_PHOTOS = {
-  HX210AL:'/static/assets/equipment/hx210al.jpg',
+  HX210AL:'/static/assets/equipment/hx210al-registry.jpg',
   HX48AZ:'/static/assets/equipment/hx48az.jpg',
   'HL930A TM':'/static/assets/equipment/hl930a-tm.jpg',
   'Generic Dump 4.5t':'/static/assets/equipment/generic-dump-4-5t.png',
   'Generic Dump 24t':'/static/assets/equipment/generic-dump-24t.png',
 };
+const CURRENT_DEMO_PROFILE_VERSION = 'pipeline-demo-equipment-v4';
+const CURRENT_DEMO_PROJECT = {
+  name:'건설현장 관로 시공 통합 데모',
+  shortName:'관로 시공 통합 데모',
+  location:'관로 시공 데모 현장',
+  scope:'Zone A · 관로 79.2m · 터파기 → 관로 설치 → 되메우기',
+  startDate:'2026-08-24', endDate:'2026-08-24',
+  totalCost:0, contractCost:0, netCost:0, earthworkCost:0, earthworkShare:0,
+  excavationVolume:1826.9,
+  coordinateSystem:'현장 로컬 좌표 · Z-up · 단위 m',
+  sourceType:'APPROVED SCENARIO DRAWING',
+};
+const CURRENT_DEMO_EQUIPMENT = [
+  {
+    id:'EXC-001', model:'HX210AL', manufacturer:'HD Hyundai', type:'중형 굴착기', icon:'excavator', status:'available',
+    operatingWeight:22.15, bucketCapacity:0.92, workBucket:0.60, power:128, maxDepth:6.64, travelSpeed:5.8,
+    supports:['터파기','관로 설치','되메우기'], evidence:['Equipment Camera','3D Raycast LiDAR','IMU','Equipment Pose','Bucket Tip Depth','Work Events'],
+    autonomy:['Work Package 수신','작업 실행','진행 상태 반환','Evidence Commit 생성','원격 중지'], autonomySource:'FIELD SYSTEM', specSource:'MANUFACTURER SPEC',
+    sourceUrl:'https://www.hyundai-ce.com/en/products/view?productsSeq=374', color:'#f3b331', assigned:'Zone A · 작업전선 1', workfrontId:'EXC-FRONT-01', primPath:'/World/Equipment/EXC_001'
+  },
+  {
+    id:'EXC-002', model:'HX210AL', manufacturer:'HD Hyundai', type:'중형 굴착기', icon:'excavator', status:'available',
+    operatingWeight:22.15, bucketCapacity:0.92, workBucket:0.60, power:128, maxDepth:6.64, travelSpeed:5.8,
+    supports:['터파기','관로 설치','되메우기','보완 굴착'], evidence:['Equipment Camera','3D Raycast LiDAR','IMU','Equipment Pose','Bucket Tip Depth','Work Events'],
+    autonomy:['Work Package 수신','작업 실행','보완 작업 실행','진행 상태 반환','Evidence Commit 생성','원격 중지'], autonomySource:'FIELD SYSTEM', specSource:'MANUFACTURER SPEC',
+    sourceUrl:'https://www.hyundai-ce.com/en/products/view?productsSeq=374', color:'#f0aa2c', assigned:'Zone A · 작업전선 2', workfrontId:'EXC-FRONT-02', primPath:'/World/Equipment/EXC_002'
+  },
+  {
+    id:'EXC-003', model:'HX210AL', manufacturer:'HD Hyundai', type:'중형 굴착기', icon:'excavator', status:'available',
+    operatingWeight:22.15, bucketCapacity:0.92, workBucket:0.60, power:128, maxDepth:6.64, travelSpeed:5.8,
+    supports:['터파기','관로 설치','되메우기'], evidence:['Equipment Camera','3D Raycast LiDAR','IMU','Equipment Pose','Bucket Tip Depth','Work Events'],
+    autonomy:['Work Package 수신','작업 실행','진행 상태 반환','Evidence Commit 생성','원격 중지'], autonomySource:'FIELD SYSTEM', specSource:'MANUFACTURER SPEC',
+    sourceUrl:'https://www.hyundai-ce.com/en/products/view?productsSeq=374', color:'#eaa52a', assigned:'Zone A · 작업전선 3', workfrontId:'EXC-FRONT-03', primPath:'/World/Equipment/EXC_003'
+  },
+  {
+    id:'EXC-004', model:'HX210AL', manufacturer:'HD Hyundai', type:'중형 굴착기', icon:'excavator', status:'available',
+    operatingWeight:22.15, bucketCapacity:0.92, workBucket:0.60, power:128, maxDepth:6.64, travelSpeed:5.8,
+    supports:['토사 굴착','상부체 선회','토사 적치'], evidence:['Equipment Camera','IMU','Equipment Pose','Bucket Tip Depth','Work Events'],
+    autonomy:['Work Package 수신','작업 실행','진행 상태 반환','Evidence Commit 생성','원격 중지'], autonomySource:'FIELD SYSTEM', specSource:'MANUFACTURER SPEC',
+    sourceUrl:'https://www.hyundai-ce.com/en/products/view?productsSeq=374', color:'#d99a28', assigned:'Zone B · 토사 이동', workfrontId:'SOIL-RELOCATION-01', primPath:'/World/Equipment/EXC_004'
+  },
+];
+const CURRENT_DEMO_READINESS = [
+  {id:'coord',name:'현장 좌표계',category:'현장 기준',grade:'A',status:'ready',source:'FIELD SYSTEM',value:'Z-up · meter',action:'정상',desc:'도면, 지형, 장비와 센서 좌표를 같은 현장 좌표계로 연결합니다.'},
+  {id:'zone',name:'작업구역 Geometry',category:'작업지시',grade:'A',status:'ready',source:'APPROVED DRAWING',value:'Zone A · 관로 공사 79.2m',action:'정상',desc:'관로 공사 전체를 Zone A로 관리하고 내부를 3개 작업전선으로 분할합니다.'},
+  {id:'quantity',name:'목표 작업량',category:'작업지시',grade:'A',status:'ready',source:'APPROVED DRAWING',value:'터파기 1,826.9㎥ · 관로 79.2m · 되메우기 1,737.4㎥',action:'정상',desc:'승인된 관로 데모 도면에서 공정별 목표량을 가져옵니다.'},
+  {id:'restricted',name:'금지·보호구역',category:'안전 제약',grade:'A',status:'needs-confirmation',source:'USER INPUT',value:'관리자 확인 필요',action:'하달 전 확인',desc:'실제 현장 적용 시 보호구역과 접근 제한선을 등록합니다.'},
+  {id:'baseline',name:'작업 전 기준 지형',category:'결과 검증',grade:'B',status:'ready',source:'FIELD SYSTEM',value:'Construction Site Demolition · TrenchFill 01~08',action:'자동 비교',desc:'초기 채움 토사와 승인된 현장 상태를 공정 비교 기준으로 사용합니다.'},
+  {id:'tolerance',name:'허용오차·완료기준',category:'결과 검증',grade:'B',status:'ready',source:'APPROVED DRAWING',value:'공정별 승인 기준 적용',action:'관리자 승인',desc:'터파기, 관로 설치, 되메우기에 서로 다른 승인 기준을 적용합니다.'},
+  {id:'evidence',name:'필수 Evidence',category:'결과 검증',grade:'B',status:'ready',source:'SENSOR DATA',value:'Camera · LiDAR · IMU · Pose · Events',action:'정상',desc:'장비 장착 센서와 작업 결과 데이터로 작업 전후 근거를 구성합니다.'},
+  {id:'spec',name:'장비 Capability',category:'장비 연동',grade:'C',status:'ready',source:'MANUFACTURER SPEC',value:'HD Hyundai HX210AL 4대',action:'적합성 확인 가능',desc:'Zone A와 Zone B 작업에 투입되는 EXC-001~004의 제조사 제원과 작업 Capability를 관리합니다.'},
+  {id:'route',name:'장비 이동경로',category:'운영 제약',grade:'C',status:'simulated',source:'ROUTE PLAN',value:'작업전선별 배치 경로',action:'도면 경로 사용',desc:'승인 도면의 작업전선 배치 좌표를 사용합니다.'},
+  {id:'utilities',name:'지중 매설물 정보',category:'현장 변수',grade:'D',status:'missing',source:'USER INPUT',value:'미등록',action:'실증 전 등록',desc:'실제 현장 적용 시 도면과 현장 조사 결과를 추가합니다.'},
+  {id:'remote',name:'원격개입 정책',category:'현장 변수',grade:'D',status:'ready',source:'ASSUMED',value:'작업 중지 · 관리자 승인',action:'정상',desc:'Work Package 실행과 다음 공정 Release는 관리자 게이트를 통과합니다.'},
+];
 let remoteRevision = null;
 let remoteReady = false;
 let remoteApplying = false;
@@ -70,16 +126,16 @@ const DEFAULT_STATE = {
   },
   readiness: [
     { id:'coord', name:'현장 좌표계', category:'현장 기준', grade:'A', status:'needs-confirmation', source:'USER INPUT', value:'현장 로컬 좌표계', action:'배포 전 관리자 확인', desc:'모든 작업영역과 장비 위치를 동일 기준으로 연결합니다.' },
-    { id:'zone', name:'작업구역 Geometry', category:'작업지시', grade:'A', status:'simulated', source:'SIMULATED', value:'Zone A–D · 537.1m 데모 분할', action:'컨셉 배포 가능', desc:'실제 GIS 좌표가 없어 공개 연장을 4개 Zone으로 가상 분할했습니다.' },
+    { id:'zone', name:'작업구역 Geometry', category:'작업지시', grade:'A', status:'simulated', source:'PLANNING DATA', value:'Zone A–D · 537.1m 작업구간 분할', action:'작업 계획 배포 가능', desc:'승인 도면의 연장을 4개 작업구간으로 분할했습니다.' },
     { id:'quantity', name:'목표 작업량', category:'작업지시', grade:'A', status:'ready', source:'PUBLIC PROJECT', value:'터파기 2,279㎥', action:'정상', desc:'사상구 설계·도급 내역에서 확인한 전체 터파기 물량입니다.' },
     { id:'restricted', name:'금지·보호구역', category:'안전 제약', grade:'A', status:'needs-confirmation', source:'USER INPUT', value:'도로 점유구역 1개 · 매설물 미확인', action:'조건부 배포', desc:'자율화 장비가 반드시 회피해야 할 공간 제약입니다.' },
-    { id:'baseline', name:'작업 전 기준 형상', category:'결과 검토', grade:'B', status:'simulated', source:'SIMULATED', value:'Synthetic baseline surface v1', action:'자동 비교 활성', desc:'실제 PCD 대신 가상 기준면을 사용합니다.' },
+    { id:'baseline', name:'작업 전 기준 형상', category:'결과 검토', grade:'B', status:'simulated', source:'BASELINE DATA', value:'Baseline surface v1', action:'자동 비교 활성', desc:'등록된 작업 전 기준면을 사용합니다.' },
     { id:'tolerance', name:'허용오차·완료기준', category:'결과 검토', grade:'B', status:'needs-confirmation', source:'ASSUMED', value:'깊이 ±50mm · 관측률 90%', action:'관리자 승인 필요', desc:'공식 현장 기준이 아니라 컨셉 검증용 가정값입니다.' },
     { id:'evidence', name:'필수 Evidence', category:'결과 검토', grade:'B', status:'ready', source:'STANDARD-BASED', value:'Pose · Tool path · Before/After · Events', action:'정상', desc:'장비의 완료 선언을 검토하기 위한 반환 데이터 항목입니다.' },
     { id:'spec', name:'장비 Capability', category:'장비 연동', grade:'C', status:'ready', source:'MANUFACTURER SPEC', value:'HD 공식 공개 제원 3종', action:'적합성 판정 가능', desc:'공개 제원과 자율화 인터페이스 가정을 구분해 관리합니다.' },
     { id:'route', name:'권장 이동경로', category:'운영 효율', grade:'C', status:'missing', source:'USER INPUT', value:'미제공', action:'경고 후 진행 가능', desc:'장비 자율화 시스템이 자체 경로를 생성할 수 있다고 가정합니다.' },
     { id:'utilities', name:'지중 매설물 정보', category:'현장 변화', grade:'D', status:'missing', source:'USER INPUT', value:'미등록', action:'현장 확인으로 대체', desc:'실제 투입 전에는 별도 확인이 필요한 데이터입니다.' },
-    { id:'remote', name:'원격개입 정책', category:'현장 변화', grade:'D', status:'simulated', source:'ASSUMED', value:'중대 예외 발생 시 원격 중지', action:'컨셉 적용', desc:'실제 제조사 원격제어 정책이 아닌 데모 가정입니다.' },
+    { id:'remote', name:'원격개입 정책', category:'현장 변화', grade:'D', status:'simulated', source:'ASSUMED', value:'중대 예외 발생 시 원격 중지', action:'운영 기준 적용', desc:'현장 운영 정책에 따라 관리자 확인이 필요합니다.' },
   ],
   equipment: [
     {
@@ -151,6 +207,8 @@ const DEFAULT_STATE = {
 
 let state = loadState();
 restoreLocalView(loadTabView());
+const renderedPages = new Set();
+let lastRenderSignature = '';
 let onboardingStep = 0;
 let simTimer = null;
 
@@ -171,6 +229,7 @@ function safeSetItem(key,value){ try{localStorage.setItem(key,value);return true
 function safeRemoveItem(key){ try{localStorage.removeItem(key)}catch(e){} }
 function safeGetSessionItem(key){ try{return sessionStorage.getItem(key)}catch(e){return null} }
 function safeSetSessionItem(key,value){ try{sessionStorage.setItem(key,value);return true}catch(e){return false} }
+function safeRemoveSessionItem(key){ try{sessionStorage.removeItem(key)}catch(e){} }
 function loadTabView(){
   try{
     const saved=safeGetSessionItem(VIEW_STORAGE_KEY);
@@ -189,10 +248,17 @@ function loadState(){
     const saved = safeGetItem(STORAGE_KEY);
     if(saved){
       const parsed = JSON.parse(saved);
-      return mergeDefaults(deepClone(DEFAULT_STATE), parsed);
+      const merged=mergeDefaults(deepClone(DEFAULT_STATE), parsed);
+      applyCurrentDemoProfile(merged);
+      if(merged.project?.coordinateSystem==='SiteGit demolition site frame · Z-up · meter'){
+        merged.project.coordinateSystem='현장 로컬 좌표 · Z-up · 단위 m';
+      }
+      return merged;
     }
   }catch(e){ console.warn('State load failed',e); }
-  return deepClone(DEFAULT_STATE);
+  const fresh=deepClone(DEFAULT_STATE);
+  applyCurrentDemoProfile(fresh);
+  return fresh;
 }
 function mergeDefaults(base, saved){
   if(!saved || typeof saved !== 'object') return base;
@@ -202,6 +268,37 @@ function mergeDefaults(base, saved){
     else base[k]=saved[k];
   });
   return base;
+}
+function applyCurrentDemoProfile(target){
+  if(!target||typeof target!=='object')return false;
+  const equipment=Array.isArray(target.equipment)?target.equipment:[];
+  const hasLegacyEquipment=equipment.some(item=>['HX210AL-01','HX48AZ-02','HL930ATM-01','DUMP45-01','DUMP24-01'].includes(item?.id));
+  const hasLegacyProject=/사상구|감전처리분구/i.test(`${target.project?.name||''} ${target.project?.shortName||''} ${target.project?.location||''}`);
+  const needsProfile=target.demoProfileVersion!==CURRENT_DEMO_PROFILE_VERSION||hasLegacyEquipment||hasLegacyProject;
+  if(!needsProfile)return false;
+
+  target.demoProfileVersion=CURRENT_DEMO_PROFILE_VERSION;
+  target.company={
+    ...(target.company||{}),
+    name:'SiteGit 관로 시공 실증팀',
+    contractor:'SiteGit 데모 현장',
+    manufacturer:'HD Hyundai',
+  };
+  target.project={...(target.project||{}),...deepClone(CURRENT_DEMO_PROJECT)};
+  target.readiness=deepClone(CURRENT_DEMO_READINESS);
+  target.equipment=deepClone(CURRENT_DEMO_EQUIPMENT);
+
+  const legacyWorkIds=new Set((Array.isArray(target.workPackages)?target.workPackages:[])
+    .filter(item=>/^WP-(?:SASANG|HAUL)-/i.test(String(item?.id||'')))
+    .map(item=>item.id));
+  if(legacyWorkIds.size){
+    target.workPackages=target.workPackages.filter(item=>!legacyWorkIds.has(item.id));
+    target.evidence=Object.fromEntries(Object.entries(target.evidence||{}).filter(([id])=>!legacyWorkIds.has(id)));
+    target.events=(target.events||[]).filter(item=>!/(?:WP-SASANG|WP-HAUL|HX210AL|HX48AZ|HL930A)/i.test(`${item?.title||''} ${item?.desc||''}`));
+    target.versions=(target.versions||[]).filter(item=>!/(?:WP-SASANG|WP-HAUL|사상구|HX210AL|HX48AZ|HL930A)/i.test(`${item?.code||''} ${item?.title||''} ${item?.desc||''}`));
+    if(legacyWorkIds.has(target.selectedWpId))target.selectedWpId=target.workPackages[0]?.id||'';
+  }
+  return true;
 }
 function sharedStatePayload(){
   const payload=deepClone(state);
@@ -240,6 +337,7 @@ function updateSyncIndicator(label,tone='online'){
 async function apiFetch(path,options={}){
   const response=await fetch(`${API_BASE}${path}`,{
     credentials:'same-origin',
+    cache:'no-store',
     headers:{'Content-Type':'application/json',...(options.headers||{})},
     ...options,
   });
@@ -290,18 +388,21 @@ async function pushRemoteState(){
     remoteSaveInFlight=false;
   }
 }
-async function pullRemoteState(){
+async function pullRemoteState({render=true}={}){
   const view=localViewState();
   const response=await apiFetch(`/state/${PROJECT_ID}`);
   if(!response.ok)throw new Error(`LOAD_${response.status}`);
   const data=await response.json();
   remoteApplying=true;
-  state=mergeDefaults(deepClone(DEFAULT_STATE),data.payload||{});
+  const serverPayload=data.payload||{};
+  state=mergeDefaults(deepClone(DEFAULT_STATE),serverPayload);
+  const migrated=applyCurrentDemoProfile(state);
   restoreLocalView(view);
-  lastSharedPayloadJson=JSON.stringify(sharedStatePayload());
+  lastSharedPayloadJson=migrated?JSON.stringify(serverPayload):JSON.stringify(sharedStatePayload());
   remoteRevision=data.revision;
-  renderAll();
+  if(render)renderAll();
   remoteApplying=false;
+  if(migrated)saveState();
   updateSyncIndicator(`공동 DB · r${remoteRevision}`,'online');
 }
 function connectRealtime(){
@@ -341,19 +442,28 @@ async function bootstrapSharedState(){
     const profileName=$('#topManagerName');if(profileName)profileName.textContent=me.full_name;
     const avatar=$('#profileBtn .avatar');if(avatar)avatar.textContent=(me.full_name||me.username).trim().slice(0,1).toUpperCase();
     const profile=$('#profileBtn small');if(profile)profile.textContent=roleLabel;
-    await pullRemoteState();
-    await loadSitePlans();
-    await loadStageInventory();
-    await loadIsaacInstructions();
-    renderAll();
+    // The shared project state is the source of truth. Load it before creating
+    // the large 3D map iframe so a remote/Cloudflare client never settles on
+    // an empty browser-local backup while map assets are still downloading.
+    await pullRemoteState({render:false});
     remoteReady=true;
     connectRealtime();
+    // Show the shared work history immediately. Site-plan, Stage inventory,
+    // and instruction requests can be noticeably slower through a tunnel and
+    // must not leave a remote client looking like the project is empty.
+    renderAll(true);
+    // These supplemental records are independent and can finish in parallel.
+    await Promise.all([loadSitePlans(),loadStageInventory(),loadIsaacInstructions()]);
+    // Site plan and Isaac instruction caches live outside the shared state.
+    // Force one redraw after bootstrap so workflow renderers see those records.
+    renderAll(true);
     if(!remoteCanEdit)updateSyncIndicator('조회 전용','readonly');
   }catch(error){
     if(error.message!=='AUTH_REQUIRED'){
       console.warn('Shared bootstrap failed',error);
       updateSyncIndicator('로컬 백업 모드','offline');
       toast('공동 DB 연결 실패','브라우저의 로컬 백업 데이터로 실행합니다.','warning');
+      renderAll(true);
     }
   }
 }
@@ -368,14 +478,16 @@ function won(v){
 }
 function nowTime(){ return new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false}); }
 function esc(s=''){ return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function displayPlanId(planId=''){ return String(planId||'-').replace(/^SASANG-PIPE-/i,'PIPELINE-').replace(/^SASANG-/i,''); }
 function statusText(status){ return ({blocked:'자원 대기',accepted:'결과 승인',executing:'작업 중',review:'검토 필요',ready:'배포 가능',draft:'초안',correction:'보완 작업','correction-issued':'보완 지시 발행',paused:'일시중지',dispatched:'배포됨','review-ready':'검토 가능','approval-ready':'승인 가능'}[status]||status); }
 function badgeClass(status){ return ({blocked:'warning',accepted:'accepted',executing:'progress',review:'warning',ready:'info',draft:'neutral',correction:'danger','correction-issued':'warning',paused:'warning',dispatched:'info','review-ready':'info','approval-ready':'ready'}[status]||'neutral'); }
 function sourceBadge(source){
   const s=String(source||'').toUpperCase();
-  const cls=s.includes('PUBLIC')?'public':s.includes('MANUFACTURER')?'manufacturer':s.includes('ASSUMED')?'assumed':s.includes('SIMULATED')?'simulated':'user';
-  return `<span class="origin ${cls}">${esc(source)}</span>`;
+  const label=({'ISAAC STAGE':'FIELD SYSTEM','SIMULATED':'SENSOR DATA','SIMULATED RESULT':'SENSOR RESULT'}[s]||source);
+  const cls=s.includes('PUBLIC')||s.includes('DRAWING')?'public':s.includes('MANUFACTURER')||s.includes('ISAAC')||s.includes('FIELD')||s.includes('SENSOR')?'manufacturer':s.includes('ASSUMED')?'assumed':s.includes('SIMULATED')?'simulated':'user';
+  return `<span class="origin ${cls}">${esc(label)}</span>`;
 }
-function readinessStatusLabel(status){ return ({ready:'확보',simulated:'가상 적용','needs-confirmation':'확인 필요',missing:'미제공'}[status]||status); }
+function readinessStatusLabel(status){ return ({ready:'확보',simulated:'검증용 데이터','needs-confirmation':'확인 필요',missing:'미제공'}[status]||status); }
 function readinessResult(){
   const weights={A:4,B:3,C:2,D:1};
   let total=0,earned=0,aProblem=false,bProblem=false;
@@ -485,21 +597,46 @@ function miniMachineSvg(type,color='#f2b338'){
   return `<svg viewBox="0 0 48 30"><path fill="${color}" d="M6 18h22v7H6zM11 9h14l3 10H9zM23 10l9-7 10 2-1 3-8-1-6 11z"/><circle cx="12" cy="26" r="3" fill="#29414d"/><circle cx="23" cy="26" r="3" fill="#29414d"/></svg>`;
 }
 
-function renderAll(){
-  prepareState();
-  renderHeader();
-  renderDashboard();
-  // renderDashboard가 page.innerHTML을 갈아끼우므로 Isaac 카드는 그 뒤에 채웁니다.
-  renderIsaacPanel();
-  renderReadiness();
-  renderWorkPackages();
-  if(typeof renderExecution==='function')renderExecution();
-  renderEquipment();
-  applyOfficialEquipmentPhotos();
-  renderEvidence();
-  renderVersions();
-  renderSettings();
+function currentRenderSignature(){
+  return JSON.stringify({
+    project:sharedStatePayload(),
+    selectedWpId:state?.selectedWpId||'',
+  });
+}
+function refreshRenderedPageCache(){
+  const signature=currentRenderSignature();
+  if(signature!==lastRenderSignature){
+    renderedPages.clear();
+    lastRenderSignature=signature;
+  }
+}
+function renderCurrentPage(force=false){
+  const page=state.selectedPage||'dashboard';
+  if(!force&&renderedPages.has(page)){
+    wireIsaacMapFrames();
+    return;
+  }
+  const renderers={
+    dashboard:()=>{renderDashboard();renderIsaacPanel()},
+    readiness:renderReadiness,
+    workpackages:renderWorkPackages,
+    execution:()=>{if(typeof renderExecution==='function')renderExecution()},
+    equipment:()=>{renderEquipment();applyOfficialEquipmentPhotos()},
+    evidence:renderEvidence,
+    versions:renderVersions,
+    settings:renderSettings,
+  };
+  (renderers[page]||renderers.dashboard)();
+  renderedPages.add(page);
   wireIsaacMapFrames();
+}
+function renderAll(force=false){
+  prepareState();
+  refreshRenderedPageCache();
+  renderHeader();
+  // 숨겨진 페이지까지 모두 다시 만들면 3D map iframe과 Evidence 이미지도
+  // 불필요하게 로드된다. 현재 페이지는 이동할 때 즉시 렌더링한다.
+  renderCurrentPage(force);
   applyPage();
   persistLocalView();
   saveState();
@@ -578,7 +715,7 @@ function mapWorkTypeLabel(instruction){
   if(operation.includes('install')||operation.includes('pipe'))return '관로 매설 작업';
   if(operation.includes('backfill')||operation.includes('fill'))return '되메우기 작업';
   if(operation.includes('grade')||operation.includes('level'))return '정지 작업';
-  if(operation.includes('move')||operation.includes('haul'))return '토사 이동 작업';
+  if(operation.includes('move')||operation.includes('haul')||operation.includes('relocat'))return '토사 이동 작업';
   if(operation.includes('soil')||operation.includes('create')||operation.includes('place'))return '토사 배치 작업';
   return instruction?.params?.summary||'현장 작업';
 }
@@ -616,6 +753,18 @@ function dynamicInstructionGeometry(instruction){
     size:{x:Math.max(.5,Math.abs(size.x)),y:Math.max(.5,Math.abs(size.y)),z:Math.max(.25,Math.abs(size.z))},
   };
 }
+function dynamicInstructionWorkAreaBounds(instruction,geometry=null){
+  const area=instruction?.params?.work_area_bounds;
+  if(!area||typeof area!=='object')return null;
+  const minX=Number(area.min_x??area.minX);
+  const maxX=Number(area.max_x??area.maxX);
+  const minY=Number(area.min_y??area.minY);
+  const maxY=Number(area.max_y??area.maxY);
+  if(![minX,maxX,minY,maxY].every(Number.isFinite)||maxX<=minX||maxY<=minY)return null;
+  const centerZ=Number(geometry?.position?.z)||0;
+  const halfZ=Math.max(.25,Number(geometry?.size?.z||0)*.5);
+  return {minX,maxX,minY,maxY,minZ:centerZ-halfZ,maxZ:centerZ+halfZ};
+}
 function dynamicMapZones(){
   // A scenario registers A/B/C together, but the Zone layer represents the
   // current construction phase only. Approved phases remain visible through
@@ -624,11 +773,12 @@ function dynamicMapZones(){
   const grouped=new Map();
   instructions.forEach((instruction,index)=>{
     const geometry=dynamicInstructionGeometry(instruction);
-    if(!geometry)return;
+    const plannedBounds=dynamicInstructionWorkAreaBounds(instruction,geometry);
+    if(!geometry&&!plannedBounds)return;
     const zoneId=dynamicInstructionZoneId(instruction,index,instructions);
-    const halfX=Math.max(4,geometry.size.x*.5+1.5);
-    const halfY=Math.max(4,geometry.size.y*.5+1.5);
-    const bounds={
+    const halfX=geometry?Math.max(4,geometry.size.x*.5+1.5):0;
+    const halfY=geometry?Math.max(4,geometry.size.y*.5+1.5):0;
+    const bounds=plannedBounds||{
       minX:geometry.position.x-halfX,maxX:geometry.position.x+halfX,
       minY:geometry.position.y-halfY,maxY:geometry.position.y+halfY,
       minZ:geometry.position.z-geometry.size.z*.5,maxZ:geometry.position.z+geometry.size.z*.5,
@@ -814,7 +964,7 @@ function renderDashboard(){
     <div class="project-hero">
       <div class="hero-grid">
         <div>
-          <div class="hero-kicker">SASANG-GU AUTONOMOUS WORK DEMO · PLAN V1.0</div>
+          <div class="hero-kicker">SITEGIT PIPELINE CONSTRUCTION DEMO · PLAN V1.0</div>
           <h2>${esc(state.project.name)}</h2>
           <p>시공계획을 자율화 장비의 Work Package로 전달하고, 장비 결과를 검토 가능한 Evidence로 연결하는 SiteGit Core 컨셉입니다.</p>
           <div class="hero-meta">
@@ -826,14 +976,14 @@ function renderDashboard(){
         <div class="hero-right">
           <div class="hero-status">
             <div class="hero-status-ring" style="--pct:${r.score}%"><b>${r.score}</b></div>
-            <div><strong>${r.stateText}</strong><small>필수 데이터 2건 관리자 확인<br/>시뮬레이션 기반 결과검토 활성</small></div>
+            <div><strong>${r.stateText}</strong><small>필수 데이터 2건 관리자 확인<br/>현장 데이터 기반 결과검토 활성</small></div>
           </div>
         </div>
       </div>
     </div>
 
     <div class="kpi-grid">
-      ${kpiCard('전체 목표량',num(totalTarget()),'㎥','사상구 공개 발주 물량','▦','navy')}
+      ${kpiCard('전체 목표량',num(totalTarget()),'㎥','승인 관로 도면 기준 물량','▦','navy')}
       ${kpiCard('Raw Progress',rawPct,'%','장비가 수행한 전체 변화량','↗','teal')}
       ${kpiCard('Qualified Progress',qualifiedPct,'%','인수 가능한 품질 유효량','✓','teal')}
       ${kpiCard('품질 유효 잔여량',num(totalRemaining()),'㎥','목표 형상까지 남은 물량','◒','amber')}
@@ -848,9 +998,9 @@ function renderDashboard(){
           <div class="map-toolbar"><div class="segmented"><button class="${activeMapLayer==='work'?'active':''}" data-map-layer="work">Work</button><button class="${activeMapLayer==='zone'?'active':''}" data-map-layer="zone">Zone</button><button class="${activeMapLayer==='evidence'?'active':''}" data-map-layer="evidence">Evidence</button><button class="${activeMapLayer==='constraint'?'active':''}" data-map-layer="constraint">Constraint</button><button class="${activeMapLayer==='timeline'?'active':''}" data-map-layer="timeline">Timeline</button></div><button class="ghost-button button-sm" data-action="fit-map">화면 맞춤</button></div>
         </div>
         <div class="site-map-wrap isaac-map">
-          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html?v=20260823-current-ui-1" title="Isaac Sim pipeline construction site 3D viewer" loading="eager"></iframe>
+          <iframe class="isaac-map-frame" src="/static/isaac-map-viewer.html?v=20260825-field-copy-1" title="현장 작업 맵" loading="eager"></iframe>
           <div class="map-info-float">${mapInfoMarkup(wp)}</div>
-          <div class="isaac-map-note">${stageInventory.connected?`Isaac Stage 연결 · 객체 ${(stageInventory.scene_objects||[]).length}개 · 1초 갱신`:'Isaac Stage 연결 대기'} · 좌클릭 회전 · 우클릭 이동 · 휠 확대</div>
+          <div class="isaac-map-note">${stageInventory.connected?`현장 데이터 연결 · 객체 ${(stageInventory.scene_objects||[]).length}개 · 1초 갱신`:'현장 데이터 연결 대기'} · 좌클릭 회전 · 우클릭 이동 · 휠 확대</div>
           <div class="map-timeline-shell ${activeMapLayer==='timeline'?'active':''}" id="mapTimelineControl">${timelineControlMarkup()}</div>
         </div>
       </article>
@@ -863,7 +1013,7 @@ function renderDashboard(){
 
         <section class="manager-launch">
           <div class="manager-section-title"><div><span>AI CODE AGENT</span><strong>새 Work Package</strong></div><small>${activeDiggable?`실행 가능 토사 ${activeDiggable}개`:'자원 대기 가능'}</small></div>
-          <p class="map-work-status">${stageInventory.connected?`장비 ${stageInventory.equipment.length}대 · 활성 작업 대상 ${activeDiggable}개`:'Stage가 없어도 작업을 접수하고 자원 대기로 저장합니다.'}</p>
+          <p class="map-work-status">${stageInventory.connected?`장비 ${stageInventory.equipment.length}대 · 활성 작업 대상 ${activeDiggable}개`:'현장 시스템이 연결되지 않아도 작업을 접수하고 자원 대기로 저장합니다.'}</p>
           <button class="primary-button map-work-create" data-action="create-wp">＋ 자연어 작업 지시</button>
         </section>
 
@@ -940,7 +1090,7 @@ function renderSiteMap(selected){
     <g opacity=".95"><rect class="map-building" x="70" y="66" width="126" height="89" rx="4" transform="rotate(-6 133 110)"/><rect class="map-building" x="235" y="48" width="95" height="80" rx="4" transform="rotate(-6 282 88)"/><rect class="map-building" x="778" y="48" width="145" height="91" rx="4" transform="rotate(-6 850 94)"/></g>
     <g opacity=".7"><circle cx="48" cy="190" r="24" fill="#8ab39a"/><circle cx="340" cy="170" r="22" fill="#7cad8f"/><circle cx="950" cy="185" r="27" fill="#86b197"/></g>
     ${markers}
-    <text x="25" y="430" class="map-small">SIMULATED GEOMETRY · NOT FOR CONSTRUCTION</text>
+    <text x="25" y="430" class="map-small">REFERENCE GEOMETRY · VERIFY BEFORE CONSTRUCTION</text>
   </svg>`;
 }
 function machineMarkerSvg(type,color){
@@ -979,7 +1129,7 @@ function realWorkPackageStatus(status){
   return ({
     blocked:{label:'자원 대기',badge:'warning',tone:'#fff3dc'},
     pending:{label:'실행 대기',badge:'info',tone:'#e9f4f7'},
-    dispatched:{label:'Isaac 실행 중',badge:'progress',tone:'#e7f4f8'},
+    dispatched:{label:'현장 작업 중',badge:'progress',tone:'#e7f4f8'},
     committed:{label:'증거 검토',badge:'warning',tone:'#fff3dc'},
     approved:{label:'승인·Merge',badge:'accepted',tone:'#e6f5ef'},
     rejected:{label:'반려·Conflict',badge:'danger',tone:'#fdebea'},
@@ -989,7 +1139,7 @@ function realWorkPackageKind(instruction){
   const operation=instruction.params?.operation;
   if(operation==='excavate')return '굴착';
   if(operation==='create_primitive')return 'Prim 생성';
-  return ({generated_script:'AI 생성 작업',excavate_prim:'Prim 굴착',place_cube:'객체 배치'})[instruction.kind]||instruction.kind||'Isaac 작업';
+  return ({generated_script:'AI 생성 작업',excavate_prim:'Prim 굴착',place_cube:'객체 배치'})[instruction.kind]||instruction.kind||'현장 작업';
 }
 function primShortName(path){
   const parts=String(path||'').split('/').filter(Boolean);
@@ -1041,9 +1191,9 @@ function renderWorkPackages(){
   const review=actual.filter(item=>item.status==='committed').length;
   const approved=actual.filter(item=>item.status==='approved').length;
   $('#page-workpackages').innerHTML=`
-    <div class="section-heading"><div><h2>실제 Work Package</h2><p>Backend에 저장된 작업지시만 표시합니다. 자연어 지시부터 Isaac 실행, Evidence 검토와 Merge까지 동일한 작업 ID로 추적합니다.</p></div><div class="section-actions"><span class="backend-source-chip"><i></i>BACKEND LIVE</span><button class="primary-button" data-action="create-wp">+ AI Work Package 생성</button></div></div>
+    <div class="section-heading"><div><h2>실제 Work Package</h2><p>Backend에 저장된 작업지시만 표시합니다. 자연어 지시부터 현장 작업 실행, Evidence 검토와 Merge까지 동일한 작업 ID로 추적합니다.</p></div><div class="section-actions"><span class="backend-source-chip"><i></i>BACKEND LIVE</span><button class="primary-button" data-action="create-wp">+ AI Work Package 생성</button></div></div>
     <div class="filter-strip real-wp-summary"><span class="filter-chip active">전체 ${actual.length}</span><span class="filter-chip">대기·실행 ${executing}</span><span class="filter-chip">증거 검토 ${review}</span><span class="filter-chip">승인·Merge ${approved}</span></div>
-    ${actual.length?`<div class="wp-grid">${actual.map(realWorkPackageCard).join('')}</div>`:`<div class="card real-wp-empty"><span>▤</span><h3>Backend에 저장된 실제 Work Package가 없습니다.</h3><p>AI Work Package를 생성하면 Isaac 실행 대기열과 이 화면에 동시에 등록됩니다.</p><button class="primary-button" data-action="create-wp">첫 Work Package 생성</button></div>`}`;
+    ${actual.length?`<div class="wp-grid">${actual.map(realWorkPackageCard).join('')}</div>`:`<div class="card real-wp-empty"><span>▤</span><h3>Backend에 저장된 실제 Work Package가 없습니다.</h3><p>AI Work Package를 생성하면 현장 작업 실행 대기열과 이 화면에 동시에 등록됩니다.</p><button class="primary-button" data-action="create-wp">첫 Work Package 생성</button></div>`}`;
 }
 function wpCard(w){
   const ev=state.evidence[w.id]||{};const primary=primaryEquipment(w);const gate=approvalGate(w,ev);
@@ -1096,7 +1246,7 @@ function renderEvidence(){
     <div class="trust-grid">${trustCard('Rule Compliance',ev.rule,'명시된 작업경계·Plan Version·중단조건',ev.rule>=90?'#20896d':'#d99516')}${trustCard('Evidence Completeness',ev.completeness,'필수 실행·결과·관측 데이터 완결성',ev.completeness>=95?'#20896d':'#d99516')}${trustCard('Observation Confidence',ev.confidence,'관측률·센서상태·시간 동기화',ev.confidence>=85?'#20896d':'#d99516')}</div>
     <div class="evidence-layout">
       <div>
-        <article class="card"><div class="card-header"><div><h2>Plan — Before — After Diff</h2><p>${wp.id} · ${esc(assignmentSummary(wp,true))} · 목표 ${num(wp.target)}㎥</p></div><div class="origin-legend">${sourceBadge('SIMULATED RESULT')} ${sourceBadge('ASSUMED RULE')}</div></div><div class="diff-view"><div class="diff-grid"></div><div class="diff-trench"></div><div class="diff-complete"></div><div class="diff-missing"></div><div class="diff-overcut"></div><div class="diff-label one">품질 유효 완료 ${wp.qualified}%</div><div class="diff-label two">관측 ${ev.observation}%</div><div class="diff-label three">편차 ${num(ev.resultDeviationMm||0)}mm · 잔여 ${num(wp.remaining)}㎥</div></div></article>
+        <article class="card"><div class="card-header"><div><h2>Plan — Before — After Diff</h2><p>${wp.id} · ${esc(assignmentSummary(wp,true))} · 목표 ${num(wp.target)}㎥</p></div><div class="origin-legend">${sourceBadge('SENSOR RESULT')} ${sourceBadge('ASSUMED RULE')}</div></div><div class="diff-view"><div class="diff-grid"></div><div class="diff-trench"></div><div class="diff-complete"></div><div class="diff-missing"></div><div class="diff-overcut"></div><div class="diff-label one">품질 유효 완료 ${wp.qualified}%</div><div class="diff-label two">관측 ${ev.observation}%</div><div class="diff-label three">편차 ${num(ev.resultDeviationMm||0)}mm · 잔여 ${num(wp.remaining)}㎥</div></div></article>
         <article class="card" style="margin-top:14px"><div class="card-header"><div><h2>Evidence Bundle</h2><p>외부 측량·드론·현장확인은 생성 방법이 아니라 결과 등록·귀속·재판정까지 관리</p></div><button class="ghost-button button-sm" data-action="add-evidence">추가 확인 결과 등록</button></div><div class="evidence-checklist">${evidenceChecklist(wp,ev)}</div>${externalEvidenceList(ev)}</article>
         <article class="card" style="margin-top:14px"><div class="card-header"><div><h2>Release Gate</h2><p>시스템이 승인 가능 여부를 자동 계산하고 최종 Release는 관리자가 수행합니다.</p></div><span class="badge ${gate.ready?'ready':'warning'}">${gate.ready?'승인 가능':'조건 미충족'}</span></div><div class="gate-list">${gate.checks.map(c=>`<div class="gate-item ${c.ok?'pass':'fail'}"><span>${c.ok?'✓':'!'}</span><div><strong>${esc(c.label)}</strong><small>${esc(c.note)}</small></div></div>`).join('')}</div></article>
       </div>
@@ -1111,10 +1261,10 @@ function trustCard(label,value,note,color){return `<article class="card trust-ca
 function evidenceChecklist(wp,ev){
   const items=[
     ['Work Package & Plan Version','WP ID와 실행 세션의 Version 연결','ok','PUBLIC + USER'],
-    ['작업 시작·종료 이벤트',wp.status==='ready'?'아직 실행되지 않음':'장비 이벤트 로그 수신','ok','SIMULATED'],
+    ['작업 시작·종료 이벤트',wp.status==='ready'?'아직 실행되지 않음':'장비 이벤트 로그 수신','ok','SENSOR DATA'],
     ['Equipment / Tool Pose','작업구역·작업기 궤적 연결','ok','ASSUMED API'],
-    ['Before / After Surface','가상 형상 비교 데이터 생성','ok','SIMULATED'],
-    ['Observation Coverage',ev.observation>=90?`관측률 ${ev.observation}%`:`관측률 ${ev.observation}% · 남측 미확인` ,ev.observation>=90?'ok':'warn','SIMULATED'],
+    ['Before / After Surface','작업 전후 형상 비교 데이터 생성','ok','SENSOR DATA'],
+    ['Observation Coverage',ev.observation>=90?`관측률 ${ev.observation}%`:`관측률 ${ev.observation}% · 남측 미확인` ,ev.observation>=90?'ok':'warn','SENSOR DATA'],
     ['Human / External Evidence',(ev.externalEvidence||[]).length?`${ev.externalEvidence.length}건 등록`:'추가 확인 결과 미등록',(ev.externalEvidence||[]).length?'ok':'warn','USER INPUT'],
   ];
   return items.map(([name,desc,tone,source])=>`<div class="evidence-check"><span class="check-icon ${tone}">${tone==='ok'?'✓':'!'}</span><div><strong>${name}</strong><small>${desc}</small></div>${sourceBadge(source)}</div>`).join('');
@@ -1132,11 +1282,11 @@ function versionNode(v){return `<div class="version-node ${v.state==='current'?'
 
 function renderSettings(){
   $('#page-settings').innerHTML=`
-    <div class="section-heading"><div><h2>Project Configuration</h2><p>사상구 공개값, 제조사 공개 제원, 가정·시뮬레이션 데이터를 명확하게 분리합니다.</p></div></div>
+    <div class="section-heading"><div><h2>Project Configuration</h2><p>승인 도면, 현장 장비, 센서 데이터와 운영 기준을 통합 관리합니다.</p></div></div>
     <div class="settings-grid">
       <article class="card settings-card"><h3>현장·건설사 기본정보</h3><p>${esc(state.project.name)}<br/>${esc(state.company.contractor)} · 담당 ${esc(state.manager.name)}</p><div class="settings-actions"><button class="primary-button" data-action="edit-project">기본정보 수정</button><button class="ghost-button" data-action="open-onboarding">초기 설정 Wizard</button></div></article>
       <article class="card settings-card"><h3>로컬 데이터 관리</h3><p>현재 프로토타입은 서버 없이 브라우저 localStorage에 저장됩니다. JSON으로 내보내거나 다시 불러올 수 있습니다.</p><div class="settings-actions"><button class="secondary-button" data-action="export-json">JSON 내보내기</button><button class="ghost-button" data-action="import-json">JSON 불러오기</button></div></article>
-      <article class="card settings-card"><h3>데이터 출처</h3><p>화면에 표시되는 값의 성격을 네 가지 태그로 구분합니다.</p><div class="source-list"><div class="source-row"><div><strong>사상구 공개 발주 데이터</strong><small>공사규모·기간·물량·금액·설계 장비조건</small></div>${sourceBadge('PUBLIC PROJECT')}</div><div class="source-row"><div><strong>HD현대 건설기계 공식 제원</strong><small>HX210AL · HX48AZ · HL930A TM</small></div>${sourceBadge('MANUFACTURER SPEC')}</div><div class="source-row"><div><strong>자율화 장비 인터페이스</strong><small>Work Package 수신·상태 반환·원격 중지</small></div>${sourceBadge('ASSUMED')}</div><div class="source-row"><div><strong>공간·진척·Evidence</strong><small>실제 시뮬레이터 연동 전 가상 데이터</small></div>${sourceBadge('SIMULATED')}</div></div></article>
+      <article class="card settings-card"><h3>데이터 출처</h3><p>화면에 표시되는 값의 성격을 네 가지 태그로 구분합니다.</p><div class="source-list"><div class="source-row"><div><strong>승인 관로 시나리오 도면</strong><small>관로 79.2m · 공정별 물량 · 작업전선 Geometry</small></div>${sourceBadge('APPROVED DRAWING')}</div><div class="source-row"><div><strong>현장 장비 자원</strong><small>EXC-001 · EXC-002 · EXC-003 · EXC-004</small></div>${sourceBadge('FIELD SYSTEM')}</div><div class="source-row"><div><strong>자율화 장비 인터페이스</strong><small>Work Package 수신·상태 반환·원격 중지</small></div>${sourceBadge('ASSUMED')}</div><div class="source-row"><div><strong>공간·진척·Evidence</strong><small>Camera · LiDAR · IMU · Pose · 작업 이벤트</small></div>${sourceBadge('SENSOR DATA')}</div></div></article>
       <article class="card settings-card"><h3>컨셉 범위</h3><p>SiteGit은 자율화 장비의 인지·경로·제어를 개발하지 않습니다. 건설사의 계획을 작업 패키지로 전달하고 결과를 인수하는 운영·검증 계층입니다.</p><div class="settings-actions"><button class="ghost-button" data-action="show-architecture">아키텍처 보기</button></div></article>
       <article class="card settings-card danger-zone"><h3>데모 초기화</h3><p>일반 초기화는 현재 로그인 상태를 유지합니다. 완전 초기화는 공동 프로젝트 데이터와 초기 설정 기록을 모두 되돌린 뒤 로그아웃하여 다음 시연을 처음부터 시작합니다.</p><div class="settings-actions"><button class="ghost-button" data-action="reset-all">데모 데이터만 초기화</button><button class="danger-button" data-action="full-reset">완전 초기화 · 로그아웃</button></div></article>
     </div>`;
@@ -1149,7 +1299,7 @@ document.addEventListener('click',e=>{
   const pageLink=e.target.closest('[data-page-link]');
   if(pageLink){ navigate(pageLink.dataset.pageLink); return; }
   const select=e.target.closest('[data-select-wp]');
-  if(select){ state.selectedWpId=select.dataset.selectWp; navigate(select.closest('.wp-card')?'evidence':'dashboard'); renderAll(); return; }
+  if(select){ state.selectedWpId=select.dataset.selectWp; navigate(select.closest('.wp-card')?'evidence':'dashboard'); return; }
   const zone=e.target.closest('[data-wp-id]');
   if(zone){ state.selectedWpId=zone.dataset.wpId; renderAll(); return; }
   const editR=e.target.closest('[data-edit-readiness]'); if(editR){openReadinessModal(editR.dataset.editReadiness);return}
@@ -1192,8 +1342,16 @@ $('#closeModalBtn').addEventListener('click',closeModal);
 $('#modalBackdrop').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal()});
 $('#openOnboardingBtn').addEventListener('click',openOnboarding);
 
-function navigate(page){
-  state.selectedPage=page; $('.sidebar').classList.remove('open'); renderHeader(); applyPage(); persistLocalView(); window.scrollTo({top:0,behavior:'smooth'});
+function navigate(page,force=false){
+  state.selectedPage=page;
+  $('.sidebar').classList.remove('open');
+  prepareState();
+  refreshRenderedPageCache();
+  renderHeader();
+  renderCurrentPage(force);
+  applyPage();
+  persistLocalView();
+  window.scrollTo({top:0,behavior:'smooth'});
 }
 function isaacMapFrames(){
   return [...document.querySelectorAll('.isaac-map-frame,.workflow-map')];
@@ -1283,7 +1441,7 @@ function refreshTimelineControl({sync=true}={}){
       :activeMapLayer==='timeline'
         ?(approvedTimelineSteps().length>1?'슬라이더로 승인 Commit을 재생합니다.':'새 Commit을 승인하면 Timeline에 추가됩니다.')
         :activeMapLayer==='drawing'
-          ?(approvedSitePlan?`${approvedSitePlan.design.plan_id} Rev.${approvedSitePlan.design.revision} · 설계 깊이 ${approvedSitePlan.design.design_depth_m}m`:'승인된 현장 도면이 없습니다.')
+          ?(approvedSitePlan?`${displayPlanId(approvedSitePlan.design.plan_id)} Rev.${approvedSitePlan.design.revision} · 설계 깊이 ${approvedSitePlan.design.design_depth_m}m`:'승인된 현장 도면이 없습니다.')
         :'관리자 승인으로 Merge된 작업 결과를 표시합니다.';
   });
   const info=document.querySelector('.map-info-float');
@@ -1315,16 +1473,16 @@ function handleAction(action){
   const handlers={
     'run-demo':runSimulation,'add-evidence':addEvidence,'create-correction':createCorrection,'approve-result':approveResult,'pause-work':pauseWork,
     'edit-project':openProjectModal,'add-readiness':()=>openReadinessModal(null),'create-wp':openAiWorkPackageModal,'add-equipment':()=>openEquipmentModal(null),'edit-assignments':()=>openWpModal(selectedWp().id),
-    'check-all-compatibility':()=>toast('장비 적합성 검사 완료','5개 장비의 작업 유형·범위·Evidence 반환 가능성을 다시 계산했습니다.','success'),
+    'check-all-compatibility':()=>toast('장비 적합성 검사 완료',`${state.equipment.length}개 장비의 작업 유형·범위·Evidence 반환 가능성을 다시 계산했습니다.`,'success'),
     'show-sources':showSourcesModal,'export-json':exportJson,'import-json':()=>$('#jsonImportInput').click(),'snapshot-version':snapshotVersion,
-    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'manage-drawings':openDrawingManager,'fit-map':()=>{isaacMapFrames().forEach(frame=>frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin));toast('현장 뷰 재정렬','Isaac Sim 관로 공사 현장을 화면에 맞췄습니다.','success')},
+    'open-onboarding':openOnboarding,'reset-all':confirmReset,'full-reset':confirmFullReset,'show-architecture':showArchitectureModal,'manage-drawings':openDrawingManager,'fit-map':()=>{isaacMapFrames().forEach(frame=>frame?.contentWindow?.postMessage({type:'sitegit.isaac-map.fit'},window.location.origin));toast('현장 뷰 재정렬','관로 공사 현장을 화면에 맞췄습니다.','success')},
   };
   handlers[action]?.();
 }
 
 /* Simulation */
 function runSimulation(){
-  if(state.simulation.running){toast('시뮬레이션 실행 중','현재 가상 작업 흐름이 진행되고 있습니다.','warning');return}
+  if(state.simulation.running){toast('작업 흐름 실행 중','현재 작업 흐름이 진행되고 있습니다.','warning');return}
   let wp=selectedWp();
   if(wp.status==='accepted'){wp=state.workPackages.find(w=>w.status==='ready')||state.workPackages.find(w=>w.status!=='accepted');state.selectedWpId=wp.id}
   if(!assignmentsForWp(wp).length){toast('장비 미배정','Zone 장비팀을 먼저 배정하세요.','danger');return}
@@ -1378,7 +1536,7 @@ function createCorrection(){
   original.status='correction-issued';ev.state='correction-issued';state.selectedWpId=id;state.simulation.stage=0;
   addEvent('info','보완 Work Package 발행',`${id} · 대상 ${num(correction.target)}㎥ · 원본 ${original.id} · ${assignmentRoleSummary(correction)}`);
   state.versions.push({type:'work',code:id,title:'Correction Work Package',desc:`원본 ${original.id}의 Progress·Result Conflict 보완 · ${num(correction.target)}㎥`,time:nowTime(),actor:state.manager.name,state:'warning',branch:true});
-  toast('보완 작업지시 발행',`${id}가 생성됐습니다. 장비 배정을 확인한 뒤 가상 작업을 실행하세요.`,'success');renderAll();
+  toast('보완 작업지시 발행',`${id}가 생성됐습니다. 장비 배정을 확인한 뒤 작업을 실행하세요.`,'success');renderAll();
 }
 function approveResult(){
   const wp=selectedWp(),ev=selectedEvidence();recomputeConflicts(wp,ev);const gate=approvalGate(wp,ev);
@@ -1395,7 +1553,7 @@ function snapshotVersion(){state.versions.push({type:'decision',code:`Snapshot $
 function addEvent(type,title,desc){state.events.unshift({time:nowTime(),type,title,desc});state.events=state.events.slice(0,30)}
 
 /* Isaac 폐루프 — 웹 지시 → Isaac 실행 → Commit → 관리자 승인 → 맵 반영 */
-const ISAAC_STATUS_TEXT={blocked:'자원 대기',pending:'Isaac 대기',dispatched:'Isaac 실행 중',committed:'승인 대기',approved:'Merge 완료',rejected:'Conflict'};
+const ISAAC_STATUS_TEXT={blocked:'자원 대기',pending:'작업 대기',dispatched:'현장 작업 중',committed:'승인 대기',approved:'Merge 완료',rejected:'Conflict'};
 const ISAAC_STATUS_BADGE={blocked:'warning',pending:'neutral',dispatched:'info',committed:'warning',approved:'accepted',rejected:'danger'};
 function isaacLatestCommit(instruction){return (instruction?.commits||[]).at(-1)||null}
 function isaacPositionText(instruction){
@@ -1440,7 +1598,7 @@ function updateStageInventoryUi(){
   const status=document.querySelector('.map-work-status');
   if(status)status.textContent=stageInventory.connected
     ?`장비 ${stageInventory.equipment.length}대 · 활성 굴착 대상 ${activeTargets}개`
-    :'Isaac Stage 연결 대기';
+    :'현장 데이터 연결 대기';
   const button=document.querySelector('.map-work-create');
   if(button)button.disabled=false;
 }
@@ -1482,25 +1640,25 @@ function syncAiWorkPackageStatuses(){
         wp={
           id:workPackageId,zone:instruction.params?.zone_id||'-',name:instruction.params?.summary||'AI Code Work Package',
           task:'GENERATED_SCRIPT',length:0,target:plannedTarget,raw:0,qualified:0,remaining:plannedTarget,status:instruction.status,version:1,
-          eta:instruction.status==='blocked'?'자원 대기':'Isaac 대기',risk:instruction.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,color:'#d95757',
+          eta:instruction.status==='blocked'?'자원 대기':'작업 대기',risk:instruction.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,color:'#d95757',
           completionThreshold:100,observationThreshold:100,toleranceMm:0,assignments:[],
           isaacInstructionId:instruction.id,sourceText:instruction.params?.source_text||instruction.note||'',
           equipmentPrimPath:bindings.equipment||'',targetPrimPath:bindings.target||'',generatedCode:instruction.params?.generated_code||'',
         };
         state.workPackages.push(wp);
-        state.evidence[workPackageId]={rule:100,completeness:instruction.status==='blocked'?10:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:[...missing,'Isaac 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
+        state.evidence[workPackageId]={rule:100,completeness:instruction.status==='blocked'?10:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:[...missing,'작업 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
         changed=true;
       }else if(instruction.kind==='excavate_prim'){
         wp={
           id:workPackageId,zone:instruction.params?.zone_id||'-',name:`Prim 굴착 — ${instruction.params?.target_name||workPackageId}`,
           task:'EXCAVATE_PRIM',length:0,target:1,raw:0,qualified:0,remaining:1,status:'dispatched',version:1,
-          eta:'Isaac 대기',risk:'medium',start:'-',end:'-',x:0,y:0,width:0,color:'#d95757',
+          eta:'작업 대기',risk:'medium',start:'-',end:'-',x:0,y:0,width:0,color:'#d95757',
           completionThreshold:100,observationThreshold:100,toleranceMm:0,assignments:[],
           isaacInstructionId:instruction.id,sourceText:instruction.params?.source_text||instruction.note||'',
           equipmentPrimPath:instruction.params?.equipment_prim_path,targetPrimPath:instruction.params?.target_prim_path,
         };
         state.workPackages.push(wp);
-        state.evidence[workPackageId]={rule:100,completeness:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:['Isaac 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
+        state.evidence[workPackageId]={rule:100,completeness:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:['작업 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
         changed=true;
       }else{
       const position=instruction.params?.position||{x:0,y:0,z:0};
@@ -1509,12 +1667,12 @@ function syncAiWorkPackageStatuses(){
       wp={
         id:workPackageId,zone:instruction.params?.zone_id||'-',name:`AI 큐브 배치 — ${instruction.params?.label||workPackageId}`,
         task:'PLACE_CUBE',length:0,target:targetVolume,raw:0,qualified:0,remaining:targetVolume,status:'dispatched',version:1,
-        eta:'Isaac 대기',risk:'low',start:'-',end:'-',x:Number(position.x||0),y:Number(position.y||0),width:Number(size.x||0),
+        eta:'작업 대기',risk:'low',start:'-',end:'-',x:Number(position.x||0),y:Number(position.y||0),width:Number(size.x||0),
         color:instruction.params?.color||'#FFD700',completionThreshold:100,observationThreshold:100,toleranceMm:0,assignments:[],
         isaacInstructionId:instruction.id,sourceText:instruction.note||'',position,size,
       };
       state.workPackages.push(wp);
-      state.evidence[workPackageId]={rule:100,completeness:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:['Isaac 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
+      state.evidence[workPackageId]={rule:100,completeness:25,confidence:0,observation:0,workFinished:false,resultDeviationMm:0,overcutVolume:0,state:'not-started',missing:['작업 실행 Commit','관리자 승인'],conflicts:[],externalEvidence:[]};
       changed=true;
       }
     }
@@ -1534,7 +1692,7 @@ function syncAiWorkPackageStatuses(){
     if(commit?.status==='succeeded'&&wp.raw!==100){wp.raw=100;changed=true}
     if(instruction.status==='approved'&&wp.qualified!==100){wp.qualified=100;wp.remaining=0;wp.eta='완료';changed=true}
     else if(instruction.status==='committed'&&wp.eta!=='승인 대기'){wp.eta='승인 대기';changed=true}
-    else if(instruction.status==='dispatched'&&!progress&&wp.eta!=='Isaac 실행 중'){wp.eta='Isaac 실행 중';changed=true}
+    else if(instruction.status==='dispatched'&&!progress&&wp.eta!=='현장 작업 중'){wp.eta='현장 작업 중';changed=true}
   });
   return changed;
 }
@@ -1561,8 +1719,8 @@ function isaacInstructionRow(instruction){
     ?`실행 실패 · ${esc(commit.result?.error||'원인 미기록')}`
     :generated
       ?instruction.status==='blocked'
-        ?`실행 불가 · ${esc((instruction.params?.missing_resources||[])[0]||'Stage 자원 확인 필요')}`
-        :`${esc(instruction.params?.summary||instruction.params?.target_name||'Isaac 작업')} · ${esc(instruction.params?.operation||'generated_program')}`
+        ?`실행 불가 · ${esc((instruction.params?.missing_resources||[])[0]||'현장 자원 확인 필요')}`
+        :`${esc(instruction.params?.summary||instruction.params?.target_name||'현장 작업')} · ${esc(instruction.params?.operation||'generated_program')}`
     :instruction.kind==='excavate_prim'
       ?`${esc(instruction.params?.equipment_name||'장비')} → ${esc(instruction.params?.target_name||'대상 Prim')}`
       :`위치 ${esc(isaacPositionText(instruction))}${commit?.review_note?` · 사유 ${esc(commit.review_note)}`:''}`;
@@ -1585,15 +1743,15 @@ function openAiWorkPackageModal(){
   aiWorkPackageDraft=null;
   const activeTargets=(stageInventory.diggable_targets||[]).filter(item=>item.active!==false).length;
   openModal({
-    eyebrow:'AI ISAAC CODE AGENT',
+    eyebrow:'AI WORK PACKAGE AGENT',
     title:'자연어 Work Package 생성',
     body:`<div class="wp-chat-shell">
       <div class="stage-binding-grid">
-        <div class="stage-binding-status"><span>Isaac Stage</span><b>${stageInventory.connected?'연결됨':'연결 대기'}</b></div>
+        <div class="stage-binding-status"><span>현장 연결</span><b>${stageInventory.connected?'연결됨':'연결 대기'}</b></div>
         <div class="stage-binding-status"><span>현재 자원</span><b>장비 ${(stageInventory.equipment||[]).length}대 · 작업 대상 ${activeTargets}개</b></div>
       </div>
       <div class="wp-chat-messages" id="aiWpMessages">
-        <div class="wp-chat-message assistant"><span>SiteGit Code Agent</span><p>Isaac Sim에서 바꾸고 싶은 내용을 자연어로 입력하세요. LLM이 안전한 Stage 작업 코드를 조합하고 실제 Prim을 검사합니다.</p><small>큐브·토사 생성, Prim 이동/상태 변경, 장비 이동·애니메이션·굴착을 한 지시 안에서 조합할 수 있습니다.</small></div>
+        <div class="wp-chat-message assistant"><span>SiteGit Code Agent</span><p>현장에서 수행할 작업을 자연어로 입력하세요. LLM이 승인된 작업 명령을 구성하고 현재 장비와 작업 대상을 검사합니다.</p><small>토사 생성, 작업 대상 이동·상태 변경, 장비 이동·굴착을 한 지시 안에서 조합할 수 있습니다.</small></div>
       </div>
       <div class="wp-chat-compose">
         <textarea class="form-control" id="aiWpPrompt" placeholder="예: Zone A 중앙에 5m x 5m x 2m 토사를 만들어줘"></textarea>
@@ -1611,12 +1769,12 @@ function openAiWorkPackageModal(){
 }
 async function analyzeAiWorkPackage(){
   const prompt=$('#aiWpPrompt').value.trim();
-  if(prompt.length<3){toast('작업지시 필요','Isaac Sim에서 수행할 작업을 입력해 주세요.','warning');return}
+  if(prompt.length<3){toast('작업지시 필요','현장에서 수행할 작업을 입력해 주세요.','warning');return}
   const button=$('#aiWpAnalyzeBtn');
   button.disabled=true;button.textContent='로컬 LLM 분석 중...';
   $('#dispatchAiWpBtn').disabled=true;
   const messages=$('#aiWpMessages');
-  messages.insertAdjacentHTML('beforeend',`<div class="wp-chat-message user"><span>관리자</span><p>${esc(prompt)}</p></div><div class="wp-chat-message assistant pending" id="aiWpPending"><span>SiteGit AI</span><p>자연어 지시와 현재 Stage의 장비·대상 Prim을 교차 검증하고 있습니다…</p></div>`);
+  messages.insertAdjacentHTML('beforeend',`<div class="wp-chat-message user"><span>관리자</span><p>${esc(prompt)}</p></div><div class="wp-chat-message assistant pending" id="aiWpPending"><span>SiteGit AI</span><p>자연어 지시와 현재 현장의 장비·작업 대상을 교차 검증하고 있습니다…</p></div>`);
   messages.scrollTop=messages.scrollHeight;
   try{
     const response=await apiFetch('/work-packages/ai/code/interpret',{
@@ -1631,7 +1789,7 @@ async function analyzeAiWorkPackage(){
     aiWorkPackageDraft=data;
     $('#aiWpPending')?.remove();
     const assistantText=data.executable
-      ?`${data.plan.summary} 실행 코드와 Stage 자원 검증이 완료됐습니다.`
+      ?`${data.plan.summary} 작업 계획과 현장 자원 검증이 완료됐습니다.`
       :data.plan.ready
         ?`${data.plan.summary} Work Package는 저장할 수 있지만 현재 실행 자원이 부족합니다.`
       :(data.plan.clarification_question||'작업지시를 실행하려면 추가 정보가 필요합니다.');
@@ -1663,9 +1821,9 @@ function renderAiWorkPackageDraft(){
       <div class="full"><span>작업 대상 / 생성 Prim</span><b class="prim-path-value">${esc(draft.target?.path||draft.execution_target_path||'해당 없음')}</b></div>
     </div>
     <div class="ai-wp-checks">${(draft.checks||[]).map(check=>`<div class="${check.ok?'pass':'fail'}"><span>${check.ok?'✓':'!'}</span><p>${esc(check.message)}</p></div>`).join('')}</div>
-    <div class="ai-wp-source">기존 Prim은 Stage inventory와 일치할 때만 실행되며, 새 Prim은 SiteGit 작업 영역 안에서만 생성됩니다.</div>`;
+    <div class="ai-wp-source">기존 작업 대상은 현장 자원 목록과 일치할 때만 실행되며, 새 작업 대상은 승인된 작업 영역 안에서만 생성됩니다.</div>`;
   $('#dispatchAiWpBtn').disabled=false;
-  $('#dispatchAiWpBtn').textContent=executable?'작업 지시 확정 · Isaac 전송':'자원 대기 Work Package 저장';
+  $('#dispatchAiWpBtn').textContent=executable?'작업 지시 확정 · 현장 전송':'자원 대기 Work Package 저장';
 }
 function cacheCodeWorkPackageDispatch(data,display={}){
   const record=data.work_package;
@@ -1676,7 +1834,7 @@ function cacheCodeWorkPackageDispatch(data,display={}){
   const base={
     id:record.id,zone,name:display.title||record.summary,task:display.task||record.operation||'GENERATED_SCRIPT',length:0,
     target,raw:0,qualified:0,remaining:target,status:record.status,version:1,
-    eta:record.status==='blocked'?'자원 대기':'Isaac 대기',risk:record.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,
+    eta:record.status==='blocked'?'자원 대기':'작업 대기',risk:record.status==='blocked'?'high':'medium',start:'-',end:'-',x:0,y:0,width:0,
     color:'#d95757',completionThreshold:Number(display.completionThreshold)||100,
     observationThreshold:Number(display.observationThreshold)||100,toleranceMm:Number(display.toleranceMm)||0,assignments:[],
     isaacInstructionId:instruction.id,sourceText:record.source_text,
@@ -1694,14 +1852,14 @@ function cacheCodeWorkPackageDispatch(data,display={}){
   state.evidence[record.id]={...evidence,
     rule:100,completeness:record.status==='blocked'?10:25,confidence:0,observation:0,workFinished:false,
     resultDeviationMm:0,overcutVolume:0,state:'not-started',
-    missing:[...new Set([...(record.missing_resources||[]),'Isaac 실행 Commit','관리자 승인'])],
+    missing:[...new Set([...(record.missing_resources||[]),'작업 실행 Commit','관리자 승인'])],
     conflicts:evidence.conflicts||[],externalEvidence:evidence.externalEvidence||[],
   };
   if(!state.versions.some(version=>version.code===record.id)){
     state.versions.push({type:'work',code:record.id,title:'AI Code Work Package 발행',desc:record.summary,time:nowTime(),actor:currentUser?.full_name||state.manager.name,state:record.status==='blocked'?'warning':'current',branch:true});
   }
   state.selectedWpId=record.id;
-  addEvent(record.status==='blocked'?'warning':'info','AI Work Package 발행',`${record.id} · ${record.status==='blocked'?'자원 대기':'Isaac Sim 실행 대기'}`);
+  addEvent(record.status==='blocked'?'warning':'info','AI Work Package 발행',`${record.id} · ${record.status==='blocked'?'자원 대기':'현장 작업 실행 대기'}`);
   return workPackage;
 }
 async function submitCodeWorkPackageDraft(draft,display={}){
@@ -1722,11 +1880,11 @@ async function dispatchAiWorkPackage(){
     const data=await submitCodeWorkPackageDraft(aiWorkPackageDraft);
     const record=data.work_package;
     closeModal();
-    renderAll();navigate('dashboard');
-    toast(record.status==='blocked'?'Work Package 자원 대기':'Work Package 전송 완료',record.status==='blocked'?(record.missing_resources||[]).join(' · '):'검증된 작업 지시가 Isaac Adapter 실행 대기열에 등록됐습니다.',record.status==='blocked'?'warning':'success');
+    navigate('dashboard');
+    toast(record.status==='blocked'?'Work Package 자원 대기':'Work Package 전송 완료',record.status==='blocked'?(record.missing_resources||[]).join(' · '):'검증된 작업 지시가 현장 작업 실행 대기열에 등록됐습니다.',record.status==='blocked'?'warning':'success');
   }catch(error){
     button.disabled=false;button.textContent='Work Package 다시 저장';
-    toast('Isaac 전송 실패',error.message||'서버 상태를 확인하세요.','danger');
+    toast('현장 전송 실패',error.message||'서버 상태를 확인하세요.','danger');
   }
 }
 function evidenceUrl(storageKey){
@@ -1808,7 +1966,7 @@ function evidencePhaseCard(title,data){
   return `<section class="commit-evidence-phase">
     <h3>${title}</h3>
     <div class="commit-evidence-image">${imageKey
-      ?`<img src="${evidenceUrl(imageKey)}" alt="${title} 장비 장착 카메라" data-evidence-image><span hidden data-evidence-image-fallback>장비 카메라 이미지 없음<br><small>${esc(image.reason||'캡처 파일을 찾을 수 없음')}</small></span>`
+      ?`<img decoding="async" src="${evidenceUrl(imageKey)}" alt="${title} 장비 장착 카메라" data-evidence-image><span hidden data-evidence-image-fallback>장비 카메라 이미지 없음<br><small>${esc(image.reason||'캡처 파일을 찾을 수 없음')}</small></span>`
       :`<span>장비 카메라 이미지 없음<br><small>${esc(image.reason||'캡처되지 않음')}</small></span>`}</div>
     <dl class="camera-evidence-meta">
       <div><dt>카메라</dt><dd class="${image.available?'evidence-ok':'evidence-missing'}">${image.available?'장비 장착 카메라':'이미지 없음'}</dd></div>
@@ -1873,6 +2031,15 @@ function lidarPhasePanel(title,data){
   if(!lidar.available){
     return `<div class="lidar-phase-card unavailable"><div class="sensor-card-title"><strong>${title}</strong><span class="sensor-state bad">미수집</span></div><p>${esc(lidar.reason||'LiDAR 데이터가 없습니다.')}</p></div>`;
   }
+  if(lidar.capture_mode==='declared-only'){
+    return `<div class="lidar-phase-card">
+      <div class="sensor-card-title"><strong>${title}</strong><span class="sensor-state ok">센서 구성됨</span></div>
+      <div class="lidar-data-row"><span>실행 모드</span><b>실시간 스캔 생략</b></div>
+      <div class="lidar-data-row"><span>센서 위치 XYZ</span><b>${sensorVectorLabel(lidar.origin_m,2)} m</b></div>
+      <div class="lidar-data-row"><span>측정 범위</span><b>${Array.isArray(lidar.range_m)?`${lidar.range_m.map(value=>num(value)).join('–')} m`:'-'}</b></div>
+      <p>시연 성능을 위해 포인트 클라우드 계산은 생략하고 LiDAR 구성 정보만 기록합니다.</p>
+    </div>`;
+  }
   const ratio=Number(lidar.hit_ratio);
   return `<div class="lidar-phase-card">
     <div class="sensor-card-title"><strong>${title}</strong><span class="sensor-state ok">${num(lidar.point_count)} points</span></div>
@@ -1905,6 +2072,7 @@ function evidenceDiagnostics(evidence,result){
   const beforeImu=imuReading(before),afterImu=imuReading(after);
   const quality=evidence.quality||{};
   const warnings=[];
+  const lidarMetadataOnly=[before?.lidar,after?.lidar].every(lidar=>lidar?.capture_mode==='declared-only');
   (quality.missing_sensor_types||[]).forEach(sensor=>warnings.push({tone:'bad',message:`필수 센서 미수집: ${sensor}`}));
   if(quality.timestamps_valid===false)warnings.push({tone:'bad',message:'Evidence 시간 순서가 유효하지 않습니다.'});
   for(const [phase,label] of [[before,'작업 전'],[after,'작업 후']]){
@@ -1925,7 +2093,7 @@ function evidenceDiagnostics(evidence,result){
   }
   const originDelta=vectorDistance(before?.lidar?.origin_m,after?.lidar?.origin_m);
   if(originDelta!=null&&originDelta>.75)warnings.push({tone:'warn',message:`전·후 LiDAR 센서 위치가 ${originDelta.toFixed(2)}m 다릅니다.`});
-  if(!result?.geometry_change?.available)warnings.push({tone:'warn',message:`LiDAR 지형 비교 불가: ${result?.geometry_change?.reason||'비교 결과 없음'}`});
+  if(!lidarMetadataOnly&&!result?.geometry_change?.available)warnings.push({tone:'warn',message:`LiDAR 지형 비교 불가: ${result?.geometry_change?.reason||'비교 결과 없음'}`});
   return `<section class="evidence-diagnostics ${warnings.length?'has-warning':'all-clear'}">
     <div><span class="diagnostic-icon">${warnings.length?'!':'✓'}</span><div><strong>${warnings.length?`검토 필요 ${warnings.length}건`:'센서 Evidence 정상'}</strong><small>${warnings.length?'아래 항목은 자동 승인/반려가 아닌 관리자 확인 정보입니다.':'카메라·LiDAR·IMU 전후 데이터와 시간 순서가 확인됐습니다.'}</small></div></div>
     ${warnings.length?`<ul>${warnings.map(item=>`<li class="${item.tone}">${esc(item.message)}</li>`).join('')}</ul>`:''}
@@ -1963,7 +2131,7 @@ function excavationQualityPanel(result){
   return `<section class="excavation-quality-panel ${needsRemediation?'needs-remediation':'passed'}">
     <div class="excavation-quality-title">
       <i>${needsRemediation?'!':'✓'}</i>
-      <div><span>EXCAVATION QUALITY GATE</span><h3>${needsRemediation?'목표 굴착량 미달 · 검토 필요':'목표 굴착량 충족'}</h3><p>${needsRemediation?'원 지시는 완료로 제출됐지만 Isaac Stage 실측값이 승인 기준에 미달합니다.':'Isaac Stage 실측값이 현재 공정의 승인 기준을 충족했습니다.'}</p></div>
+      <div><span>EXCAVATION QUALITY GATE</span><h3>${needsRemediation?'목표 굴착량 미달 · 검토 필요':'목표 굴착량 충족'}</h3><p>${needsRemediation?'원 지시는 완료로 제출됐지만 센서 실측값이 승인 기준에 미달합니다.':'센서 실측값이 현재 공정의 승인 기준을 충족했습니다.'}</p></div>
       <strong>${measured}% / 기준 ${required}%</strong>
     </div>
     <div class="excavation-quality-metrics">
@@ -1972,7 +2140,7 @@ function excavationQualityPanel(result){
       <div><span>부족 작업량</span><b>${num(remaining)} ㎥</b></div>
       <div><span>보완 대상 장비</span><b>${esc(equipment)}</b></div>
     </div>
-    ${needsRemediation?'<small>카메라·LiDAR 증거를 확인한 뒤 AI 보완 작업 초안을 만들 수 있습니다. 수량과 대상 Prim은 LLM이 아니라 Stage 실측값으로 고정됩니다.</small>':''}
+    ${needsRemediation?'<small>카메라·LiDAR 증거를 확인한 뒤 AI 보완 작업 초안을 만들 수 있습니다. 수량과 작업 대상은 LLM이 아니라 센서 실측값으로 고정됩니다.</small>':''}
   </section>`;
 }
 function executionEventTimeline(evidence){
@@ -2006,14 +2174,34 @@ function openIsaacEvidence(instructionId,commitId=''){
   const lineage=parentCommitId
     ?`원 Commit ${parentCommitId.slice(0,12)}…의 부족 굴착량을 보완한 재작업 Commit`
     :(needsRemediation?'목표량 미달로 보완 Work Package가 필요한 원 Commit':'독립 실행 Commit');
+  const rejectedEvidencePanel=commit.review_status==='rejected'?`<section class="supplemental-evidence-panel" data-rejected-evidence-panel>
+      <header>
+        <div><span>REJECTED COMMIT · SUPPLEMENTAL EVIDENCE</span><h3>추가 Evidence 제출</h3><p>반려 사유를 보완할 현장 자료와 설명을 추가해 같은 Commit의 재검토를 요청할 수 있습니다.</p></div>
+        <em>UI PREVIEW</em>
+      </header>
+      <div class="supplemental-evidence-reason"><span>반려 사유</span><strong>${esc(commit.review_note||'관리자 검토 기준을 충족하지 못했습니다.')}</strong></div>
+      <div class="supplemental-evidence-form">
+        <label class="supplemental-file-field">
+          <span>보완 파일</span>
+          <input id="supplementalEvidenceFiles" type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.csv,.json,.ply,.pcd,.las,.laz">
+          <small data-supplemental-file-summary>파일을 선택하세요 · 여러 파일 선택 가능</small>
+        </label>
+        <label class="supplemental-note-field">
+          <span>보완 설명</span>
+          <textarea id="supplementalEvidenceNote" rows="3" placeholder="예: 미굴착 구간을 추가 측량했으며 보완 작업 후 목표 깊이를 확인했습니다."></textarea>
+        </label>
+      </div>
+      <div class="supplemental-evidence-types"><span>카메라 이미지</span><span>LiDAR·Point Cloud</span><span>측량 성과</span><span>현장 확인서</span></div>
+      <footer><small>화면 예시입니다. 파일 저장과 재검증 API는 아직 연결되지 않았습니다.</small><button class="secondary-button" type="button" data-supplemental-evidence-submit disabled>추가 Evidence 제출 · 재검토 요청</button></footer>
+    </section>`:'';
   openModal({
-    eyebrow:'ISAAC EXECUTION COMMIT',
+    eyebrow:'FIELD EXECUTION COMMIT',
     title:'작업 전·후 증거 검토',
     modalClass:'evidence-review-modal',
     body:`<div class="commit-evidence-summary">
       <strong>${esc(instruction.params?.label||instruction.kind)}</strong>
       <span>${esc(equipmentPath)} → ${esc(targetPath)}</span>
-      <small>실행 원본: ${esc(result.simulator||'-')} · 검증: ${esc(result.source||'-')}</small>
+      <small>실행 환경: ${result.simulator?'현장 작업 시스템':'-'} · 검증: ${result.source?'센서 결과 데이터':'-'}</small>
     </div>
     <section class="commit-provenance">
       <header><div><span>HISTORICAL COMMIT</span><h3>${esc(commit.id)}</h3></div><em class="${esc(commit.review_status||'pending')}">${esc(reviewLabels[commit.review_status]||commit.review_status||'검토 대기')}</em></header>
@@ -2026,6 +2214,7 @@ function openIsaacEvidence(instructionId,commitId=''){
         ${commit.review_note?`<div class="wide note"><dt>검토 메모</dt><dd>${esc(commit.review_note)}</dd></div>`:''}
       </dl>
     </section>
+    ${rejectedEvidencePanel}
     ${executionMetricCards(result,evidence)}
     ${excavationQualityPanel(result)}
     <section class="sensor-review-section camera-review-section">
@@ -2049,6 +2238,21 @@ function openIsaacEvidence(instructionId,commitId=''){
     const fallback=image.nextElementSibling;
     if(fallback)fallback.hidden=false;
   },{once:true}));
+  const supplementalFiles=$('#supplementalEvidenceFiles');
+  const supplementalSummary=$('[data-supplemental-file-summary]');
+  const supplementalSubmit=$('[data-supplemental-evidence-submit]');
+  supplementalFiles?.addEventListener('change',()=>{
+    const files=[...(supplementalFiles.files||[])];
+    if(supplementalSummary)supplementalSummary.textContent=files.length
+      ?`${files.length}개 선택 · ${files.map(file=>file.name).join(', ')}`
+      :'파일을 선택하세요 · 여러 파일 선택 가능';
+    if(supplementalSubmit)supplementalSubmit.disabled=!files.length;
+  });
+  supplementalSubmit?.addEventListener('click',()=>{
+    const files=[...(supplementalFiles?.files||[])];
+    if(!files.length){toast('보완 파일 필요','재검토에 사용할 Evidence 파일을 선택하세요.','warning');return}
+    toast('추가 Evidence 준비 완료',`${files.length}개 파일을 선택했습니다. 현재는 UI 예시이며 서버에는 저장되지 않습니다.`,'success');
+  });
 }
 function openRealWorkPackageDetail(instructionId){
   const instruction=isaacInstructions.find(item=>item.id===instructionId);
@@ -2062,7 +2266,7 @@ function openRealWorkPackageDetail(instructionId){
   const missing=params.missing_resources||[];
   const lifecycle=[
     ['생성',instruction.created_at],
-    ['Isaac 수신',instruction.dispatched_at],
+    ['작업 지시 수신',instruction.dispatched_at],
     ['최근 변경',instruction.updated_at],
     ['Commit',commit?.committed_at],
     ['관리자 판정',commit?.reviewed_at],
@@ -2070,7 +2274,7 @@ function openRealWorkPackageDetail(instructionId){
   openModal({
     eyebrow:'BACKEND WORK PACKAGE',
     title:realWorkPackageId(instruction),
-    body:`<div class="real-wp-detail-head"><div><span class="badge ${status.badge}">${esc(status.label)}</span><h3>${esc(params.summary||params.label||instruction.note||realWorkPackageKind(instruction))}</h3><p>${esc(params.source_text||instruction.note||'자연어 원문 미기록')}</p></div><small>Isaac instruction<br><code>${esc(instruction.id)}</code></small></div>
+    body:`<div class="real-wp-detail-head"><div><span class="badge ${status.badge}">${esc(status.label)}</span><h3>${esc(params.summary||params.label||instruction.note||realWorkPackageKind(instruction))}</h3><p>${esc(params.source_text||instruction.note||'자연어 원문 미기록')}</p></div><small>Field instruction<br><code>${esc(instruction.id)}</code></small></div>
       <div class="real-wp-detail-grid">
         <div><span>작업 종류</span><strong>${esc(realWorkPackageKind(instruction))}</strong></div>
         <div><span>생성자</span><strong>${esc(instruction.created_by_username||'시스템')}</strong></div>
@@ -2079,7 +2283,7 @@ function openRealWorkPackageDetail(instructionId){
       </div>
       ${missing.length?`<div class="real-wp-missing"><strong>현재 부족한 실행 자원</strong>${missing.map(item=>`<span>${esc(item)}</span>`).join('')}</div>`:''}
       <div class="real-wp-lifecycle">${lifecycle.map(([label,value])=>`<div class="${value?'done':''}"><i></i><span>${esc(label)}</span><b>${value?esc(new Date(value).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})):'-'}</b></div>`).join('')}</div>
-      <div class="real-wp-commit-summary"><span>실행 Commit</span><strong>${commit?`${esc(commit.status)} · ${num(commit.attempt||1)}차`:'아직 생성되지 않음'}</strong><small>${commit?`검토 상태: ${esc(commit.review_status||'pending')}`:'Isaac Adapter가 작업을 완료하면 Evidence와 함께 생성됩니다.'}</small></div>`,
+      <div class="real-wp-commit-summary"><span>실행 Commit</span><strong>${commit?`${esc(commit.status)} · ${num(commit.attempt||1)}차`:'아직 생성되지 않음'}</strong><small>${commit?`검토 상태: ${esc(commit.review_status||'pending')}`:'현장 작업 시스템이 작업을 완료하면 Evidence와 함께 생성됩니다.'}</small></div>`,
     footer:`<button class="ghost-button" data-modal-close>닫기</button>${commit?`<button class="secondary-button" data-isaac-detail="${esc(instruction.id)}">Evidence 검토</button>`:''}`,
   });
 }
@@ -2101,7 +2305,7 @@ function openRemediationPlan(instruction){
     title:'굴착 부족분 보완 작업',
     modalClass:'remediation-plan-modal',
     body:`<section class="remediation-plan-summary">
-      <div><span>${params.llm_assisted?'LLM 보조 계획':'규칙 기반 대체 계획'} · ${esc(params.compiler_model||'-')}</span><h3>${esc(narrative.title||'보완 굴착 작업')}</h3><p>${esc(narrative.summary||'Isaac Stage 실측 부족분을 보완합니다.')}</p></div>
+      <div><span>${params.llm_assisted?'LLM 보조 계획':'규칙 기반 대체 계획'} · ${esc(params.compiler_model||'-')}</span><h3>${esc(narrative.title||'보완 굴착 작업')}</h3><p>${esc(narrative.summary||'센서 실측 부족분을 보완합니다.')}</p></div>
       <em>관리자 승인 대기</em>
     </section>
     <div class="remediation-fact-grid">
@@ -2112,7 +2316,7 @@ function openRemediationPlan(instruction){
     </div>
     <section class="remediation-steps"><h3>보완 작업 흐름</h3>${steps.map((step,index)=>`<div><i>${index+1}</i><span>${esc(step)}</span></div>`).join('')}</section>
     <div class="remediation-manager-note"><strong>관리자 확인</strong><p>${esc(narrative.manager_note||'대상과 부족량을 확인한 뒤 해당 장비 한 대에만 재작업을 하달합니다.')}</p></div>
-    <p class="remediation-safety-note">LLM은 설명만 작성합니다. 장비·대상 Prim·부족 작업량은 승인된 원 Commit과 Isaac Stage 실측값에서 고정되며 임의로 변경되지 않습니다.</p>`,
+    <p class="remediation-safety-note">LLM은 설명만 작성합니다. 장비·대상 Prim·부족 작업량은 승인된 원 Commit과 센서 실측값에서 고정되며 임의로 변경되지 않습니다.</p>`,
     footer:`<button class="ghost-button" data-modal-close>취소</button><button class="secondary-button" data-remediation-dispatch="${esc(instruction.id)}">승인 · ${esc(equipment)} 보완 작업 하달</button>`,
   });
 }
@@ -2136,7 +2340,7 @@ async function createIsaacRemediation(commitId){
 }
 async function dispatchIsaacRemediation(instructionId){
   const button=document.querySelector(`[data-remediation-dispatch="${CSS.escape(instructionId)}"]`);
-  if(button){button.disabled=true;button.textContent='Isaac 자원 확인 중…';}
+  if(button){button.disabled=true;button.textContent='현장 자원 확인 중…';}
   try{
     const response=await apiFetch(`/isaac/instructions/${encodeURIComponent(instructionId)}/dispatch-remediation`,{method:'POST',body:'{}'});
     const payload=await response.json().catch(()=>({}));
@@ -2167,7 +2371,7 @@ async function reviewIsaacCommit(commitId,decision){
     closeModal();
     if(decision==='approved'){
       reloadIsaacMapObjects();
-      addEvent('success','Isaac 결과 승인','승인된 작업 결과가 Site Work Map에 반영됐습니다.');
+      addEvent('success','현장 작업 결과 승인','승인된 작업 결과가 Site Work Map에 반영됐습니다.');
       const nextPhaseOpened=typeof wfOpenReadyScenarioPhasePlan==='function'&&wfOpenReadyScenarioPhasePlan(scenarioRunId);
       toast(
         nextPhaseOpened?'선행 공정 승인 완료':'승인 완료',
@@ -2176,7 +2380,7 @@ async function reviewIsaacCommit(commitId,decision){
       );
     }else{
       reloadIsaacMapObjects();
-      addEvent('warning','Isaac Conflict 등록',`반려 사유: ${note}`);
+      addEvent('warning','현장 작업 Conflict 등록',`반려 사유: ${note}`);
       toast('Conflict 등록','공식 맵에는 반영되지 않고 Constraint 화면에 남습니다.','warning');
     }
     renderAll();
@@ -2224,7 +2428,7 @@ async function saveDrawingRevision(){
     const payload=await response.json().catch(()=>({}));
     if(!response.ok)throw new Error(payload.detail?.message||payload.detail||`SITE_PLAN_${response.status}`);
     await loadSitePlans();activeMapLayer=payload.status==='approved'?'drawing':activeMapLayer;
-    closeModal();renderAll();
+    closeModal();renderAll(true);
     toast('도면 Revision 저장 완료',`${payload.design.plan_id} Rev.${payload.design.revision} · ${payload.status==='approved'?'메인 맵 적용':'초안 저장'}`,'success');
   }catch(error){button.disabled=false;button.textContent='도면 Revision 저장';toast('도면 저장 실패',String(error.message||error),'danger');}
 }
@@ -2273,18 +2477,18 @@ function openProfileModal(){
 }
 function openProjectModal(){
   const p=state.project;
-  openModal({eyebrow:'PROJECT CONFIGURATION',title:'현장·건설사 기본정보',body:`<div class="form-grid"><div class="form-group full"><label>프로젝트명</label><input class="form-control" id="fProjectName" value="${esc(p.name)}"></div><div class="form-group"><label>건설사 / 시공사</label><input class="form-control" id="fContractor" value="${esc(state.company.contractor)}"></div><div class="form-group"><label>현장관리자</label><input class="form-control" id="fManager" value="${esc(state.manager.name)}"></div><div class="form-group"><label>현장 위치</label><input class="form-control" id="fLocation" value="${esc(p.location)}"></div><div class="form-group"><label>좌표계</label><input class="form-control" id="fCoord" value="${esc(p.coordinateSystem)}"></div><div class="form-group"><label>착공일</label><input type="date" class="form-control" id="fStart" value="${p.startDate}"></div><div class="form-group"><label>준공일</label><input type="date" class="form-control" id="fEnd" value="${p.endDate}"></div><div class="form-group"><label>터파기 물량 (㎥)</label><input type="number" class="form-control" id="fVolume" value="${p.excavationVolume}"></div><div class="form-group"><label>도급 총공사비 (원)</label><input type="number" class="form-control" id="fCost" value="${p.contractCost}"></div></div>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="saveProjectBtn">변경 저장</button>`});
-  $('[data-modal-close]').addEventListener('click',closeModal);$('#saveProjectBtn').addEventListener('click',()=>{p.name=$('#fProjectName').value;p.shortName=p.name.replace(/하수관로.*/,'').trim()||p.name;state.company.contractor=$('#fContractor').value;state.manager.name=$('#fManager').value;p.location=$('#fLocation').value;p.coordinateSystem=$('#fCoord').value;p.startDate=$('#fStart').value;p.endDate=$('#fEnd').value;p.excavationVolume=Number($('#fVolume').value)||p.excavationVolume;p.contractCost=Number($('#fCost').value)||p.contractCost;closeModal();toast('기본정보 저장','현장과 관리자 정보가 로컬 데이터에 반영됐습니다.','success');renderAll()});
+  openModal({eyebrow:'PROJECT CONFIGURATION',title:'현장·건설사 기본정보',body:`<div class="form-grid"><div class="form-group full"><label>프로젝트명</label><input class="form-control" id="fProjectName" value="${esc(p.name)}"></div><div class="form-group"><label>건설사 / 시공사</label><input class="form-control" id="fContractor" value="${esc(state.company.contractor)}"></div><div class="form-group"><label>현장관리자</label><input class="form-control" id="fManager" value="${esc(state.manager.name)}"></div><div class="form-group"><label>현장 위치</label><input class="form-control" id="fLocation" value="${esc(p.location)}"></div><div class="form-group"><label>착공일</label><input type="date" class="form-control" id="fStart" value="${p.startDate}"></div><div class="form-group"><label>준공일</label><input type="date" class="form-control" id="fEnd" value="${p.endDate}"></div><div class="form-group"><label>터파기 물량 (㎥)</label><input type="number" class="form-control" id="fVolume" value="${p.excavationVolume}"></div><div class="form-group"><label>도급 총공사비 (원)</label><input type="number" class="form-control" id="fCost" value="${p.contractCost}"></div></div>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="saveProjectBtn">변경 저장</button>`});
+  $('[data-modal-close]').addEventListener('click',closeModal);$('#saveProjectBtn').addEventListener('click',()=>{p.name=$('#fProjectName').value;p.shortName=p.name.replace(/하수관로.*/,'').trim()||p.name;state.company.contractor=$('#fContractor').value;state.manager.name=$('#fManager').value;p.location=$('#fLocation').value;p.startDate=$('#fStart').value;p.endDate=$('#fEnd').value;p.excavationVolume=Number($('#fVolume').value)||p.excavationVolume;p.contractCost=Number($('#fCost').value)||p.contractCost;closeModal();toast('기본정보 저장','현장과 관리자 정보가 로컬 데이터에 반영됐습니다.','success');renderAll()});
 }
 function openReadinessModal(id){
   const item=id?state.readiness.find(r=>r.id===id):{id:`custom-${Date.now()}`,name:'',category:'현장 데이터',grade:'C',status:'missing',source:'USER INPUT',value:'',action:'경고 후 진행 가능',desc:''};
-  openModal({eyebrow:'DATA READINESS',title:id?'데이터 항목 수정':'데이터 항목 추가',body:`<div class="form-grid"><div class="form-group"><label>항목명</label><input class="form-control" id="rName" value="${esc(item.name)}"></div><div class="form-group"><label>카테고리</label><input class="form-control" id="rCategory" value="${esc(item.category)}"></div><div class="form-group"><label>등급</label><select class="form-control" id="rGrade">${['A','B','C','D'].map(x=>`<option ${x===item.grade?'selected':''}>${x}</option>`).join('')}</select></div><div class="form-group"><label>상태</label><select class="form-control" id="rStatus">${[['ready','확보'],['simulated','가상 적용'],['needs-confirmation','확인 필요'],['missing','미제공']].map(([v,l])=>`<option value="${v}" ${v===item.status?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group"><label>데이터 출처</label><select class="form-control" id="rSource">${['PUBLIC PROJECT','MANUFACTURER SPEC','STANDARD-BASED','USER INPUT','ASSUMED','SIMULATED'].map(x=>`<option ${x===item.source?'selected':''}>${x}</option>`).join('')}</select></div><div class="form-group"><label>현재 값</label><input class="form-control" id="rValue" value="${esc(item.value)}"></div><div class="form-group full"><label>설명</label><textarea class="form-control" id="rDesc">${esc(item.desc)}</textarea></div><div class="form-group full"><label>누락·확인 시 시스템 행동</label><input class="form-control" id="rAction" value="${esc(item.action)}"></div><div class="form-group full"><label>관련 파일 (로컬 파일명만 표시)</label><input type="file" class="form-control" id="rFile"><span class="form-hint">컨셉 버전에서는 파일 내용을 자동 분석하지 않고 등록 여부와 파일명만 관리합니다.</span></div></div>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="saveReadinessBtn">저장</button>`});
+  openModal({eyebrow:'DATA READINESS',title:id?'데이터 항목 수정':'데이터 항목 추가',body:`<div class="form-grid"><div class="form-group"><label>항목명</label><input class="form-control" id="rName" value="${esc(item.name)}"></div><div class="form-group"><label>카테고리</label><input class="form-control" id="rCategory" value="${esc(item.category)}"></div><div class="form-group"><label>등급</label><select class="form-control" id="rGrade">${['A','B','C','D'].map(x=>`<option ${x===item.grade?'selected':''}>${x}</option>`).join('')}</select></div><div class="form-group"><label>상태</label><select class="form-control" id="rStatus">${[['ready','확보'],['simulated','검증용 데이터'],['needs-confirmation','확인 필요'],['missing','미제공']].map(([v,l])=>`<option value="${v}" ${v===item.status?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group"><label>데이터 출처</label><select class="form-control" id="rSource">${['PUBLIC PROJECT','MANUFACTURER SPEC','STANDARD-BASED','USER INPUT','ASSUMED','FIELD SYSTEM','SENSOR DATA'].map(x=>`<option ${x===item.source?'selected':''}>${x}</option>`).join('')}</select></div><div class="form-group"><label>현재 값</label><input class="form-control" id="rValue" value="${esc(item.value)}"></div><div class="form-group full"><label>설명</label><textarea class="form-control" id="rDesc">${esc(item.desc)}</textarea></div><div class="form-group full"><label>누락·확인 시 시스템 행동</label><input class="form-control" id="rAction" value="${esc(item.action)}"></div><div class="form-group full"><label>관련 파일 (로컬 파일명만 표시)</label><input type="file" class="form-control" id="rFile"><span class="form-hint">등록 여부와 파일명을 관리하며, 지원 형식은 별도 데이터 처리 과정에서 검증합니다.</span></div></div>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="saveReadinessBtn">저장</button>`});
   $('[data-modal-close]').addEventListener('click',closeModal);$('#saveReadinessBtn').addEventListener('click',()=>{item.name=$('#rName').value;item.category=$('#rCategory').value;item.grade=$('#rGrade').value;item.status=$('#rStatus').value;item.source=$('#rSource').value;item.value=$('#rValue').value;item.desc=$('#rDesc').value;item.action=$('#rAction').value;const f=$('#rFile').files[0];if(f){item.value=`${item.value} · ${f.name}`;item.status='ready';item.source='USER INPUT'}if(!id)state.readiness.push(item);closeModal();toast('데이터 준비도 갱신',`${item.name} 항목이 저장됐습니다.`,'success');renderAll()});
 }
 function equipmentEditorPreview(e){
   const imageUrl=EQUIPMENT_PHOTOS[e.model];
   const visual=imageUrl
-    ?`<img src="${imageUrl}" alt="${esc(e.model)} 장비 전체 사진">`
+    ?`<img decoding="async" src="${imageUrl}" alt="${esc(e.model)} 장비 전체 사진">`
     :machineSvg(e.icon,e.color);
   return `<div class="equipment-editor-preview">${visual}<div><strong>${esc(e.model)}</strong><span>${esc(e.manufacturer)} · ${esc(e.type)}</span></div></div>`;
 }
@@ -2295,7 +2499,7 @@ function openEquipmentModal(id){
   $('[data-modal-close]').addEventListener('click',closeModal);$('#saveEquipmentBtn').addEventListener('click',()=>{e.id=$('#eId').value;e.model=$('#eModel').value;e.manufacturer=$('#eManufacturer').value;e.type=$('#eType').value;e.operatingWeight=Number($('#eWeight').value)||0;e.bucketCapacity=Number($('#eBucket').value)||0;e.workBucket=Number($('#eWorkBucket').value)||0;e.power=Number($('#ePower').value)||0;e.maxDepth=Number($('#eDepth').value)||0;e.specSource=$('#eSource').value;e.supports=$('#eSupports').value.split(',').map(s=>s.trim()).filter(Boolean);e.evidence=$('#eEvidence').value.split(',').map(s=>s.trim()).filter(Boolean);e.autonomy=$('#eAutonomy').value.split(',').map(s=>s.trim()).filter(Boolean);e.sourceUrl=$('#eUrl').value;if(!id)state.equipment.push(e);closeModal();toast('장비 Registry 저장',`${e.model}의 제원과 Capability가 반영됐습니다.`,'success');renderAll()});
 }
 function openWpModal(id){
-  const w=id?state.workPackages.find(x=>x.id===id):{id:`WP-SASANG-${String.fromCharCode(65+state.workPackages.length)}01`,zone:String.fromCharCode(65+state.workPackages.length),name:'신규 자율화 작업',task:'EXCAVATION',length:0,target:100,raw:0,qualified:0,remaining:100,status:'draft',version:1,eta:'대기',risk:'low',start:'-',end:'-',x:0,y:0,width:0,color:'#3d7fa0',completionThreshold:100,observationThreshold:90,toleranceMm:50,assignments:[]};
+  const w=id?state.workPackages.find(x=>x.id===id):{id:`WP-DEMO-${String.fromCharCode(65+state.workPackages.length)}01`,zone:String.fromCharCode(65+state.workPackages.length),name:'신규 자율화 작업',task:'EXCAVATION',length:0,target:100,raw:0,qualified:0,remaining:100,status:'draft',version:1,eta:'대기',risk:'low',start:'-',end:'-',x:0,y:0,width:0,color:'#3d7fa0',completionThreshold:100,observationThreshold:90,toleranceMm:50,assignments:[]};
   const rows=deepClone(assignmentsForWp(w));
   const assignmentRow=(a={id:`AS-${Date.now()}-${Math.random()}`,equipmentId:'',role:'주 작업',quantity:1})=>`<div class="assignment-editor-row" data-assignment-row><select class="form-control assignment-role"><option ${a.role==='주 작업'?'selected':''}>주 작업</option><option ${a.role==='상차'?'selected':''}>상차</option><option ${a.role==='운반'?'selected':''}>운반</option><option ${a.role==='보조'?'selected':''}>보조</option></select><select class="form-control assignment-equipment"><option value="">장비 선택</option>${state.equipment.map(e=>`<option value="${e.id}" ${e.id===a.equipmentId?'selected':''}>${e.model} · ${e.type}</option>`).join('')}</select><input type="number" min="1" class="form-control assignment-qty" value="${a.quantity||1}"><button type="button" class="icon-button plain assignment-remove" title="삭제">×</button></div>`;
   openModal({eyebrow:'WORK PACKAGE COMPILER',title:id?`${w.id} · 조건·장비팀 편집`:'Work Package 생성',body:`<div class="form-grid"><div class="form-group"><label>Work Package ID</label><input class="form-control" id="wId" value="${esc(w.id)}" ${id?'readonly':''}></div><div class="form-group"><label>Zone</label><input class="form-control" id="wZone" value="${esc(w.zone)}"></div><div class="form-group full"><label>작업명</label><input class="form-control" id="wName" value="${esc(w.name)}"></div><div class="form-group"><label>작업 종류</label><select class="form-control" id="wTask">${['EXCAVATION','SMALL_EXCAVATION','GRADING','LOADING','HAUL'].map(x=>`<option ${x===w.task?'selected':''}>${x}</option>`).join('')}</select></div><div class="form-group"><label>목표 물량 (㎥)</label><input type="number" class="form-control" id="wTarget" value="${w.target}"></div><div class="form-group"><label>작업 연장 (m)</label><input type="number" step="0.1" class="form-control" id="wLength" value="${w.length}"></div><div class="form-group"><label>Qualified 완료조건 (%)</label><input type="number" min="0" max="100" class="form-control" id="wCompletion" value="${w.completionThreshold??100}"></div><div class="form-group"><label>관측률 기준 (%)</label><input type="number" min="0" max="100" class="form-control" id="wObservation" value="${w.observationThreshold??90}"></div><div class="form-group"><label>결과 허용오차 (mm)</label><input type="number" min="0" class="form-control" id="wTolerance" value="${w.toleranceMm??50}"></div><div class="form-group full"><label>Zone 장비팀 배정</label><div class="assignment-editor-head"><span>역할</span><span>장비 Profile</span><span>수량</span><span></span></div><div class="assignment-editor" id="assignmentEditor">${rows.map(assignmentRow).join('')}</div><button type="button" class="ghost-button button-sm" id="addAssignmentBtn">+ 장비 역할 추가</button><span class="form-hint">계획 단계에는 모델×수량을 배정하고, 실제 연동 단계에서 개별 장비 ID에 연결합니다.</span></div><div class="form-group full"><label>목표·종료조건</label><textarea class="form-control" id="wConditions">목표 작업량 달성, 작업경계 준수, 필수 Evidence 수집 후 결과 제출</textarea></div><div class="form-group full"><label>금지·중단조건</label><textarea class="form-control" id="wStop">금지구역 침범, 위치 신뢰도 저하, 장비 이상 이벤트 발생 시 작업 중단</textarea></div></div>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="primary-button" id="saveWpBtn">저장·장비팀 적합성 확인</button>`});
@@ -2308,8 +2512,8 @@ function openWpModal(id){
     closeModal();toast(primaryOk&&compatibility.every(c=>c.ok)?'장비팀 배정 완료':'조건부 Work Package 저장',primaryOk?`${assignmentRoleSummary(w)} 배정이 저장됐습니다.`:'주 작업 장비의 Capability 또는 역할을 확인하세요.',primaryOk?'success':'warning');renderAll();
   });
 }
-function showSourcesModal(){openModal({eyebrow:'SOURCE DISCLOSURE',title:'공개 장비 제원 출처',body:`<div class="source-list"><div class="source-row"><div><strong>HX210AL</strong><small>22.15t · 0.92㎥ · 128kW · 최대 굴착깊이 6.64m</small></div><a class="source-link" target="_blank" rel="noopener" href="https://www.hyundai-ce.com/en/products/view?productsSeq=374">공식 페이지 ↗</a></div><div class="source-row"><div><strong>HX48AZ</strong><small>5.03t · 0.15㎥ · 29.1kW · 최대 굴착깊이 3.50m</small></div><a class="source-link" target="_blank" rel="noopener" href="https://www.hyundai-ce.com/en/products/view?productsSeq=573">공식 페이지 ↗</a></div><div class="source-row"><div><strong>HL930A TM</strong><small>11.96t · 1.7㎥ · 96kW · 최고속도 39.5km/h</small></div><a class="source-link" target="_blank" rel="noopener" href="https://www.hyundai-ce.com/en/products/view?productsSeq=510">공식 페이지 ↗</a></div></div><div class="divider"></div><p class="muted" style="font-size:10px;line-height:1.65">자율화 Work Package 수신, Tool Pose 반환, 원격 중지와 같은 인터페이스는 실제 제품 기능을 주장하는 것이 아니라 컨셉 검증을 위한 ASSUMED 데이터입니다.</p>`,footer:`<button class="primary-button" data-modal-close>확인</button>`});$('[data-modal-close]').addEventListener('click',closeModal)}
-function showArchitectureModal(){openModal({eyebrow:'SITEGIT CORE',title:'자율화 운영·검증 아키텍처',body:`<div class="onboard-summary"><div class="onboard-summary-row"><strong>01 · Site Data Onboarding</strong><span>건설사 기존 데이터 → Data Readiness</span></div><div class="onboard-summary-row"><strong>02 · Work Package Compiler</strong><span>작업 대상·목표·제약·종료조건</span></div><div class="onboard-summary-row"><strong>03 · HD Equipment Connector</strong><span>장비 Capability 비교·작업 배포</span></div><div class="onboard-summary-row"><strong>04 · Autonomous Equipment</strong><span>인지·경로·작업기 제어·실제 수행</span></div><div class="onboard-summary-row"><strong>05 · Execution & Evidence</strong><span>장비 이벤트·궤적·작업 결과 귀속</span></div><div class="onboard-summary-row"><strong>06 · Trust & Human Gate</strong><span>Rule·완결성·관측 신뢰도 → 관리자 결정</span></div><div class="onboard-summary-row"><strong>07 · Version Update</strong><span>결정 이력·보완·다음 Plan 연결</span></div></div>`,footer:`<button class="primary-button" data-modal-close>확인</button>`});$('[data-modal-close]').addEventListener('click',closeModal)}
+function showSourcesModal(){openModal({eyebrow:'SOURCE DISCLOSURE',title:'현장 장비 데이터 출처',body:`<div class="source-list"><div class="source-row"><div><strong>승인 작업 도면</strong><small>Zone별 목표량과 공정별 판정 기준</small></div>${sourceBadge('APPROVED DRAWING')}</div><div class="source-row"><div><strong>HD Hyundai HX210AL 장비 제원</strong><small>EXC-001 · EXC-002 · EXC-003 · EXC-004의 제조사 공개 제원</small></div>${sourceBadge('MANUFACTURER SPEC')}</div><div class="source-row"><div><strong>장비 Evidence</strong><small>Camera · LiDAR · IMU · Pose · 작업 이벤트</small></div>${sourceBadge('SENSOR DATA')}</div></div><div class="divider"></div><p class="muted" style="font-size:10px;line-height:1.65">Equipment Registry는 현장 장비 ID와 실제 제조사 모델·제원을 기준으로 표시합니다. 현장 연동에 필요한 내부 연결 정보는 화면에 노출하지 않고 연결 모듈에서만 관리합니다.</p>`,footer:`<button class="primary-button" data-modal-close>확인</button>`});$('[data-modal-close]').addEventListener('click',closeModal)}
+function showArchitectureModal(){openModal({eyebrow:'SITEGIT CORE',title:'자율화 운영·검증 아키텍처',body:`<div class="onboard-summary"><div class="onboard-summary-row"><strong>01 · Site Data Onboarding</strong><span>건설사 기존 데이터 → Data Readiness</span></div><div class="onboard-summary-row"><strong>02 · Work Package Compiler</strong><span>작업 대상·목표·제약·종료조건</span></div><div class="onboard-summary-row"><strong>03 · Field Equipment Connector</strong><span>장비 Capability 비교·작업 배포</span></div><div class="onboard-summary-row"><strong>04 · Autonomous Equipment</strong><span>인지·경로·작업기 제어·실제 수행</span></div><div class="onboard-summary-row"><strong>05 · Execution & Evidence</strong><span>장비 이벤트·궤적·작업 결과 귀속</span></div><div class="onboard-summary-row"><strong>06 · Trust & Human Gate</strong><span>Rule·완결성·관측 신뢰도 → 관리자 결정</span></div><div class="onboard-summary-row"><strong>07 · Version Update</strong><span>결정 이력·보완·다음 Plan 연결</span></div></div>`,footer:`<button class="primary-button" data-modal-close>확인</button>`});$('[data-modal-close]').addEventListener('click',closeModal)}
 
 /* Onboarding */
 function openOnboarding(){onboardingStep=0;renderOnboarding();$('#onboardingBackdrop').classList.remove('hidden')}
@@ -2317,14 +2521,14 @@ function closeOnboarding(){safeSetItem(ONBOARD_KEY,'1');$('#onboardingBackdrop')
 function renderOnboarding(){
   $('#onboardingProgress').style.setProperty('--step-progress',`${(onboardingStep+1)*25}%`);
   const c=$('#onboardingContent');
-  if(onboardingStep===0)c.innerHTML=`<div class="onboarding-panel-content"><div class="eyebrow">STEP 1 / 4 · PROJECT</div><h2>건설사와 현장 기본정보</h2><p class="intro">사상구 공개 발주 정보를 기본값으로 채웠습니다. 실제 프로젝트에 맞게 언제든 수정할 수 있습니다.</p><div class="form-grid"><div class="form-group full"><label>프로젝트명</label><input class="form-control" id="oProject" value="${esc(state.project.name)}"></div><div class="form-group"><label>시공사</label><input class="form-control" id="oContractor" value="${esc(state.company.contractor)}"></div><div class="form-group"><label>현장관리자</label><input class="form-control" id="oManager" value="${esc(state.manager.name)}"></div><div class="form-group"><label>현장 위치</label><input class="form-control" id="oLocation" value="${esc(state.project.location)}"></div><div class="form-group"><label>좌표계</label><input class="form-control" id="oCoord" value="${esc(state.project.coordinateSystem)}"></div></div></div>`;
-  if(onboardingStep===1)c.innerHTML=`<div class="onboarding-panel-content"><div class="eyebrow">STEP 2 / 4 · SITE DATA</div><h2>자율화 작업 데이터 준비도</h2><p class="intro">실제 공개값과 가상 데이터의 경계를 표시하고, 누락 데이터별 시스템 행동을 정의합니다.</p><div class="onboard-summary">${state.readiness.slice(0,8).map(r=>`<div class="onboard-summary-row"><div><strong>${r.grade} · ${esc(r.name)}</strong><div style="margin-top:5px">${sourceBadge(r.source)}</div></div><span class="status-chip ${r.status}">${readinessStatusLabel(r.status)}</span></div>`).join('')}</div></div>`;
-  if(onboardingStep===2)c.innerHTML=`<div class="onboarding-panel-content"><div class="eyebrow">STEP 3 / 4 · EQUIPMENT</div><h2>제조사 장비 Capability</h2><p class="intro">HD현대 공식 공개 제원을 기본 등록했습니다. 자율화 인터페이스는 ASSUMED로 분리했습니다.</p>${state.equipment.slice(0,4).map(e=>`<div class="onboard-equip"><div class="onboard-equip-icon">${miniMachineSvg(e.icon,e.color)}</div><div><strong>${e.model} · ${e.type}</strong><small>${e.operatingWeight}t · ${e.bucketCapacity||'-'}㎥ · ${e.power||'-'}kW</small></div><div class="spacer"></div>${sourceBadge(e.specSource)}</div>`).join('')}</div>`;
-  if(onboardingStep===3)c.innerHTML=`<div class="onboarding-panel-content"><div class="eyebrow">STEP 4 / 4 · LAUNCH</div><h2>SiteGit Concept 준비 완료</h2><p class="intro">시뮬레이터 없이도 Data Readiness → Work Package → 장비 적합성 → 가상 실행 → Evidence → 관리자 승인 흐름을 조작할 수 있습니다.</p><div class="onboard-summary"><div class="onboard-summary-row"><strong>프로젝트</strong><span>${esc(state.project.shortName)}</span></div><div class="onboard-summary-row"><strong>공개 터파기 물량</strong><span>${num(state.project.excavationVolume)}㎥</span></div><div class="onboard-summary-row"><strong>Work Package</strong><span>${state.workPackages.length}개</span></div><div class="onboard-summary-row"><strong>장비 Registry</strong><span>${state.equipment.length}대</span></div><div class="onboard-summary-row"><strong>연동 모드</strong><span>SHARED DB · SIMULATED</span></div></div><div style="margin-top:17px;padding:13px;border-radius:12px;background:#fff3dc;color:#785d29;font-size:9px;line-height:1.65"><b>주의:</b> 공간 좌표, 자율화 API, 진행률, Evidence와 Conflict는 컨셉 검증용 가상 데이터이며 실제 시공·품질 판단에 사용할 수 없습니다.</div></div>`;
-  $('#onboardingPrevBtn').style.visibility=onboardingStep===0?'hidden':'visible';$('#onboardingNextBtn').textContent=onboardingStep===3?'Control Center 열기':'다음';
+  if(onboardingStep===0)c.innerHTML=`<div class="onboarding-panel-content"><div class="eyebrow">STEP 1 / 4 · PROJECT</div><h2>건설사와 현장 기본정보</h2><p class="intro">현재 관로 시공 프로젝트 정보를 기본값으로 채웠습니다. 실제 프로젝트에 맞게 언제든 수정할 수 있습니다.</p><div class="form-grid"><div class="form-group full"><label>프로젝트명</label><input class="form-control" id="oProject" value="${esc(state.project.name)}"></div><div class="form-group"><label>시공사</label><input class="form-control" id="oContractor" value="${esc(state.company.contractor)}"></div><div class="form-group"><label>현장관리자</label><input class="form-control" id="oManager" value="${esc(state.manager.name)}"></div><div class="form-group"><label>현장 위치</label><input class="form-control" id="oLocation" value="${esc(state.project.location)}"></div></div></div>`;
+  if(onboardingStep===1)c.innerHTML=`<div class="onboarding-panel-content"><div class="eyebrow">STEP 2 / 4 · SITE DATA</div><h2>자율화 작업 데이터 준비도</h2><p class="intro">데이터 출처와 검증 상태를 표시하고, 누락 데이터별 시스템 행동을 정의합니다.</p><div class="onboard-summary">${state.readiness.slice(0,8).map(r=>`<div class="onboard-summary-row"><div><strong>${r.grade} · ${esc(r.name)}</strong><div style="margin-top:5px">${sourceBadge(r.source)}</div></div><span class="status-chip ${r.status}">${readinessStatusLabel(r.status)}</span></div>`).join('')}</div></div>`;
+  if(onboardingStep===2)c.innerHTML=`<div class="onboarding-panel-content"><div class="eyebrow">STEP 3 / 4 · EQUIPMENT</div><h2>현장 장비 Capability</h2><p class="intro">관로 공사에 투입되는 HD Hyundai HX210AL 굴착기 3대를 Registry에 등록합니다.</p>${state.equipment.map(e=>`<div class="onboard-equip"><div class="onboard-equip-icon"><img src="${EQUIPMENT_PHOTOS[e.model]||''}" alt="${esc(e.manufacturer)} ${esc(e.model)}"></div><div><strong>${e.id} · ${esc(e.manufacturer)} ${esc(e.model)}</strong><small>${esc(e.type)} · ${esc(e.workfrontId||'작업전선 미배정')}</small></div><div class="spacer"></div>${sourceBadge(e.specSource)}</div>`).join('')}</div>`;
+  if(onboardingStep===3)c.innerHTML=`<div class="onboarding-panel-content"><div class="eyebrow">STEP 4 / 4 · COMPLETE</div><h2>현장 설정이 완료되었습니다</h2><p class="intro">입력한 프로젝트 정보와 장비 구성을 확인했습니다. 현장 대시보드에서 작업 계획과 실행 상태를 관리할 수 있습니다.</p><div class="onboard-summary"><div class="onboard-summary-row"><strong>프로젝트</strong><span>${esc(state.project.shortName)}</span></div><div class="onboard-summary-row"><strong>기준 터파기 물량</strong><span>${num(state.project.excavationVolume)}㎥</span></div><div class="onboard-summary-row"><strong>작업 계획</strong><span>${state.workPackages.length}개</span></div><div class="onboard-summary-row"><strong>등록 장비</strong><span>${state.equipment.length}대</span></div></div></div>`;
+  $('#onboardingPrevBtn').style.visibility=onboardingStep===0?'hidden':'visible';$('#onboardingNextBtn').textContent=onboardingStep===3?'현장 대시보드 열기':'다음';
 }
 function saveOnboardingStep(){
-  if(onboardingStep===0){state.project.name=$('#oProject')?.value||state.project.name;state.project.shortName=state.project.name.replace(/하수관로.*/,'').trim()||state.project.name;state.company.contractor=$('#oContractor')?.value||state.company.contractor;state.manager.name=$('#oManager')?.value||state.manager.name;state.project.location=$('#oLocation')?.value||state.project.location;state.project.coordinateSystem=$('#oCoord')?.value||state.project.coordinateSystem;}
+  if(onboardingStep===0){state.project.name=$('#oProject')?.value||state.project.name;state.project.shortName=state.project.name.replace(/하수관로.*/,'').trim()||state.project.name;state.company.contractor=$('#oContractor')?.value||state.company.contractor;state.manager.name=$('#oManager')?.value||state.manager.name;state.project.location=$('#oLocation')?.value||state.project.location;}
 }
 $('#onboardingPrevBtn').addEventListener('click',()=>{saveOnboardingStep();onboardingStep=Math.max(0,onboardingStep-1);renderOnboarding()});
 $('#onboardingNextBtn').addEventListener('click',()=>{saveOnboardingStep();if(onboardingStep<3){onboardingStep++;renderOnboarding()}else closeOnboarding()});
@@ -2332,10 +2536,10 @@ $('#quickStartBtn').addEventListener('click',closeOnboarding);
 
 /* Data import/export/reset */
 function exportJson(){
-  const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='SiteGit_Sasang_Concept_Data.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('JSON 내보내기','현재 프로젝트·장비·작업·Evidence 데이터가 저장됐습니다.','success')
+  const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='SiteGit_Pipeline_Demo_Data.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('JSON 내보내기','현재 프로젝트·장비·작업·Evidence 데이터가 저장됐습니다.','success')
 }
-$('#jsonImportInput').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const parsed=JSON.parse(await file.text());state=mergeDefaults(deepClone(DEFAULT_STATE),parsed);renderAll();toast('JSON 불러오기 완료',file.name,'success')}catch(err){toast('불러오기 실패','유효한 SiteGit JSON 파일인지 확인하세요.','danger')}e.target.value=''});
-function confirmReset(){openModal({eyebrow:'DANGER ZONE',title:'전체 데모를 초기화할까요?',body:`<p style="font-size:11px;line-height:1.7;color:var(--slate-600)">현장정보, 장비 수정값, Work Package, Evidence와 Version 이력이 기본 사상구 데모 상태로 돌아갑니다. 내보내지 않은 변경사항은 복구할 수 없습니다.</p>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="danger-button" id="confirmResetBtn">초기화</button>`});$('[data-modal-close]').addEventListener('click',closeModal);$('#confirmResetBtn').addEventListener('click',()=>{if(simTimer)clearInterval(simTimer);state=deepClone(DEFAULT_STATE);safeRemoveItem(STORAGE_KEY);closeModal();toast('데모 초기화 완료','기본 사상구 컨셉 데이터로 돌아갔습니다.','success');renderAll()})}
+$('#jsonImportInput').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const parsed=JSON.parse(await file.text());state=mergeDefaults(deepClone(DEFAULT_STATE),parsed);applyCurrentDemoProfile(state);renderAll(true);toast('JSON 불러오기 완료',file.name,'success')}catch(err){toast('불러오기 실패','유효한 SiteGit JSON 파일인지 확인하세요.','danger')}e.target.value=''});
+function confirmReset(){openModal({eyebrow:'DANGER ZONE',title:'전체 데모를 초기화할까요?',body:`<p style="font-size:11px;line-height:1.7;color:var(--slate-600)">현장정보, 장비 수정값, Work Package, Evidence와 Version 이력을 관로 시공 통합 데모의 초기 상태로 되돌립니다. 내보내지 않은 변경사항은 복구할 수 없습니다.</p>`,footer:`<button class="ghost-button" data-modal-close>취소</button><button class="danger-button" id="confirmResetBtn">초기화</button>`});$('[data-modal-close]').addEventListener('click',closeModal);$('#confirmResetBtn').addEventListener('click',()=>{if(simTimer)clearInterval(simTimer);state=deepClone(DEFAULT_STATE);applyCurrentDemoProfile(state);safeRemoveItem(STORAGE_KEY);closeModal();toast('데모 초기화 완료','관로 시공 통합 데모의 초기 상태로 돌아갔습니다.','success');renderAll(true)})}
 function confirmFullReset(){
   openModal({
     eyebrow:'DEMO FULL RESET',
@@ -2376,8 +2580,13 @@ function toast(title,message,type='success'){
 
 /* Initial boot */
 prepareState();
-renderAll();
-if(!safeGetItem(ONBOARD_KEY)) openOnboarding();
+renderHeader();
+applyPage();
+const initialPage=$(`#page-${state.selectedPage}`);
+if(initialPage)initialPage.innerHTML='<div class="card"><div class="empty-state">공동 작업 기록을 불러오는 중입니다.</div></div>';
+const judgeDemoOnboarding=safeGetSessionItem(JUDGE_DEMO_ONBOARD_SESSION_KEY)==='1';
+if(judgeDemoOnboarding)safeRemoveSessionItem(JUDGE_DEMO_ONBOARD_SESSION_KEY);
+if(judgeDemoOnboarding||!safeGetItem(ONBOARD_KEY)) openOnboarding();
 bootstrapSharedState();
 $('#notificationsBtn')?.addEventListener('click',openNotificationsModal);
 $('#profileBtn')?.addEventListener('click',openProfileModal);

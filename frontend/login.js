@@ -2,6 +2,11 @@ const form=document.querySelector('#loginForm');
 const button=document.querySelector('#loginButton');
 const errorBox=document.querySelector('#loginError');
 const LAST_USERNAME_KEY='sitegit-last-username';
+const JUDGE_DEMO_ONBOARD_SESSION_KEY='sitegit-judge-demo-onboarding-v1';
+try{
+  const query=new URLSearchParams(window.location.search);
+  if(query.get('judge_demo')==='1')sessionStorage.setItem(JUDGE_DEMO_ONBOARD_SESSION_KEY,'1');
+}catch(error){}
 try{form.username.value=localStorage.getItem(LAST_USERNAME_KEY)||''}catch(error){form.username.value=''}
 function clearPassword(){form.password.value=''}
 clearPassword();

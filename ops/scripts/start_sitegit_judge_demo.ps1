@@ -38,6 +38,7 @@ $serverPortRaw = Get-DotEnvValue -EnvFile $context.EnvFile -Name "SERVER_PORT" -
 $serverPort = 8000
 if (-not [int]::TryParse($serverPortRaw, [ref]$serverPort)) { $serverPort = 8000 }
 $localUrl = "http://127.0.0.1:$serverPort"
+$judgeDemoUrl = "{0}/login?judge_demo=1" -f $localUrl
 
 if (Test-SiteGitApi -Port $serverPort) {
     throw "A SiteGit Backend is already running. Close it before starting a fresh judge demo."
@@ -70,7 +71,7 @@ try {
     }
 
     Write-Host ("Backend ready: {0}" -f $localUrl) -ForegroundColor Green
-    Start-Process $localUrl
+    Start-Process $judgeDemoUrl
 
     $isaacScript = Join-Path $PSScriptRoot "start_sitegit_isaac_portable.ps1"
     $isaacArguments = @(

@@ -21,6 +21,7 @@ Stage에서 월드 변환을 다시 읽어 보고하므로, Isaac 쪽에서 위�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -154,7 +155,8 @@ def main() -> None:
         load_site,
         write_site_frame,
     )
-    from pipeline_scenario import create_pipeline_backfill
+    from pipeline_scenario import PIPELINE_MATERIAL_PATH, create_pipeline_backfill
+    from stationary_soil_relocation_task import execute_stationary_soil_relocation
     from terrain_collision_proxy import (
         collision_proxy_height_sampler,
         create_terrain_collision_proxy,
@@ -168,6 +170,15 @@ def main() -> None:
         if not data_root_value.is_absolute():
             data_root_value = REPO_ROOT / data_root_value
         data_root_value = data_root_value.resolve()
+        zone_b_plan_path = (
+            REPO_ROOT
+            / "contracts"
+            / "site_plans"
+            / "demolition_soil_relocation_v1.json"
+        )
+        zone_b_plan = json.loads(zone_b_plan_path.read_text(encoding="utf-8"))
+        zone_b_work_area = dict(zone_b_plan.get("work_area") or {})
+        zone_b_relocation = dict(zone_b_work_area.get("relocation") or {})
         branch_name = os.getenv("SITEGIT_BRANCH", "main").strip() or "main"
         scenario_id = os.getenv(
             "SITEGIT_STAGE_SCENARIO_ID", "pipeline-demolition-v12"
@@ -336,6 +347,42 @@ def main() -> None:
                 flush=True,
             )
 
+        # The source mound is ordinary, unassigned site material at startup.
+        # Its drawing coordinates are only a planning candidate.  The approved
+        # instruction assigns Zone B metadata when relocation actually starts.
+        if zone_b_relocation:
+            source_position = zone_b_relocation.get("source_position") or {}
+            source_size = zone_b_relocation.get("source_size_m") or [8.0, 7.0, 3.0]
+            relocation_source = create_diggable_soil_pile(
+                stage,
+                prim_path=str(zone_b_relocation["source_prim_path"]),
+                position_xy=(
+                    float(source_position["x"]),
+                    float(source_position["y"]),
+                ),
+                size=tuple(float(value) for value in source_size),
+                zone_id="",
+                diggable_id="SoilRelocationCandidate-01",
+                display_color="#7A6B54",
+                surface_material_path=PIPELINE_MATERIAL_PATH,
+                simulation_app=simulation_app,
+                surface_height=proxy_surface_height,
+            )
+            relocation_prim = stage.GetPrimAtPath(relocation_source["prim_path"])
+            if relocation_prim.IsValid():
+                relocation_prim.SetCustomDataByKey(
+                    "sitegitScenarioRole", "unassigned_soil_relocation_candidate"
+                )
+                relocation_prim.SetCustomDataByKey("sitegitPlanCandidate", True)
+            print(
+                "Unassigned soil-relocation candidate ready: "
+                f"{relocation_source['prim_path']} · "
+                f"position=({float(source_position['x']):.1f}, "
+                f"{float(source_position['y']):.1f}) · "
+                f"size={tuple(float(value) for value in source_size)}m",
+                flush=True,
+            )
+
         create_demo_soil = os.getenv("SITEGIT_CREATE_DEMO_SOIL_PILE", "false").strip().lower()
         if (
             not args.no_demo_soil
@@ -376,6 +423,11 @@ def main() -> None:
             "SITEGIT_EQUIPMENT_PRIMS",
             "/World/Equipment/EXC_001,/World/Equipment/EXC_002,/World/Equipment/EXC_003",
         )
+        zone_b_equipment_path = str(
+            zone_b_relocation.get("equipment_prim_path") or "/World/Equipment/EXC_004"
+        )
+        if zone_b_equipment_path not in equipment_paths:
+            equipment_paths.append(zone_b_equipment_path)
         if not args.no_equipment:
             equipment_value = args.equipment or os.getenv("SITEGIT_EQUIPMENT_ASSET", "")
             if equipment_value:
@@ -394,6 +446,13 @@ def main() -> None:
                 except Exception as error:
                     planned_positions = {}
                     print(f"[warning] drawing equipment positions unavailable: {error}")
+                zone_b_equipment_position = zone_b_relocation.get("equipment_position") or {}
+                if zone_b_equipment_position:
+                    planned_positions[zone_b_equipment_path] = (
+                        float(zone_b_equipment_position["x"]),
+                        float(zone_b_equipment_position["y"]),
+                        float(zone_b_equipment_position.get("z") or 0.0),
+                    )
                 equipment_info = None
                 for equipment_index, equipment_prim_path in enumerate(equipment_paths):
                     if stage.GetPrimAtPath(equipment_prim_path).IsValid():
@@ -449,6 +508,7 @@ def main() -> None:
             ) from error
         bridge = IsaacBridge(update_callback=simulation_app.update)
         evidence_exporter = EvidenceExporter(data_root_value / "evidence")
+        sensor_config = SensorRigConfig.from_environment()
 
         def save_stage_candidate(instruction: dict, execution_id: str) -> dict:
             snapshot = save_pending_stage_snapshot(
@@ -490,20 +550,26 @@ def main() -> None:
                 "/World/Site" if path == "/World/SiteGitTerrainCollision" else path
                 for path in collision_roots
             ]
-        collision_report = prepare_raycast_collisions(
-            bridge.stage,
-            collision_roots,
-            update_callback=simulation_app.update,
-            cooking_frames=max(
-                0, int(os.getenv("SITEGIT_COLLISION_COOKING_FRAMES", "20"))
-            ),
-        )
-        print(
-            "LiDAR collision 준비 완료: "
-            f"Mesh {collision_report['mesh_count']}개 · "
-            f"신규 Collision {collision_report['new_collision_count']}개",
-            flush=True,
-        )
+        if sensor_config.lidar_runtime_enabled:
+            collision_report = prepare_raycast_collisions(
+                bridge.stage,
+                collision_roots,
+                update_callback=simulation_app.update,
+                cooking_frames=max(
+                    0, int(os.getenv("SITEGIT_COLLISION_COOKING_FRAMES", "20"))
+                ),
+            )
+            print(
+                "LiDAR collision 준비 완료: "
+                f"Mesh {collision_report['mesh_count']}개 · "
+                f"신규 Collision {collision_report['new_collision_count']}개",
+                flush=True,
+            )
+        else:
+            print(
+                "LiDAR 런타임 스캔 비활성화: PhysX Raycast와 포인트 표시를 생략합니다.",
+                flush=True,
+            )
 
         physical_equipment: dict[str, dict] = {}
         for equipment_path in equipment_paths:
@@ -565,10 +631,87 @@ def main() -> None:
 
         sensor_rig = None
         sensor_rigs: dict[str, EquipmentSensorRig] = {}
+        sensor_rig_info: dict[str, dict] = {}
+        sensor_rig_order: list[str] = []
+        sensor_rig_limit = max(
+            1,
+            int(os.getenv("SITEGIT_SENSOR_RIG_MAX_ACTIVE", "3")),
+        )
         valid_sensor_equipment_paths = [
             path for path in equipment_paths if bridge.stage.GetPrimAtPath(path).IsValid()
         ]
         sensor_equipment_path = valid_sensor_equipment_paths[0] if valid_sensor_equipment_paths else ""
+
+        def retire_sensor_rig(path: str) -> None:
+            """Release one idle RTX render product before another rig starts."""
+
+            nonlocal sensor_rig
+            rig = sensor_rigs.pop(path, None)
+            sensor_rig_info.pop(path, None)
+            if path in sensor_rig_order:
+                sensor_rig_order.remove(path)
+            if rig is not None:
+                warnings = rig.shutdown()
+                detail = f" · {'; '.join(warnings)}" if warnings else ""
+                print(f"  [sensor pool] retired {path}{detail}", flush=True)
+            if sensor_rig is rig:
+                sensor_rig = next(iter(sensor_rigs.values()), None)
+
+        def ensure_sensor_rigs(required_paths: list[str]) -> dict[str, EquipmentSensorRig]:
+            """Activate only the equipment sensors required by the next work."""
+
+            nonlocal sensor_rig
+            required: list[str] = []
+            for path in required_paths:
+                if path in required:
+                    continue
+                if not bridge.stage.GetPrimAtPath(path).IsValid():
+                    print(f"  [sensor pool warning] equipment Prim not found: {path}", flush=True)
+                    continue
+                required.append(path)
+            if len(required) > sensor_rig_limit:
+                raise RuntimeError(
+                    "The instruction needs "
+                    f"{len(required)} sensor rigs, but SITEGIT_SENSOR_RIG_MAX_ACTIVE="
+                    f"{sensor_rig_limit}."
+                )
+
+            for path in required:
+                if path in sensor_rigs:
+                    if path in sensor_rig_order:
+                        sensor_rig_order.remove(path)
+                    sensor_rig_order.append(path)
+                    continue
+                while len(sensor_rigs) >= sensor_rig_limit:
+                    victim = next(
+                        (
+                            active_path
+                            for active_path in sensor_rig_order
+                            if active_path not in required
+                        ),
+                        sensor_rig_order[0],
+                    )
+                    retire_sensor_rig(victim)
+                rig = EquipmentSensorRig(
+                    bridge.stage,
+                    path,
+                    update_callback=render_sensor_frame,
+                    config=sensor_config,
+                    physics_world=world,
+                )
+                info = rig.initialize()
+                sensor_rigs[path] = rig
+                sensor_rig_info[path] = info
+                sensor_rig_order.append(path)
+                if sensor_rig is None:
+                    sensor_rig = rig
+                print(
+                    f"  [sensor pool] activated {path} "
+                    f"({len(sensor_rigs)}/{sensor_rig_limit})",
+                    flush=True,
+                )
+            return {path: sensor_rigs[path] for path in required if path in sensor_rigs}
+
         if sensor_equipment_path:
             track_pose = track_contact_pose(bridge.stage, sensor_equipment_path)
             print(
@@ -577,30 +720,21 @@ def main() -> None:
                 f"궤도 바닥 Z={track_pose['z']:.2f}m",
                 flush=True,
             )
-            sensor_info = None
-            for path in valid_sensor_equipment_paths:
-                rig = EquipmentSensorRig(
-                    bridge.stage,
-                    path,
-                    update_callback=render_sensor_frame,
-                    config=SensorRigConfig.from_environment(),
-                    physics_world=world,
-                )
-                info = rig.initialize()
-                sensor_rigs[path] = rig
-                if path == sensor_equipment_path:
-                    sensor_info = info
+            startup_sensor_paths = valid_sensor_equipment_paths[:sensor_rig_limit]
+            ensure_sensor_rigs(startup_sensor_paths)
             sensor_rig = sensor_rigs[sensor_equipment_path]
-            assert sensor_info is not None
+            sensor_info = sensor_rig_info[sensor_equipment_path]
             print(
                 "굴착기 SensorRig 준비 완료\n"
                 f"  Mount  : {sensor_info['mount_prim_path']}\n"
                 f"  Camera : {sensor_info['camera_prim_path']} · "
                 f"{sensor_info['camera_resolution'][0]}x{sensor_info['camera_resolution'][1]}\n"
-                f"  LiDAR  : {sensor_info['lidar_ray_count']:,} rays · "
-                f"{sensor_info['lidar_points_prim_path']}\n"
+                f"  LiDAR  : {'runtime scan' if sensor_info['lidar_runtime_enabled'] else 'configured only'}"
+                f" · {sensor_info['lidar_ray_count']:,} rays\n"
                 f"  IMU    : {sensor_info['imu_prim_path']} · "
-                f"{sensor_info['imu_frequency_hz']} Hz",
+                f"{sensor_info['imu_frequency_hz']} Hz\n"
+                f"  Pool   : {len(sensor_rigs)}/{sensor_rig_limit} active · "
+                f"{max(0, len(valid_sensor_equipment_paths) - len(sensor_rigs))} lazy",
                 flush=True,
             )
         else:
@@ -674,14 +808,26 @@ def main() -> None:
                     )
                     waiting_commit_id = None
                     waiting_notice_printed = False
-                else:
+                elif review_status == "rejected":
                     print(
                         f"  [rejected] Commit {waiting_commit_id[:8]} · "
-                        "승인 HEAD로 안전하게 돌아가기 위해 Isaac Runner를 종료합니다. "
-                        "같은 명령으로 다시 실행하세요.",
+                        "반려된 현장 Stage를 유지하고 보완 Work Package를 기다립니다.",
                         flush=True,
                     )
-                    break
+                    # A rejected execution is the starting point for the
+                    # corrective Work Package. Keep the measured terrain and
+                    # active sensors alive so the correction continues from
+                    # the actual under/over-worked state. The published branch
+                    # HEAD remains unchanged until a remediation is approved.
+                    waiting_commit_id = None
+                    waiting_notice_printed = False
+                else:
+                    print(
+                        f"  [warning] Commit {waiting_commit_id[:8]}의 알 수 없는 "
+                        f"검토 상태입니다: {review_status!r}",
+                        flush=True,
+                    )
+                    continue
 
             # A restarted Adapter must only wait for commits that actually own
             # a candidate Stage snapshot. Older demo commits contain evidence
@@ -770,7 +916,72 @@ def main() -> None:
                         for instruction in instructions
                     )
                 )
-                if is_parallel_excavation:
+                is_stationary_soil_relocation = (
+                    len(instructions) == 1
+                    and all(
+                        (instruction.get("params") or {}).get("execution_group_mode")
+                        == "stationary_soil_relocation"
+                        for instruction in instructions
+                    )
+                )
+                instruction_equipment_paths: list[str] = []
+                for instruction in instructions:
+                    params = instruction.get("params") or {}
+                    equipment_path = str(
+                        (params.get("resource_bindings") or {}).get("equipment")
+                        or params.get("equipment_prim_path")
+                        or ""
+                    )
+                    if equipment_path and equipment_path not in instruction_equipment_paths:
+                        instruction_equipment_paths.append(equipment_path)
+                if is_stationary_soil_relocation:
+                    instruction = instructions[0]
+                    params = instruction.get("params") or {}
+                    equipment_path = str(
+                        (params.get("resource_bindings") or {}).get("equipment")
+                        or params.get("equipment_prim_path")
+                        or zone_b_equipment_path
+                    )
+                    active_sensor_rig = ensure_sensor_rigs([equipment_path]).get(
+                        equipment_path
+                    )
+                    print(
+                        "[Zone B] Stationary soil relocation received; "
+                        "tracks stay fixed while the upper body completes five cycles.",
+                        flush=True,
+                    )
+                    commit = run_instruction(
+                        client,
+                        bridge,
+                        instruction,
+                        evidence_exporter=evidence_exporter,
+                        update_callback=render_sensor_frame,
+                        sensor_rig=active_sensor_rig,
+                        stage_snapshot_callback=save_stage_candidate,
+                        execution_callback=lambda active_bridge, active_instruction: (
+                            execute_stationary_soil_relocation(
+                                active_bridge,
+                                world,
+                                active_instruction,
+                                animation_seconds=float(
+                                    os.getenv(
+                                        "SITEGIT_ZONE_B_RELOCATION_ANIMATION_SECONDS",
+                                        "3.0",
+                                    )
+                                ),
+                                scoop_count=int(
+                                    os.getenv("SITEGIT_ZONE_B_RELOCATION_SCOOPS", "5")
+                                ),
+                                render=not args.headless,
+                            )
+                        ),
+                    )
+                    publish_inventory()
+                    if commit and commit.get("review_status") == "pending":
+                        waiting_commit_id = str(commit["id"])
+                        waiting_notice_printed = False
+                elif is_parallel_excavation:
+                    group_sensor_rigs = ensure_sensor_rigs(instruction_equipment_paths)
                     print(
                         "[Zone A · phase 1] Excavation group received; starting "
                         f"{len(instructions)}-excavator execution.",
@@ -782,7 +993,7 @@ def main() -> None:
                         instructions,
                         world=world,
                         evidence_exporter=evidence_exporter,
-                        sensor_rigs=sensor_rigs,
+                        sensor_rigs=group_sensor_rigs,
                         stage_snapshot_callback=save_stage_candidate,
                         animation_seconds=float(
                             os.getenv("SITEGIT_GROUP_EXCAVATION_ANIMATION_SECONDS", "3.5")
@@ -802,6 +1013,7 @@ def main() -> None:
                         waiting_commit_id = str(pending[-1]["id"])
                         waiting_notice_printed = False
                 elif is_parallel_pipeline_installation:
+                    group_sensor_rigs = ensure_sensor_rigs(instruction_equipment_paths)
                     if pipeline_surface_height is None:
                         raise RuntimeError(
                             "Zone A phase 2 pipeline installation needs the site height sampler"
@@ -824,7 +1036,7 @@ def main() -> None:
                             / "demolition_pipeline_v1.json"
                         ),
                         evidence_exporter=evidence_exporter,
-                        sensor_rigs=sensor_rigs,
+                        sensor_rigs=group_sensor_rigs,
                         stage_snapshot_callback=save_stage_candidate,
                         animation_seconds=float(
                             os.getenv(
@@ -844,6 +1056,7 @@ def main() -> None:
                         waiting_commit_id = str(pending[-1]["id"])
                         waiting_notice_printed = False
                 elif is_parallel_pipeline_backfill:
+                    group_sensor_rigs = ensure_sensor_rigs(instruction_equipment_paths)
                     if pipeline_surface_height is None:
                         raise RuntimeError(
                             "Zone A phase 3 backfill needs the site height sampler"
@@ -868,7 +1081,7 @@ def main() -> None:
                         base_color_texture=pipeline_base_color,
                         normal_texture=pipeline_normal,
                         evidence_exporter=evidence_exporter,
-                        sensor_rigs=sensor_rigs,
+                        sensor_rigs=group_sensor_rigs,
                         stage_snapshot_callback=save_stage_candidate,
                         animation_seconds=float(
                             os.getenv(
@@ -898,13 +1111,16 @@ def main() -> None:
                             or params.get("equipment_prim_path")
                             or ""
                         )
+                        active_sensor_rig = ensure_sensor_rigs([equipment_path]).get(
+                            equipment_path
+                        )
                         commit = run_instruction(
                             client,
                             bridge,
                             instruction,
                             evidence_exporter=evidence_exporter,
                             update_callback=render_sensor_frame,
-                            sensor_rig=sensor_rigs.get(equipment_path, sensor_rig),
+                            sensor_rig=active_sensor_rig or sensor_rig,
                             stage_snapshot_callback=save_stage_candidate,
                         )
                         publish_inventory()
@@ -919,9 +1135,24 @@ def main() -> None:
                 if not instructions:
                     print("대기 중인 지시가 없습니다.")
                 break
+    except BaseException as error:
+        # Print the real Python/API failure before closing Kit.  Some versions
+        # of Isaac Sim can raise a secondary native access violation while a
+        # populated skinned Stage is shutting down, which otherwise hides the
+        # actionable exception (for example an authentication 401).
+        import traceback
+
+        print("\n[SiteGit Isaac error]", flush=True)
+        traceback.print_exc()
+        raise
     finally:
         try:
             timeline.stop()
+        except (NameError, AttributeError):
+            pass
+        try:
+            for active_sensor_path in list(sensor_rigs):
+                retire_sensor_rig(active_sensor_path)
         except (NameError, AttributeError):
             pass
         simulation_app.close()

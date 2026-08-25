@@ -61,6 +61,7 @@ class DemoWorkfront:
     equipment_prim_path: str
     target_prim_path: str
     target_prim_paths: tuple[str, ...]
+    target_center_xy: tuple[float, float]
     start_position: tuple[float, float, float]
     excavation_cut_ratio: float
     dump_side: float
@@ -102,6 +103,10 @@ def load_demo_workfronts(plan_path: str | Path = DEFAULT_PLAN_PATH) -> list[Demo
                 equipment_prim_path=str(raw.get("equipment_prim_path") or ""),
                 target_prim_path=target_paths[target_index],
                 target_prim_paths=tuple(target_paths),
+                target_center_xy=(
+                    (float(bounds["min_x"]) + float(bounds["max_x"])) * 0.5,
+                    (float(bounds["min_y"]) + float(bounds["max_y"])) * 0.5,
+                ),
                 start_position=(start_x, start_y, 0.0),
                 excavation_cut_ratio=DEFAULT_CUT_RATIOS[index],
                 dump_side=float(DEFAULT_DUMP_SIDES[index]),
@@ -211,7 +216,7 @@ def _capture_sensor_phase(
     exporter: Any,
     phase: str,
 ) -> dict[str, Any]:
-    """Capture clean RGB first, then a fresh LiDAR scan for every machine."""
+    """Capture clean RGB and optional runtime LiDAR evidence for every machine."""
 
     for _, rig in sensor_rigs:
         rig.clear_lidar_visualization()
@@ -235,12 +240,15 @@ def _capture_sensor_phase(
             if results[workfront.equipment_id]["camera"].get("available")
             else "failed"
         )
-        lidar_state = (
-            f"{int(lidar.get('point_count') or 0):,}/"
-            f"{int(lidar.get('ray_count') or 0):,} hits"
-            if lidar.get("available")
-            else "failed"
-        )
+        if lidar.get("capture_mode") == "declared-only":
+            lidar_state = "configured (runtime scan skipped)"
+        elif lidar.get("available"):
+            lidar_state = (
+                f"{int(lidar.get('point_count') or 0):,}/"
+                f"{int(lidar.get('ray_count') or 0):,} hits"
+            )
+        else:
+            lidar_state = "failed"
         print(
             f"[sensor {phase}] {workfront.equipment_id}: camera={camera_state} · "
             f"LiDAR={lidar_state}",
@@ -360,7 +368,10 @@ def main() -> None:
         )
 
         sensor_collision_report: dict[str, Any] | None = None
-        if not args.skip_sensors:
+        sensor_config = (
+            SensorRigConfig.from_environment() if not args.skip_sensors else None
+        )
+        if sensor_config is not None and sensor_config.lidar_runtime_enabled:
             sensor_collision_roots = [
                 value.strip()
                 for value in os.getenv(
@@ -381,6 +392,11 @@ def main() -> None:
             print(
                 "[sensors] raycast collision ready: "
                 f"{sensor_collision_report['mesh_count']} meshes",
+                flush=True,
+            )
+        elif sensor_config is not None:
+            print(
+                "[sensors] LiDAR capability declared; runtime raycast scan disabled",
                 flush=True,
             )
 
@@ -505,8 +521,7 @@ def main() -> None:
                 }
             )
 
-        if not args.skip_sensors:
-            sensor_config = SensorRigConfig.from_environment()
+        if sensor_config is not None:
             for workfront in workfronts:
                 rig = EquipmentSensorRig(
                     stage,

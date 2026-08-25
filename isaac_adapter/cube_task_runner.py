@@ -403,6 +403,7 @@ def run_instruction(
     update_callback=None,
     sensor_rig: Any = None,
     stage_snapshot_callback: Callable[[dict, str], dict[str, Any]] | None = None,
+    execution_callback: Callable[[IsaacBridge, dict], dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Execute one supported command and commit only Stage-read-back results."""
     instruction_id = instruction["id"]
@@ -431,6 +432,9 @@ def run_instruction(
     generated_code = str(params.get("generated_code") or "")
     waits_for_excavation_pose = kind == "excavate_prim" or (
         kind == "generated_script" and "ctx.excavate" in generated_code
+    ) or (
+        str(params.get("execution_group_mode") or "")
+        == "stationary_soil_relocation"
     )
     evidence_instruction = instruction
 
@@ -494,7 +498,9 @@ def run_instruction(
             target_prim_path=target_path or None,
         )
         try:
-            if kind == "generated_script":
+            if execution_callback is not None:
+                result = execution_callback(bridge, instruction)
+            elif kind == "generated_script":
                 result = execute_work_code(bridge, generated_code)
             elif kind == "excavate_prim":
                 result = bridge.excavate_prim(instruction)

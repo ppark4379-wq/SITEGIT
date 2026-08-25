@@ -111,8 +111,9 @@ SITEGIT_RESTORE_BRANCH_HEAD=true
 ```
 
 Commit 검토 중에는 다음 Work Package를 가져오지 않습니다. 승인되면 현재 Stage에서
-계속 작업하고, 반려되면 승인 HEAD를 다시 불러와야 하므로 Runner가 안전하게 종료됩니다.
-같은 실행 명령을 다시 입력하면 반려 작업을 제외한 마지막 승인 Stage로 돌아갑니다.
+계속 작업합니다. 반려되면 현재 현장 Stage와 센서를 유지한 채 보완 Work Package를
+기다리며, 이후 보완 Commit이 승인될 때만 Branch HEAD가 갱신됩니다. 따라서 반려 후
+Runner를 다시 실행할 필요가 없습니다.
 `--usd`를 직접 지정하면 자동 HEAD보다 해당 파일이 우선하며, `--no-site`는 자동 복원을
 비활성화합니다.
 

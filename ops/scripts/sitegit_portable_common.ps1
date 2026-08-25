@@ -196,6 +196,22 @@ function Set-SiteGitPortableEnvironment {
     $env:OLLAMA_MODELS = $Context.OllamaModels
     $env:OLLAMA_HOST = "127.0.0.1:11435"
     $env:OLLAMA_BASE_URL = $Context.OllamaBaseUrl
+
+    # The Backend recreates the manager account from the root .env whenever a
+    # judge-demo reset removes the database.  Always give the Isaac Adapter the
+    # same credentials through the real process environment so a stale
+    # isaac_adapter/.env cannot cause a hidden 401 immediately after Stage load.
+    $managerUsername = Get-DotEnvValue `
+        -EnvFile $Context.EnvFile `
+        -Name "INITIAL_MANAGER_USERNAME" `
+        -Default "manager"
+    $managerPassword = Get-DotEnvValue `
+        -EnvFile $Context.EnvFile `
+        -Name "INITIAL_MANAGER_PASSWORD" `
+        -Default ""
+    if ($managerUsername) { $env:SITEGIT_USERNAME = $managerUsername }
+    if ($managerPassword) { $env:SITEGIT_PASSWORD = $managerPassword }
+
     if ($Context.SiteAsset) { $env:SITEGIT_SITE_ASSET = $Context.SiteAsset }
     if ($Context.EquipmentAsset) { $env:SITEGIT_EQUIPMENT_ASSET = $Context.EquipmentAsset }
     if ($Context.SensorReference) { $env:SITEGIT_SENSOR_REFERENCE_USD = $Context.SensorReference }

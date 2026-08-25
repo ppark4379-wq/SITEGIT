@@ -60,7 +60,7 @@ def compile_remediation_narrative(
         "required_completion_percent": round(required_completion_ratio * 100, 1),
     }
     system_prompt = """당신은 SiteGit 보완 작업 지시 작성 도우미입니다.
-제공된 계측값은 Isaac Stage read-back과 규칙 엔진이 확정한 값입니다.
+제공된 계측값은 센서 read-back과 규칙 엔진이 확정한 값입니다.
 수치, 장비 ID, 작업전선 ID를 바꾸거나 새로운 값을 추정하지 마세요.
 관리자가 검토할 수 있도록 부족 원인, 동일 장비의 잔여 굴착, 재측정 및
 재커밋 순서를 간결한 한국어로 작성하세요. 실행 코드는 작성하지 마세요."""
@@ -389,7 +389,7 @@ def resolve_plan(
                 code="site_frame",
                 ok=has_actual_site_frame,
                 message=(
-                    "Isaac에서 내보낸 실제 site_frame.json 좌표계를 확인했습니다."
+                    "등록된 site_frame.json 현장 좌표계를 확인했습니다."
                     if has_actual_site_frame
                     else "실제 site_frame.json이 없어 미리보기 좌표만 계산했습니다. "
                     "Isaac 맵을 먼저 게시해야 실행할 수 있습니다."
@@ -481,7 +481,7 @@ def compile_excavation_language(
         f"- {item.name}: {item.path}" for item in inventory.diggable_targets[:100]
     )
     system_prompt = f"""당신은 SiteGit Work Package Compiler입니다.
-사용자의 자연어에서 실제 Isaac Sim 굴착 작업만 구조화합니다.
+사용자의 자연어에서 현장 장비가 수행할 굴착 작업만 구조화합니다.
 
 규칙:
 - 지원 작업은 excavate_prim 하나입니다.
@@ -580,9 +580,9 @@ def resolve_excavation_plan(
             code="stage_connected",
             ok=inventory.connected,
             message=(
-                "Isaac Adapter의 Stage inventory가 연결되어 있습니다."
+                "현장 장비 inventory가 연결되어 있습니다."
                 if inventory.connected
-                else "Isaac Adapter heartbeat가 오래되었습니다. Isaac Sim을 실행하세요."
+                else "현장 작업 시스템의 heartbeat가 오래되었습니다. 장비 연결을 확인하세요."
             ),
         ),
         WorkPackageCheck(

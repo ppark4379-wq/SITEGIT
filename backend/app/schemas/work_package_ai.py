@@ -100,15 +100,34 @@ class PlanningPhasePreview(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list, max_length=20)
 
 
+class PlanningRelocationPreview(BaseModel):
+    """Reviewed geometry for one stationary excavator soil-relocation job."""
+
+    source_prim_path: str = Field(pattern=USD_PRIM_PATH_PATTERN, max_length=500)
+    source_position: PlanningCoordinate
+    source_size_m: list[float] = Field(min_length=3, max_length=3)
+    destination_position: PlanningCoordinate
+    equipment_id: str = Field(min_length=1, max_length=80)
+    equipment_prim_path: str = Field(pattern=USD_PRIM_PATH_PATTERN, max_length=500)
+    equipment_position: PlanningCoordinate
+    swing_degrees: float = Field(ge=-180, le=180)
+    tracks_stationary: bool = True
+    scoop_count: int = Field(default=5, ge=1, le=12)
+
+
 class PlanningDesignPreview(BaseModel):
     """Canonical site drawing context returned alongside an LLM planning draft."""
 
     plan_id: str = Field(min_length=1, max_length=120)
+    scenario_type: Literal["pipeline", "soil_relocation"] = "pipeline"
     revision: str = Field(min_length=1, max_length=40)
     title: str = Field(min_length=1, max_length=160)
     source_map: str = Field(min_length=1, max_length=160)
     work_area_id: str = Field(min_length=1, max_length=120)
     zone_id: str = Field(min_length=1, max_length=80)
+    zone_assignment_mode: Literal["existing", "create_on_approval"] = "existing"
+    location_confirmation_required: bool = False
+    location_confirmation_prompt: str = Field(default="", max_length=300)
     zone_title: str = Field(min_length=1, max_length=120)
     work_area_label: str = Field(min_length=1, max_length=160)
     station_range: str = Field(min_length=1, max_length=120)
@@ -119,6 +138,7 @@ class PlanningDesignPreview(BaseModel):
     workfronts: list[PlanningWorkfrontPreview] = Field(default_factory=list, max_length=20)
     phases: list[PlanningPhasePreview] = Field(min_length=1, max_length=20)
     assumptions: list[str] = Field(default_factory=list, max_length=30)
+    relocation: PlanningRelocationPreview | None = None
 
 
 class PlanningWorkPackagePlan(BaseModel):

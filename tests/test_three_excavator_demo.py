@@ -35,6 +35,9 @@ def test_demo_uses_three_unique_excavators_and_targets() -> None:
     assert [item.start_position[0] for item in workfronts] == pytest.approx(
         [-19.5, -0.5, -29.0]
     )
+    assert [item.target_center_xy for item in workfronts] == pytest.approx(
+        [(-8.25, -30.0), (-13.25, -2.0), (-11.75, 20.25)]
+    )
 
 
 def test_centre_excavator_is_the_only_intentional_under_excavation() -> None:

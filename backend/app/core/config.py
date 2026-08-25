@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     sitegit_data_root: Path = REPO_ROOT / "runtime"
     database_url: str | None = None
-    seed_state_path: Path = REPO_ROOT / "seed" / "sasang_state.json"
+    seed_state_path: Path = REPO_ROOT / "seed" / "pipeline_demo_state.json"
     default_project_id: str = "SASANG-001"
 
     isaac_adapter_enabled: bool = False

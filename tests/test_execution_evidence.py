@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 
 from isaac_adapter.evidence_exporter import EvidenceExporter
-from isaac_adapter.equipment_sensors import SensorRigConfig, generate_lidar_directions
+from isaac_adapter.equipment_sensors import (
+    EquipmentSensorRig,
+    SensorRigConfig,
+    generate_lidar_directions,
+)
 from isaac_adapter.execution_evidence import ExecutionTrace, evidence_quality
 from isaac_adapter.isaac_bridge import IsaacBridge, excavation_approach_plan, grounded_equipment_center_z
 
@@ -119,6 +123,7 @@ def test_excavation_prepared_callback_is_consumed_once():
 
 
 def test_sensor_rig_configuration_reads_environment(monkeypatch):
+    monkeypatch.delenv("SITEGIT_RUNTIME_LIDAR_ENABLED", raising=False)
     monkeypatch.setenv("SITEGIT_SENSOR_MOUNT_OFFSET", "1,2,3")
     monkeypatch.setenv("SITEGIT_SENSOR_REFERENCE_USD", "E:/fixtures/excavator_lidar.usd")
     monkeypatch.setenv("SITEGIT_SENSOR_REFERENCE_PRIM", "/World/CustomLidarMount")
@@ -138,9 +143,82 @@ def test_sensor_rig_configuration_reads_environment(monkeypatch):
     assert config.camera_offset_from_lidar_m == (0.4, 0.1, 0.2)
     assert config.camera_level_horizon is True
     assert config.camera_resolution == (640, 360)
+    assert config.lidar_runtime_enabled is False
     assert config.lidar_horizontal_rays * config.lidar_vertical_rays == 77
     assert config.imu_height_above_tracks_m == pytest.approx(0.55)
     assert config.imu_frequency_hz == 120
+
+
+def test_sensor_rig_runtime_lidar_can_be_explicitly_enabled(monkeypatch):
+    monkeypatch.setenv("SITEGIT_RUNTIME_LIDAR_ENABLED", "true")
+
+    config = SensorRigConfig.from_environment()
+
+    assert config.lidar_runtime_enabled is True
+
+
+def test_disabled_runtime_lidar_returns_declared_evidence_without_rays():
+    config = SensorRigConfig(lidar_runtime_enabled=False)
+    rig = EquipmentSensorRig(None, "/World/Equipment/EXC_001", config=config)
+
+    evidence = rig.capture_lidar(None, "unused.ply")
+
+    assert rig._directions == ()
+    assert evidence["available"] is True
+    assert evidence["capture_mode"] == "declared-only"
+    assert evidence["point_count"] is None
+
+
+def test_sensor_rig_shutdown_releases_camera_and_imu_registry():
+    calls: list[object] = []
+
+    class FakeCamera:
+        def pause(self):
+            calls.append("camera-pause")
+
+        def destroy(self):
+            calls.append("camera-destroy")
+
+    class FakeImu:
+        name = "sitegit_exc_004_imu"
+
+        def pause(self):
+            calls.append("imu-pause")
+
+    class FakeScene:
+        def object_exists(self, name):
+            calls.append(("exists", name))
+            return True
+
+        def remove_object(self, name, *, registry_only):
+            calls.append(("remove", name, registry_only))
+
+    class FakeWorld:
+        scene = FakeScene()
+
+    rig = EquipmentSensorRig(
+        None,
+        "/World/Equipment/EXC_004",
+        update_callback=lambda: calls.append("frame-drain"),
+        physics_world=FakeWorld(),
+    )
+    rig._camera = FakeCamera()
+    rig._imu = FakeImu()
+
+    warnings = rig.shutdown()
+
+    assert warnings == []
+    assert calls == [
+        "camera-pause",
+        "frame-drain",
+        "frame-drain",
+        "camera-destroy",
+        "imu-pause",
+        ("exists", "sitegit_exc_004_imu"),
+        ("remove", "sitegit_exc_004_imu", True),
+    ]
+    assert rig._camera is None
+    assert rig._imu is None
 
 
 def test_exporter_saves_world_point_cloud(tmp_path):

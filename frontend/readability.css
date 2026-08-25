@@ -1,0 +1,181 @@
+/*
+ * SiteGit readability layer
+ *
+ * The feature styles intentionally keep the dashboard dense, but several
+ * secondary labels ended up at 6-10px.  This final stylesheet raises only
+ * text-level elements and leaves the page geometry, map canvas, icons and
+ * primary headings untouched.  clamp() keeps the increase conservative on
+ * notebooks while making full-HD and larger demo screens easier to read.
+ */
+:root {
+  --sg-readable-micro: clamp(11px, .64vw, 12px);
+  --sg-readable-small: clamp(12px, .72vw, 13px);
+  --sg-readable-body: clamp(13px, .78vw, 14px);
+  --sg-readable-control: clamp(12px, .74vw, 14px);
+}
+
+.app-shell {
+  font-size: var(--sg-readable-body);
+}
+
+/* Metadata, timestamps, field labels and help text. */
+.app-shell :where(small, dt, code),
+.login-shell :where(small, code) {
+  font-size: var(--sg-readable-micro);
+  line-height: 1.45;
+}
+
+/* Body copy and form values should never fall back to the old 7-10px scale. */
+.app-shell :where(p, dd, label, input, select, textarea),
+.login-shell :where(label, input, .intro, .account-guide, .security-note) {
+  font-size: var(--sg-readable-body);
+  line-height: 1.55;
+}
+
+/* Most spans/em elements are badges, captions or status text.  Visual-only
+ * spans are excluded so navigation icons, progress bars and brand marks keep
+ * their original geometry. */
+.app-shell span:not([class*="icon"]):not([class*="dot"]):not([class*="mark"]):not([class*="ring"]):not([class*="bar"]):not([class*="meter"]):not([class*="arrow"]):not([class*="chevron"]):not([class*="swatch"]):not([class*="progress"]),
+.app-shell :where(em, code),
+.login-shell span:not([class*="mark"]):not([class*="dot"]),
+.login-shell :where(em, code) {
+  font-size: var(--sg-readable-micro);
+}
+
+/* Text nested in a button follows the enlarged control size. */
+.app-shell button > span:not([class*="icon"]):not([class*="badge"]):not([class*="dot"]):not([class*="mark"]) {
+  font-size: inherit;
+}
+
+/* Preserve icon-only controls while enlarging actual text controls. */
+.app-shell :where(
+  .primary-button,
+  .secondary-button,
+  .ghost-button,
+  .danger-button,
+  .button-sm,
+  .text-button,
+  .nav-item,
+  .phase-git-toggle,
+  .git-node,
+  .history-event-row
+) {
+  font-size: var(--sg-readable-control);
+  line-height: 1.35;
+}
+
+/* Dense workflow/review/history blocks use <b> for ordinary row text. */
+:where(
+  .construction-review-card,
+  .construction-review-priority,
+  .phase-review-list,
+  .phase-review-members,
+  .phase-review-criteria,
+  .phase-review-gate,
+  .phase-review-flow,
+  .construction-git-root,
+  .remediation-lineage,
+  .scenario-detail-workfronts,
+  .scenario-criteria,
+  .scenario-gate-panel,
+  .scenario-issue-panel,
+  .scenario-activity-panel,
+  .drawing-registry-list,
+  .equipment-filter-panel,
+  .commit-provenance,
+  .history-event-stream
+) b {
+  font-size: var(--sg-readable-small);
+  line-height: 1.4;
+}
+
+.app-shell :where(
+  .audit-item,
+  .event-item,
+  .evidence-check,
+  .external-evidence-row,
+  .execution-event-row,
+  .manager-section-title,
+  .manager-selected-summary,
+  .map-work-panel,
+  .onboard-equip
+) strong {
+  font-size: var(--sg-readable-small);
+  line-height: 1.4;
+}
+
+.app-shell :where(
+  .page-eyebrow,
+  .eyebrow,
+  .brand-sub,
+  .trust-label,
+  .trust-note,
+  .cap-chip,
+  .source-link,
+  .diff-label,
+  .station-basis,
+  .scenario-workfront-note,
+  .history-scope-explain,
+  .history-evidence-entry
+) {
+  font-size: var(--sg-readable-micro) !important;
+  line-height: 1.45;
+}
+
+/* Larger text must wrap inside its own column instead of widening the page. */
+.app-shell :where(
+  p,
+  small,
+  dd,
+  .construction-scope-note,
+  .scenario-workfront-note,
+  .station-basis,
+  .history-scope-explain
+) {
+  overflow-wrap: anywhere;
+}
+
+.app-shell :where(
+  .card,
+  .workflow-card,
+  .phase-git-block,
+  .git-node,
+  .history-event-row,
+  .phase-review-row,
+  .phase-review-member,
+  .scenario-detail-workfront,
+  .equipment-card
+) {
+  min-width: 0;
+}
+
+/* Slightly roomier rows prevent the larger labels from colliding vertically. */
+.phase-review-row,
+.phase-review-member,
+.scenario-detail-workfront,
+.history-event-row {
+  min-height: 48px;
+}
+
+@media (max-width: 1180px) {
+  :root {
+    --sg-readable-micro: 11px;
+    --sg-readable-small: 12px;
+    --sg-readable-body: 13px;
+    --sg-readable-control: 12px;
+  }
+
+  .app-shell :where(.construction-run-select, .equipment-filter-panel) {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell :where(.phase-review-row, .phase-review-member, .scenario-detail-workfront) {
+    line-height: 1.4;
+  }
+
+  .login-shell :where(label, input, .intro, .account-guide, .security-note) {
+    font-size: 13px;
+  }
+}

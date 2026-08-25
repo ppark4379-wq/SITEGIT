@@ -26,11 +26,10 @@ from ...domains.work_packages.code_agent import (
     validate_restricted_code,
 )
 from ...domains.work_packages.site_plan import (
-    apply_pipeline_design_defaults,
+    apply_site_design_defaults,
     design_prompt_context,
     get_raw_pipeline_plan,
-    is_pipeline_plan_request,
-    load_pipeline_design,
+    load_site_design_for_request,
 )
 from ...models.user import User
 from ...models.audit_log import AuditLog
@@ -71,11 +70,7 @@ def interpret_planning_work_package(
 ) -> PlanningWorkPackageDraft:
     """Isaac 실행과 분리해 관리자 검토용 작업지시 초안만 생성합니다."""
     settings = get_settings()
-    design = (
-        load_pipeline_design(payload.project_id)
-        if is_pipeline_plan_request(payload.message)
-        else None
-    )
+    design = load_site_design_for_request(payload.project_id, payload.message)
     try:
         plan = compile_planning_work_package(
             payload.message,
@@ -93,7 +88,7 @@ def interpret_planning_work_package(
             detail={"code": "LLM_REQUEST_FAILED", "message": str(error)},
         ) from error
     if design:
-        plan = apply_pipeline_design_defaults(payload.message, plan, design)
+        plan = apply_site_design_defaults(payload.message, plan, design)
     return PlanningWorkPackageDraft(
         project_id=payload.project_id,
         source_text=payload.message,
@@ -126,6 +121,134 @@ def _scenario_coordinated_code() -> str:
     code = "def execute(ctx):\n    return ctx.finish()"
     validate_restricted_code(code)
     return code
+
+
+def _dispatch_soil_relocation_phase(
+    db: Session,
+    *,
+    payload: PlanningScenarioDispatchRequest,
+    raw_plan: dict,
+    user: User,
+) -> PlanningScenarioDispatchResponse:
+    """Confirm the drawing candidate, create Zone B, and issue its package."""
+
+    phase = next(
+        (item for item in raw_plan["workflow"] if item["id"] == payload.phase_id),
+        None,
+    )
+    if phase is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"도면에 없는 공정입니다: {payload.phase_id}",
+        )
+
+    work_area = raw_plan["work_area"]
+    relocation = work_area["relocation"]
+    front = work_area["workfronts"][0]
+    equipment_path = str(relocation["equipment_prim_path"])
+    source_path = str(relocation["source_prim_path"])
+    inventory = load_stage_inventory(payload.project_id)
+    equipment_paths = {item.path for item in inventory.equipment if item.active}
+    target_paths = {item.path for item in inventory.diggable_targets if item.active}
+    missing: list[str] = []
+    if not inventory.connected:
+        missing.append("현장 작업 시스템 연결 대기")
+    if equipment_path not in equipment_paths:
+        missing.append(f"장비 Prim 없음: {equipment_path}")
+    if source_path not in target_paths:
+        missing.append(f"토사 Prim 없음: {source_path}")
+
+    work_package_id = f"WP-SOIL-B-{uuid4().hex[:8].upper()}"
+    scenario_run_id = f"SCN-{uuid4().hex[:12].upper()}"
+    group_id = f"EXG-{payload.plan_id}-soil-relocation-{uuid4().hex[:10]}"
+    instruction_status = "blocked" if missing else "pending"
+    generated_code = _scenario_coordinated_code()
+    instruction = ExecutionsService.create_instruction(
+        db,
+        project_id=payload.project_id,
+        kind="generated_script",
+        params={
+            "work_package_id": work_package_id,
+            "scenario_plan_id": payload.plan_id,
+            "scenario_run_id": scenario_run_id,
+            "scenario_parent_work_package_id": work_package_id,
+            "scenario_title": "Zone B 토사 적치 위치 변경",
+            "scenario_phase_id": payload.phase_id,
+            "scenario_phase_order": 1,
+            "workfront_id": front["id"],
+            "operation": "soil_relocation",
+            "zone_assignment_mode": "create_on_approval",
+            "zone_created_from_candidate": True,
+            "zone_created_at": datetime.now(timezone.utc).isoformat(),
+            "location_confirmed": True,
+            "location_confirmation_prompt": work_area.get(
+                "location_confirmation_prompt", ""
+            ),
+            "candidate_work_area_id": work_area["id"],
+            "execution_group_id": group_id,
+            "execution_group_size": 1,
+            "execution_group_mode": "stationary_soil_relocation",
+            "summary": "Zone B · 굴착기 궤도 고정 토사 이동",
+            "zone_id": str(phase["zone_id"]),
+            "source_text": payload.source_text,
+            "generated_code": generated_code,
+            "program_version": 1,
+            "resource_bindings": {
+                "equipment": equipment_path,
+                "target": source_path,
+            },
+            "target_prim_paths": [source_path],
+            "equipment_name": relocation["equipment_id"],
+            "target_name": front["label"],
+            "planned_quantity": {
+                "value": float(phase["target_amount"]),
+                "unit": str(phase["target_unit"]),
+                "source": f"{payload.plan_id} Rev.{raw_plan['revision']}",
+            },
+            "station_range": work_area["station_range"],
+            "relocation": relocation,
+            "work_area_bounds": work_area.get("bounds"),
+            "tracks_stationary": True,
+            "missing_resources": missing,
+            "checks": [
+                {
+                    "code": "drawing",
+                    "ok": True,
+                    "message": f"승인 도면 확인: {payload.plan_id} Rev.{raw_plan['revision']}",
+                },
+                {
+                    "code": "stationary_tracks",
+                    "ok": True,
+                    "message": "궤도 고정 · 상부체 선회 방식",
+                },
+                {
+                    "code": "resources",
+                    "ok": not missing,
+                    "message": "현장 자원 확인 완료" if not missing else missing[0],
+                },
+            ],
+            "compiler_model": "site-plan-deterministic-v1",
+        },
+        note="Zone B 토사 적치 위치 변경 작업 하달",
+        user=user,
+        initial_status=instruction_status,
+    )
+    record = PlanningScenarioWorkPackageRecord(
+        id=work_package_id,
+        phase_id=payload.phase_id,
+        workfront_id=front["id"],
+        zone_id=str(phase["zone_id"]),
+        equipment_id=str(relocation["equipment_id"]),
+        target_prim_paths=[source_path],
+        status=instruction_status,
+        missing_resources=missing,
+    )
+    return PlanningScenarioDispatchResponse(
+        plan_id=payload.plan_id,
+        phase_id=payload.phase_id,
+        work_packages=[record],
+        instructions=[InstructionResponse.model_validate(instruction, from_attributes=True)],
+    )
 
 
 def _approve_registered_scenario_phase(
@@ -185,7 +308,7 @@ def _approve_registered_scenario_phase(
     active_equipment = {item.path for item in inventory.equipment if item.active}
     missing: list[str] = []
     if not inventory.connected:
-        missing.append("Isaac Stage 연결 대기")
+        missing.append("현장 작업 시스템 연결 대기")
     for instruction in members:
         equipment_path = str(
             ((instruction.params or {}).get("resource_bindings") or {}).get(
@@ -287,6 +410,25 @@ async def dispatch_planning_scenario(
         raw_plan = get_raw_pipeline_plan(payload.plan_id, payload.project_id)
     except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    if raw_plan.get("scenario_type") == "soil_relocation":
+        response = _dispatch_soil_relocation_phase(
+            db,
+            payload=payload,
+            raw_plan=raw_plan,
+            user=user,
+        )
+        await manager.broadcast(
+            payload.project_id,
+            {
+                "type": "isaac.map.updated",
+                "reason": "soil_relocation.plan_issued",
+                "plan_id": payload.plan_id,
+                "phase_id": payload.phase_id,
+                "zone_id": "B",
+                "zone_created": True,
+            },
+        )
+        return response
     if payload.phase_id != "excavation":
         response = _approve_registered_scenario_phase(
             db,
@@ -324,7 +466,7 @@ async def dispatch_planning_scenario(
         target_paths = [str(path) for path in front["target_prim_paths"]]
         missing: list[str] = []
         if not inventory.connected:
-            missing.append("Isaac Stage 연결 대기")
+            missing.append("현장 작업 시스템 연결 대기")
         if equipment_path not in equipment_by_path:
             missing.append(f"장비 Prim 없음: {equipment_path}")
         missing.extend(
@@ -389,7 +531,7 @@ async def dispatch_planning_scenario(
                     {
                         "code": "resources",
                         "ok": not missing,
-                        "message": "Stage 자원 확인 완료" if not missing else missing[0],
+                        "message": "현장 자원 확인 완료" if not missing else missing[0],
                     },
                 ],
                 "compiler_model": "site-plan-deterministic-v1",
@@ -433,7 +575,7 @@ async def dispatch_planning_scenario(
         target_paths = [str(path) for path in front["target_prim_paths"]]
         missing: list[str] = []
         if not inventory.connected:
-            missing.append("Isaac Stage connection is not ready")
+            missing.append("Field work system connection is not ready")
         if equipment_path not in equipment_by_path:
             missing.append(f"Equipment Prim is missing: {equipment_path}")
         work_package_id = (
@@ -531,7 +673,7 @@ async def dispatch_planning_scenario(
         target_paths = [str(path) for path in front["target_prim_paths"]]
         missing: list[str] = []
         if not inventory.connected:
-            missing.append("Isaac Stage connection is not ready")
+            missing.append("Field work system connection is not ready")
         if equipment_path not in equipment_by_path:
             missing.append(f"Equipment Prim is missing: {equipment_path}")
         work_package_id = f"WP-PIPE-{backfill_zone_id}-{uuid4().hex[:8].upper()}"
@@ -811,7 +953,7 @@ async def dispatch_excavation_work_package(
             detail={
                 "code": "WORK_PACKAGE_NOT_EXECUTABLE",
                 "message": payload.plan.clarification_question
-                or "실행 중인 Isaac Stage의 장비와 대상 Prim 검증이 필요합니다.",
+                or "연결된 현장 시스템의 장비와 작업 대상 검증이 필요합니다.",
                 "checks": [check.model_dump() for check in draft.checks],
             },
         )

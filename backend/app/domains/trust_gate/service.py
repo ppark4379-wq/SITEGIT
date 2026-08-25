@@ -128,7 +128,7 @@ class TrustGateService:
                 raise HTTPException(
                     status_code=422,
                     detail=(
-                        "Excavation approval requires real Isaac Stage read-back and a "
+                        "Excavation approval requires verified sensor read-back and a "
                         "verified inactive target Prim or verified terrain deformation."
                     ),
                 )

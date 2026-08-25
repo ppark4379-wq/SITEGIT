@@ -13,6 +13,7 @@ from isaac_adapter.pipeline_backfill import (
     smooth_progress,
     spoil_matches_targets,
 )
+from isaac_adapter.pipeline_backfill_demo import _play_backfill_motion_cycle
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -97,16 +98,74 @@ def test_backfill_animation_only_selects_rotator_or_arm_branch() -> None:
     )
 
 
-def test_backfill_demo_pins_carriers_and_reverses_excavation_cycle() -> None:
+def test_backfill_motion_faces_spoil_then_returns_to_trench_before_dump() -> None:
+    events: list[tuple[str, bool, bool] | str] = []
+
+    class BridgeStub:
+        def play_skeletal_animations_parallel(
+            self,
+            equipment_prims: list[object],
+            animation_name: str,
+            *,
+            duration_seconds: float,
+            reverse: bool = False,
+            **kwargs: object,
+        ) -> list[str]:
+            events.append(
+                (
+                    animation_name,
+                    reverse,
+                    kwargs.get("pose_overlay_animation_name") == "Rotate90",
+                )
+            )
+            return [f"/{animation_name}"]
+
+    paths = _play_backfill_motion_cycle(
+        BridgeStub(),
+        [object()],
+        swing_seconds=2.0,
+        reach_seconds=1.5,
+        dig_seconds=2.0,
+        lift_seconds=1.5,
+        dump_seconds=1.8,
+        pickup_callback=lambda: events.append("pickup"),
+        dump_callback=lambda: events.append("dump"),
+    )
+
+    assert events == [
+        ("Rotate90", False, False),
+        ("ArmOut", False, True),
+        ("ArmDig", False, True),
+        ("ArmInDig", False, True),
+        "pickup",
+        ("Rotate90", True, False),
+        ("ArmDump", False, False),
+        "dump",
+    ]
+    assert paths == [
+        "/Rotate90",
+        "/ArmOut",
+        "/ArmDig",
+        "/ArmInDig",
+        "/Rotate90",
+        "/ArmDump",
+    ]
+
+
+def test_backfill_demo_pins_carriers_and_uses_explicit_pickup_dump_cycle() -> None:
     source = (REPO_ROOT / "isaac_adapter" / "pipeline_backfill_demo.py").read_text(
         encoding="utf-8"
     )
 
     assert '"stationary-kinematic"' in source
-    assert '"ArmDump",\n                    duration_seconds=dump_seconds,\n                    reverse=True' in source
-    assert '("ArmInDig", lift_seconds)' in source
-    assert '("ArmDig", dig_seconds)' in source
+    assert "list(workfront.target_center_xy)" in source
     assert '("ArmOut", reach_seconds)' in source
+    assert '("ArmDig", dig_seconds)' in source
+    assert '("ArmInDig", lift_seconds)' in source
+    assert '"ArmDump",\n            duration_seconds=dump_seconds,' in source
+    assert "pickup_callback=consume_spoil" in source
+    assert "dump_callback=restore_trench" in source
+    assert '"ArmDump",\n            duration_seconds=dump_seconds,\n            reverse=True' not in source
     assert "animated_joint_prefixes=" not in source
     assert "base_pose_animation_name=" not in source
 
@@ -127,6 +186,9 @@ def test_web_backfill_group_reports_progress_and_commits_stage_results() -> None
     assert '"action": "upsert"' in task
     assert '"action": "remove"' in task
     assert "backfilled_volume_m3" in task
+    assert "list(workfront.target_center_xy)" in task
+    assert '"pipeline-target-forward"' in task
+    assert "_play_backfill_motion_cycle(" in task
     assert "def run_parallel_pipeline_backfill_group(" in runner
     assert "client.report_instruction_progress(" in runner
     assert "client.commit_execution(" in runner

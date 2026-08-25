@@ -115,7 +115,7 @@ def compile_code_work_package(
         f"- {item.name} (zone={item.zone_id or 'unknown'}, active={item.active}): {item.path}"
         for item in inventory.scene_objects[:100]
     )
-    system_prompt = f"""당신은 SiteGit의 Isaac Sim 작업 코드 에이전트입니다.
+    system_prompt = f"""당신은 SiteGit의 현장 작업 코드 에이전트입니다.
 사용자의 자연어를 아래의 안전한 ctx API만 사용하는 Python 프로그램으로 변환하세요.
 작업 종류를 하나로 분류하는 것이 아니라 필요한 ctx 호출을 최대 8개까지 순서대로 조합합니다.
 
@@ -568,9 +568,9 @@ def resolve_code_work_package(
             code="stage_connected",
             ok=inventory.connected,
             message=(
-                "Isaac Stage가 연결되어 있습니다."
+                "현장 작업 시스템이 연결되어 있습니다."
                 if inventory.connected
-                else "Isaac Stage가 연결되지 않아 자원 확인을 기다립니다."
+                else "현장 작업 시스템이 연결되지 않아 자원 확인을 기다립니다."
             ),
         ),
     ]

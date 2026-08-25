@@ -100,9 +100,11 @@ def execute_parallel_pipeline_backfill(
 
     from equipment_physics import track_contact_pose
     from pipeline_backfill_demo import (
-        _apply_cycle_geometry,
         _collect_spoil_groups,
+        _consume_spoil_geometry,
+        _play_backfill_motion_cycle,
         _restore_target_records,
+        _restore_target_geometry,
         _set_collision,
         _set_mesh_points,
     )
@@ -162,10 +164,12 @@ def execute_parallel_pipeline_backfill(
             [float(pose["x"]), float(pose["y"])],
             requested_seconds=0.5,
         )
-        first_spoil = spoil_groups[index][0]
-        bridge.face_equipment_toward(
+        facing = bridge.face_equipment_toward(
             state["equipment_prim_path"],
-            [float(first_spoil["center"][0]), float(first_spoil["center"][1])],
+            list(workfront.target_center_xy),
+        )
+        equipment.SetCustomDataByKey(
+            "sitegitBackfillReferenceHeading", "pipeline-target-forward"
         )
         if prepared_callback is not None:
             prepared_callback(
@@ -174,6 +178,8 @@ def execute_parallel_pipeline_backfill(
                     "equipment_prim_path": state["equipment_prim_path"],
                     "target_prim_path": state["target_prim_paths"][0],
                     "target_prim_paths": state["target_prim_paths"],
+                    "target_xy": list(workfront.target_center_xy),
+                    "facing": facing,
                     "spoil_prim_paths": [
                         item["prim_path"]
                         for item in spoil_groups[index]
@@ -217,34 +223,28 @@ def execute_parallel_pipeline_backfill(
 
     for cycle in range(cycles):
         progress = float(cycle + 1) / float(cycles)
-        bridge.play_skeletal_animations_parallel(
-            equipment_prims, "Rotate90", duration_seconds=swing_seconds
-        )
-        bridge.play_skeletal_animations_parallel(
+
+        def consume_spoil() -> None:
+            _consume_spoil_geometry(spoil_groups, progress)
+            for _ in range(12):
+                world.step(render=render)
+
+        def restore_trench() -> None:
+            _restore_target_geometry(target_groups, progress)
+            for _ in range(18):
+                world.step(render=render)
+
+        _play_backfill_motion_cycle(
+            bridge,
             equipment_prims,
-            "ArmDump",
-            duration_seconds=dump_seconds,
-            reverse=True,
-            pose_overlay_animation_name="Rotate90",
-            pose_overlay_joint_suffixes=("/Rotator",),
+            swing_seconds=swing_seconds,
+            reach_seconds=reach_seconds,
+            dig_seconds=dig_seconds,
+            lift_seconds=lift_seconds,
+            dump_seconds=dump_seconds,
+            pickup_callback=consume_spoil,
+            dump_callback=restore_trench,
         )
-        bridge.play_skeletal_animations_parallel(
-            equipment_prims,
-            "Rotate90",
-            duration_seconds=swing_seconds,
-            reverse=True,
-        )
-        for name, duration in (
-            ("ArmInDig", lift_seconds),
-            ("ArmDig", dig_seconds),
-            ("ArmOut", reach_seconds),
-        ):
-            bridge.play_skeletal_animations_parallel(
-                equipment_prims, name, duration_seconds=duration, reverse=True
-            )
-        _apply_cycle_geometry(target_groups, spoil_groups, progress)
-        for _ in range(18):
-            world.step(render=render)
         for state in runtime:
             if progress_callback is not None:
                 planned = float(

@@ -1,9 +1,41 @@
 """Regression checks for the manager UI-to-Isaac workflow wiring."""
 
+import json
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_current_demo_seed_registers_all_four_field_excavators() -> None:
+    seed = json.loads(
+        (ROOT / "seed" / "pipeline_demo_state.json").read_text(encoding="utf-8")
+    )
+
+    assert seed["project"]["name"] == "건설현장 관로 시공 통합 데모"
+    assert [item["id"] for item in seed["equipment"]] == [
+        "EXC-001",
+        "EXC-002",
+        "EXC-003",
+        "EXC-004",
+    ]
+    assert all(item["primPath"].startswith("/World/Equipment/EXC_00") for item in seed["equipment"])
+    assert all(item["manufacturer"] == "HD Hyundai" for item in seed["equipment"])
+    assert all(item["model"] == "HX210AL" for item in seed["equipment"])
+    assert all(item["operatingWeight"] == 22.15 for item in seed["equipment"])
+
+
+def test_frontend_migrates_legacy_registry_and_project_copy() -> None:
+    app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+
+    assert "function applyCurrentDemoProfile(target)" in app
+    assert "target.equipment=deepClone(CURRENT_DEMO_EQUIPMENT);" in app
+    assert "applyCurrentDemoProfile(state);renderAll(true);" in app
+    assert "현장에 등록된 장비의 제원, 작업 가능 범위와 운영 상태를 통합 관리합니다." in workflow
+    assert "제조사 제원 보기" in workflow
+    assert "Stage Prim</dt>" not in workflow
+    assert "function wfPlanLabel(planId)" in workflow
 
 
 def test_manager_workflow_dispatches_to_the_real_code_agent() -> None:
@@ -238,8 +270,8 @@ def test_history_uses_construction_git_graph_and_current_run_scope() -> None:
 
     assert "wfConstructionGitGraph" in workflow
     assert "GIT-LIKE CONSTRUCTION GRAPH" in workflow
-    assert "Phase 브랜치, 장비별 Evidence Commit" in workflow
-    assert "다른 위치의 독립 작업은 별도 Zone 공사로 분리됩니다" in workflow
+    assert "공정 브랜치, 장비별 Evidence Commit" in workflow
+    assert "다른 위치의 독립 작업은 별도 Zone으로 분리 관리됩니다" in workflow
     assert "공정 단계" in workflow
     assert "data-history-run" in workflow
     assert ".construction-git-root" in styles
@@ -293,3 +325,179 @@ def test_history_commit_opens_the_exact_sensor_evidence_snapshot() -> None:
     assert "Commit 계보" in app
     assert ".history-evidence-entry" in styles
     assert ".commit-provenance" in styles
+
+
+def test_history_uses_the_full_width_graph_without_a_duplicate_summary_panel() -> None:
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+    final_history_renderer = workflow[workflow.index("function wfConstructionHistoryEvents") :]
+
+    assert "${wfHistoryDetail(selected)}" not in final_history_renderer
+    assert "Evidence Commit을 누르면 해당 시점의 카메라·LiDAR·IMU Evidence 상세가 열립니다" in final_history_renderer
+    assert ".construction-history-layout{display:block}" in styles
+
+
+def test_review_heading_copy_is_not_limited_to_pipeline_construction() -> None:
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+
+    assert "선택한 Zone의 장비별 Commit을 공정 단계로 모아 검토·승인하고 다음 공정으로 연결합니다" in workflow
+    assert "이 화면은 선택한 Zone의 작업과 공정만 표시합니다" in workflow
+    assert "Zone A 관로 공사의 장비별 Commit을 공정 단계로 모아 승인하고 다음 단계를 Release합니다" not in workflow
+
+
+def test_history_and_equipment_copy_are_work_type_agnostic() -> None:
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+
+    assert "선택한 Zone의 공정 브랜치, 장비별 Evidence Commit과 관리자 Merge 흐름을 한 그래프로 추적합니다" in workflow
+    assert "Zone별 작업의 Commit과 승인 Merge 흐름을 추적합니다" in workflow
+    assert "기록된 작업 없음" in workflow
+    assert "작업 계획을 하달하면 Git graph 이력이 생성됩니다" in workflow
+    assert "${esc(wfScenarioZoneTitle())} 계획 승인" in workflow
+    assert "${esc(wfScenarioZoneTitle())} 최종 완료" in workflow
+    assert "현재 관로 공사에 투입되는 현장 장비" not in workflow
+    assert "Zone A 관로 공사의 Phase 브랜치" not in workflow
+    assert "기록된 관로 공사 없음" not in workflow
+
+
+def test_frontend_renders_only_the_active_page() -> None:
+    app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+
+    assert "function renderCurrentPage(force=false)" in app
+    assert "(renderers[page]||renderers.dashboard)();" in app
+    render_all = app[app.index("function renderAll(force=false){") : app.index("function renderHeader()")]
+    assert "renderCurrentPage(force);" in render_all
+    assert "renderReadiness();" not in render_all
+    assert "renderWorkPackages();" not in render_all
+    navigate = app[app.index("function navigate(page,force=false){") : app.index("function isaacMapFrames()")]
+    assert "renderCurrentPage(force);" in navigate
+
+
+def test_frontend_reuses_unchanged_pages_and_map_iframes() -> None:
+    app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+
+    assert "const renderedPages = new Set();" in app
+    assert "function currentRenderSignature()" in app
+    assert "if(!force&&renderedPages.has(page))" in app
+    assert "renderedPages.add(page);" in app
+    assert "renderedPages.clear();" in app
+    assert "selectedWpId:state?.selectedWpId||''" in app
+    assert "renderAll(true);" in workflow
+
+
+def test_remote_clients_load_shared_history_before_the_heavy_map() -> None:
+    app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+
+    assert "cache:'no-store'" in app
+    assert "await pullRemoteState({render:false});" in app
+    assert "await Promise.all([loadSitePlans(),loadStageInventory(),loadIsaacInstructions()]);" in app
+    assert app.index("renderAll(true);", app.index("async function bootstrapSharedState")) < app.index(
+        "await Promise.all([loadSitePlans(),loadStageInventory(),loadIsaacInstructions()]);"
+    )
+    initial_boot = app[app.index("/* Initial boot */") :]
+    assert "공동 작업 기록을 불러오는 중입니다." in initial_boot
+    assert "prepareState();\nrenderAll();" not in initial_boot
+
+
+def test_map_viewer_caches_only_revisioned_base_mesh_assets() -> None:
+    viewer = (ROOT / "frontend" / "isaac-map-viewer.js").read_text(encoding="utf-8")
+
+    assert 'fetch(MAP_ROOT + "/publication.json", { cache: "no-store" })' in viewer
+    assert 'revision ? "force-cache" : "default"' in viewer
+    assert '"?revision=" + encodeURIComponent(revision)' in viewer
+    assert 'fetch(MAP_OBJECTS_URL, {' in viewer
+    assert 'fetch(STAGE_INVENTORY_URL, {' in viewer
+    assert viewer.count('cache: "no-store"') >= 3
+
+
+def test_map_viewer_throttles_inventory_without_staling_live_data() -> None:
+    viewer = (ROOT / "frontend" / "isaac-map-viewer.js").read_text(encoding="utf-8")
+
+    assert "var stageInventoryLoading = false;" in viewer
+    assert 'document.visibilityState === "hidden"' in viewer
+    assert "window.setInterval(loadStageInventory, 2500);" in viewer
+    assert 'document.addEventListener("visibilitychange"' in viewer
+
+
+def test_heavy_frontend_images_are_deferred() -> None:
+    app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+
+    assert 'decoding="async" src="${evidenceUrl(imageKey)}"' in app
+    assert 'loading="lazy" decoding="async" src="${image}"' in workflow
+    assert 'loading="lazy" decoding="async" src="/static/assets/review/' in workflow
+
+
+def test_station_ranges_explain_datum_and_metres_consistently() -> None:
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function wfStationPoint(value)" in workflow
+    assert "작업 구간 · 측점(STA)" in workflow
+    assert "기준점 STA 0+000 = 관로 중심선 시작점 · 단위 m · 중심선 누적거리" in workflow
+    assert "wfAnnotateStationRanges(page)" in workflow
+    assert ".station-basis" in styles
+
+
+def test_equipment_registry_filter_changes_the_visible_equipment_list() -> None:
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+
+    assert "equipmentFilterOpen" not in workflow
+    assert "equipmentType:'ALL'" in workflow
+    assert "equipmentStatus:'ALL'" in workflow
+    assert "function wfFilteredEquipment(equipment)" in workflow
+    assert 'data-equipment-filter="type"' in workflow
+    assert 'data-equipment-filter="status"' in workflow
+    assert 'data-workflow-action="equipment-filter-reset"' in workflow
+    assert 'data-workflow-action="equipment-filter"' not in workflow
+    assert 'class="equipment-filter-panel"' in workflow
+    assert "workflowUI.equipmentType=e.target.value" in workflow
+    assert "workflowUI.equipmentStatus=e.target.value" in workflow
+    assert ".equipment-filter-panel" in styles
+    assert ".equipment-filter-empty" in styles
+
+
+def test_settings_show_pipeline_wide_phase_specific_acceptance_criteria() -> None:
+    workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+
+    assert "관로 공사 전체 완료·승인 판정 기준" in workflow
+    assert "const phases=wfScenarioPhases();" in workflow
+    assert "phase.acceptance_criteria||[]" in workflow
+    assert "설계 굴착 저면 대비 ±50mm" in workflow
+    assert "관 중심선 수평 편차 ±100mm" in workflow
+    assert "층별 다짐도 90% 이상" in workflow
+    assert "기준 1건 이상 미충족 시 검토 필요" in workflow
+    assert "터파기 승인 → 관로 설치 승인 → 되메우기 승인 → 관로 공사 완료" in workflow
+    assert ".criteria-phase-grid" in styles
+    assert ".criteria-phase-card.zone-b" in styles
+    assert ".criteria-phase-card.zone-c" in styles
+
+
+def test_frontend_loads_the_responsive_readability_layer_last() -> None:
+    index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    login = (ROOT / "frontend" / "login.html").read_text(encoding="utf-8")
+    readability = (ROOT / "frontend" / "readability.css").read_text(encoding="utf-8")
+
+    assert index.index("dashboard-progress.css") < index.index("readability.css")
+    assert login.index("login.css") < login.index("readability.css")
+    assert "--sg-readable-micro: clamp(11px" in readability
+    assert "--sg-readable-body: clamp(13px" in readability
+    assert "@media (max-width: 1180px)" in readability
+    assert 'span:not([class*="icon"])' in readability
+    assert "overflow-wrap: anywhere" in readability
+
+
+def test_rejected_commit_detail_exposes_supplemental_evidence_ui_preview() -> None:
+    app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+
+    assert "commit.review_status==='rejected'" in app
+    assert 'data-rejected-evidence-panel' in app
+    assert 'id="supplementalEvidenceFiles" type="file" multiple' in app
+    assert '추가 Evidence 제출 · 재검토 요청' in app
+    assert '파일 저장과 재검증 API는 아직 연결되지 않았습니다.' in app
+    assert '서버에는 저장되지 않습니다.' in app
+    assert '.supplemental-evidence-panel' in styles
+    assert '.supplemental-evidence-form' in styles

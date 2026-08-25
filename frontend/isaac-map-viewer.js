@@ -53,6 +53,7 @@
   var timelineBaselineObjectsRaw = [];
   var planningPlan = null;
   var designPlan = null;
+  var stageInventoryLoading = false;
 
   function loadCameraState() {
     try {
@@ -538,8 +539,49 @@
     return sides.left.concat(sides.right.slice().reverse());
   }
 
+  function updateSoilRelocationPlanningOverlay(view) {
+    var relocation = planningPlan && planningPlan.relocation || {};
+    var fronts = Array.isArray(planningPlan && planningPlan.workfronts)
+      ? planningPlan.workfronts
+      : [];
+    var box = fronts.length ? fronts[0].bounds || {} : {};
+    var boundsPoints = [
+      {x:Number(box.min_x), y:Number(box.min_y), z:.25},
+      {x:Number(box.max_x), y:Number(box.min_y), z:.25},
+      {x:Number(box.max_x), y:Number(box.max_y), z:.25},
+      {x:Number(box.min_x), y:Number(box.max_y), z:.25}
+    ].map(function (point) { return projectToScreen(siteToMesh(point), view); });
+    var source = projectToScreen(siteToMesh(relocation.source_position || {}), view);
+    var destination = projectToScreen(siteToMesh(relocation.destination_position || {}), view);
+    var equipment = projectToScreen(siteToMesh(relocation.equipment_position || {}), view);
+    if (boundsPoints.some(function (point) { return !point; }) || !source || !destination || !equipment) {
+      planningOverlay.hidden = true;
+      planningOverlay.innerHTML = "";
+      return;
+    }
+    planningOverlay.hidden = false;
+    planningOverlay.setAttribute("viewBox", "0 0 " + canvas.clientWidth + " " + canvas.clientHeight);
+    var polygon = boundsPoints.map(function (point) {
+      return point[0].toFixed(1) + "," + point[1].toFixed(1);
+    }).join(" ");
+    var curveX = (source[0] + destination[0]) * .5;
+    var curveY = Math.min(source[1], destination[1]) - 34;
+    planningOverlay.innerHTML =
+      '<defs><marker id="soil-relocation-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#8b5cf6"></path></marker></defs>' +
+      '<polygon points="' + polygon + '" fill="rgba(139,92,246,.18)" stroke="#8b5cf6" stroke-width="2.5" stroke-dasharray="10 7"></polygon>' +
+      '<path d="M ' + source[0].toFixed(1) + ' ' + source[1].toFixed(1) + ' Q ' + curveX.toFixed(1) + ' ' + curveY.toFixed(1) + ' ' + destination[0].toFixed(1) + ' ' + destination[1].toFixed(1) + '" fill="none" stroke="#8b5cf6" stroke-width="4" marker-end="url(#soil-relocation-arrow)"></path>' +
+      '<g class="plan-front"><circle cx="' + source[0].toFixed(1) + '" cy="' + source[1].toFixed(1) + '" r="11" fill="#a16207"></circle><text x="' + (source[0] + 15).toFixed(1) + '" y="' + (source[1] + 4).toFixed(1) + '">원토 흙더미</text></g>' +
+      '<g class="plan-front"><circle cx="' + destination[0].toFixed(1) + '" cy="' + destination[1].toFixed(1) + '" r="11" fill="#7c3aed"></circle><text x="' + (destination[0] + 15).toFixed(1) + '" y="' + (destination[1] + 4).toFixed(1) + '">이동 적치 위치</text></g>' +
+      '<g class="plan-front"><circle cx="' + equipment[0].toFixed(1) + '" cy="' + equipment[1].toFixed(1) + '" r="11" fill="#0ea5e9"></circle><text x="' + (equipment[0] + 15).toFixed(1) + '" y="' + (equipment[1] + 4).toFixed(1) + '">' + escapeOverlayText(relocation.equipment_id || "EXC-004") + ' · 주행 없음</text></g>' +
+      '<g class="plan-zone-title" transform="translate(18 18)"><rect width="286" height="29" rx="7"></rect><text x="12" y="19">후보 작업 구역 · 승인 시 ZONE B</text></g>';
+  }
+
   function updatePlanningOverlay(view) {
     if (!planningOverlay) return;
+    if (planningPlan && planningPlan.scenario_type === "soil_relocation") {
+      updateSoilRelocationPlanningOverlay(view);
+      return;
+    }
     var centerline = Array.isArray(planningPlan && planningPlan.centerline)
       ? planningPlan.centerline
       : [];
@@ -599,7 +641,7 @@
     var centerline = Array.isArray(designPlan && designPlan.centerline)
       ? designPlan.centerline
       : [];
-    var visible = activeLayer === "drawing" && centerline.length >= 2;
+    var visible = activeLayer === "drawing" && designPlan && designPlan.scenario_type !== "soil_relocation" && centerline.length >= 2;
     designOverlay.hidden = !visible;
     if (!visible) {
       designOverlay.innerHTML = "";
@@ -628,7 +670,43 @@
     }).join("");
     var labelX = Math.max(12, Math.min(canvas.clientWidth - 220, pipe[Math.floor(pipe.length * .55)][0] + 15));
     var labelY = Math.max(12, Math.min(canvas.clientHeight - 58, pipe[Math.floor(pipe.length * .55)][1] - 50));
-    designOverlay.innerHTML = '<polygon class="design-corridor" points="' + corridorPoints + '"></polygon><polyline class="pipe-shadow" points="' + pipePoints + '"></polyline><polyline class="pipe-body" points="' + pipePoints + '"></polyline><polyline class="pipe-core" points="' + pipePoints + '"></polyline>' + depthLinks + '<g class="design-label" transform="translate(' + labelX.toFixed(1) + ' ' + labelY.toFixed(1) + ')"><rect width="205" height="45" rx="8"></rect><text x="12" y="18">' + escapeOverlayText(designPlan.plan_id) + ' · REV.' + escapeOverlayText(designPlan.revision) + '</text><text class="sub" x="12" y="34">지하 관로 Ø' + Number(designPlan.pipe_diameter_m).toFixed(1) + 'm · 깊이 ' + depth.toFixed(1) + 'm</text></g>';
+    var soilCandidate = diggableTargetsRaw.find(function (item) {
+      return String(item.path || "").indexOf("SoilRelocationCandidate") >= 0 &&
+        item.active !== false &&
+        diggableObjects.some(function (rendered) {
+          return rendered.prim_path === item.path;
+        });
+    });
+    var soilCandidateMarkup = "";
+    if (soilCandidate && soilCandidate.world_position && soilCandidate.bounds_size) {
+      var soilPosition = soilCandidate.world_position;
+      var soilSize = soilCandidate.bounds_size;
+      var soilPoints = [];
+      for (var soilIndex = 0; soilIndex < 24; soilIndex += 1) {
+        var soilAngle = Math.PI * 2 * soilIndex / 24;
+        var soilProjected = projectToScreen(siteToMesh({
+          x: Number(soilPosition.x) + Math.cos(soilAngle) * Number(soilSize.x) * .55,
+          y: Number(soilPosition.y) + Math.sin(soilAngle) * Number(soilSize.y) * .55,
+          z: Number(soilPosition.z) + Number(soilSize.z) * .5 + .2
+        }), view);
+        if (soilProjected) soilPoints.push(soilProjected);
+      }
+      var soilCenter = projectToScreen(siteToMesh({
+        x: Number(soilPosition.x),
+        y: Number(soilPosition.y),
+        z: Number(soilPosition.z) + Number(soilSize.z) * .5 + .3
+      }), view);
+      if (soilPoints.length === 24 && soilCenter) {
+        var soilPolygon = soilPoints.map(function (point) {
+          return point[0].toFixed(1) + "," + point[1].toFixed(1);
+        }).join(" ");
+        var soilLabelX = Math.max(10, Math.min(canvas.clientWidth - 154, soilCenter[0] + 14));
+        var soilLabelY = Math.max(10, Math.min(canvas.clientHeight - 39, soilCenter[1] - 18));
+        soilCandidateMarkup = '<polygon class="soil-candidate-area" points="' + soilPolygon + '"></polygon>' +
+          '<g class="soil-candidate-label" transform="translate(' + soilLabelX.toFixed(1) + ' ' + soilLabelY.toFixed(1) + ')"><rect width="144" height="35" rx="7"></rect><text x="10" y="15">이동 가능 토사</text><text class="sub" x="10" y="28">작업 미지정 · 위치 확인 대상</text></g>';
+      }
+    }
+    designOverlay.innerHTML = '<polygon class="design-corridor" points="' + corridorPoints + '"></polygon><polyline class="pipe-shadow" points="' + pipePoints + '"></polyline><polyline class="pipe-body" points="' + pipePoints + '"></polyline><polyline class="pipe-core" points="' + pipePoints + '"></polyline>' + depthLinks + '<g class="design-label" transform="translate(' + labelX.toFixed(1) + ' ' + labelY.toFixed(1) + ')"><rect width="205" height="45" rx="8"></rect><text x="12" y="18">' + escapeOverlayText(designPlan.plan_id) + ' · REV.' + escapeOverlayText(designPlan.revision) + '</text><text class="sub" x="12" y="34">지하 관로 Ø' + Number(designPlan.pipe_diameter_m).toFixed(1) + 'm · 깊이 ' + depth.toFixed(1) + 'm</text></g>' + soilCandidateMarkup;
   }
 
   function updateZoneLabels(view) {
@@ -742,8 +820,8 @@
 
   function describeState() {
     var objectPart = stageConnected
-      ? " · Isaac Stage 연결됨"
-      : " · Isaac Stage 연결 대기";
+      ? " · 현장 데이터 연결됨"
+      : " · 현장 데이터 연결 대기";
     objectPart += " · 승인 반영 " + mapObjectsRaw.length + "건";
     if (timelineEnabled) {
       objectPart += timelineApprovedAt
@@ -757,22 +835,25 @@
     if (mapConflictsRaw.length) objectPart += " · Conflict " + mapConflictsRaw.length + "건";
     if (meshStatus === "ready") {
       setState(
-        "Isaac Site Work Map",
+      "현장 작업 맵",
         triangleCount.toLocaleString("ko-KR") + " triangles · " + groups.length + " materials" + objectPart,
         false
       );
     } else if (meshStatus === "missing") {
       setState(
         "지형 Mesh가 게시되지 않았습니다",
-        "isaac_adapter/map_publisher.py를 실행하세요." + objectPart,
+      "현장 맵 데이터 연결을 확인하세요." + objectPart,
         true
       );
     }
   }
 
-  async function loadGroup(group, index, total) {
-    setState("Isaac Map 불러오는 중", "Mesh " + (index + 1) + " / " + total, false);
-    var response = await fetch(MAP_ROOT + "/" + group.geometry, { cache: "no-cache" });
+  async function loadGroup(group, index, total, revision, cacheMode) {
+    setState("현장 맵 불러오는 중", "Mesh " + (index + 1) + " / " + total, false);
+    // Publication time is part of the URL, so revisiting the same revision can
+    // use disk cache without hiding a newly published terrain bundle.
+    var suffix = revision ? "?revision=" + encodeURIComponent(revision) : "";
+    var response = await fetch(MAP_ROOT + "/" + group.geometry + suffix, { cache: cacheMode });
     if (!response.ok) throw new Error(group.geometry + " HTTP " + response.status);
     var values = new Float32Array(await response.arrayBuffer());
     if (values.length % 5 !== 0) throw new Error(group.geometry + " 형식이 올바르지 않습니다.");
@@ -782,13 +863,25 @@
     return {
       buffer: buffer,
       count: values.length / 5,
-      texture: makeTexture(group.texture ? MAP_ROOT + "/" + group.texture : null)
+      texture: makeTexture(group.texture ? MAP_ROOT + "/" + group.texture + suffix : null)
     };
   }
 
   async function loadMesh() {
     try {
-      var response = await fetch(MAP_ROOT + "/manifest.json", { cache: "no-cache" });
+      var revision = "";
+      try {
+        var publicationResponse = await fetch(MAP_ROOT + "/publication.json", { cache: "no-store" });
+        if (publicationResponse.ok) {
+          var publication = await publicationResponse.json();
+          revision = String(publication.published_at || "");
+        }
+      } catch (publicationError) {
+        console.warn("Map publication metadata load failed:", publicationError);
+      }
+      var cacheMode = revision ? "force-cache" : "default";
+      var suffix = revision ? "?revision=" + encodeURIComponent(revision) : "";
+      var response = await fetch(MAP_ROOT + "/manifest.json" + suffix, { cache: cacheMode });
       if (!response.ok) throw new Error("manifest HTTP " + response.status);
       var manifest = await response.json();
       if (manifest.format !== "sitegit-web-mesh-v1") {
@@ -797,7 +890,7 @@
       bounds = manifest.bounds;
       triangleCount = Number(manifest.triangle_count || 0);
       for (var index = 0; index < manifest.groups.length; index += 1) {
-        groups.push(await loadGroup(manifest.groups[index], index, manifest.groups.length));
+        groups.push(await loadGroup(manifest.groups[index], index, manifest.groups.length, revision, cacheMode));
       }
       meshStatus = "ready";
       // bounds가 이제야 생겼으므로 먼저 도착한 오브젝트를 다시 변환합니다.
@@ -1100,6 +1193,8 @@
   }
 
   async function loadStageInventory() {
+    if (stageInventoryLoading || document.visibilityState === "hidden") return;
+    stageInventoryLoading = true;
     try {
       var response = await fetch(STAGE_INVENTORY_URL, {
         cache: "no-store",
@@ -1119,6 +1214,8 @@
       describeState();
     } catch (error) {
       console.warn("Stage inventory load failed:", error);
+    } finally {
+      stageInventoryLoading = false;
     }
   }
 
@@ -1228,5 +1325,10 @@
   loadMesh();
   loadMapObjects();
   loadStageInventory();
-  window.setInterval(loadStageInventory, 1000);
+  // Connectivity is informational in this viewer. A slower, visibility-aware
+  // poll avoids dozens of redundant requests when several people open maps.
+  window.setInterval(loadStageInventory, 2500);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") loadStageInventory();
+  });
 }());

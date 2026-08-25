@@ -31,6 +31,10 @@ def test_portable_setup_installs_requirements_without_starting_services() -> Non
     assert '$env:TMP = $Context.PortableTemp' in common
     assert '$env:SITEGIT_EQUIPMENT_ASSET = $Context.EquipmentAsset' in common
     assert '$env:SITEGIT_SENSOR_REFERENCE_USD = $Context.SensorReference' in common
+    assert 'INITIAL_MANAGER_USERNAME' in common
+    assert 'INITIAL_MANAGER_PASSWORD' in common
+    assert '$env:SITEGIT_USERNAME = $managerUsername' in common
+    assert '$env:SITEGIT_PASSWORD = $managerPassword' in common
     assert '$env:OLLAMA_MODELS = $Context.OllamaModels' in common
     assert 'http://127.0.0.1:11435' in common
 
@@ -88,6 +92,21 @@ def test_judge_demo_launcher_resets_only_mutable_run_state() -> None:
     assert 'backups\\demo-runs\\' in reset
     assert '"isaac/assets"' in reset
     assert '"isaac/site-work-map"' in reset
+    assert '$judgeDemoUrl = "{0}/login?judge_demo=1" -f $localUrl' in launcher
+    assert 'Start-Process $judgeDemoUrl' in launcher
+
+
+def test_judge_demo_login_forces_onboarding_once() -> None:
+    login = (ROOT / "frontend" / "login.js").read_text(encoding="utf-8")
+    app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+
+    session_key = "sitegit-judge-demo-onboarding-v1"
+    assert session_key in login
+    assert "query.get('judge_demo')==='1'" in login
+    assert "sessionStorage.setItem(JUDGE_DEMO_ONBOARD_SESSION_KEY,'1')" in login
+    assert session_key in app
+    assert "safeRemoveSessionItem(JUDGE_DEMO_ONBOARD_SESSION_KEY)" in app
+    assert "if(judgeDemoOnboarding||!safeGetItem(ONBOARD_KEY)) openOnboarding();" in app
 
 
 def test_manual_demo_reset_has_a_separate_launcher() -> None:

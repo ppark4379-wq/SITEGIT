@@ -118,6 +118,11 @@ class SensorRigConfig:
     camera_focal_length_mm: float = 12.0
     camera_warmup_frames: int = 60
     camera_level_horizon: bool = True
+    # The LiDAR remains part of the declared equipment capability and web
+    # Evidence contract, but runtime PhysX raycasts are disabled by default.
+    # The photogrammetry Stage is expensive to query and the scan point overlay
+    # is not needed for the construction animation demo.
+    lidar_runtime_enabled: bool = False
     lidar_horizontal_fov_degrees: float = 130.0
     lidar_vertical_min_degrees: float = -70.0
     lidar_vertical_max_degrees: float = 10.0
@@ -182,6 +187,9 @@ class SensorRigConfig:
             camera_warmup_frames=int(os.getenv("SITEGIT_CAMERA_WARMUP_FRAMES", "60")),
             camera_level_horizon=_bool_setting(
                 os.getenv("SITEGIT_CAMERA_LEVEL_HORIZON", "true")
+            ),
+            lidar_runtime_enabled=_bool_setting(
+                os.getenv("SITEGIT_RUNTIME_LIDAR_ENABLED", "false")
             ),
             lidar_horizontal_fov_degrees=float(
                 os.getenv("SITEGIT_LIDAR_HORIZONTAL_FOV_DEG", "130")
@@ -286,12 +294,16 @@ class EquipmentSensorRig:
         self._imu: Any = None
         self._camera_transform_op: Any = None
         self._scan_sequence = 0
-        self._directions = generate_lidar_directions(
-            self.config.lidar_horizontal_fov_degrees,
-            self.config.lidar_vertical_min_degrees,
-            self.config.lidar_vertical_max_degrees,
-            self.config.lidar_horizontal_rays,
-            self.config.lidar_vertical_rays,
+        self._directions = (
+            generate_lidar_directions(
+                self.config.lidar_horizontal_fov_degrees,
+                self.config.lidar_vertical_min_degrees,
+                self.config.lidar_vertical_max_degrees,
+                self.config.lidar_horizontal_rays,
+                self.config.lidar_vertical_rays,
+            )
+            if self.config.lidar_runtime_enabled
+            else ()
         )
 
     def initialize(self, *, include_imu: bool = True) -> dict[str, Any]:
@@ -359,12 +371,26 @@ class EquipmentSensorRig:
         mount_xform.ClearXformOpOrder()
         mount_xform.AddTransformOp(UsdGeom.XformOp.PrecisionDouble).Set(mount_local)
         mount.GetPrim().SetCustomDataByKey("sitegitAttachedTo", self.equipment_prim_path)
-
-        lidar = UsdGeom.Xform.Define(self.stage, Sdf.Path(self.lidar_path))
-        lidar.GetPrim().SetCustomDataByKey("sitegitSensorType", "physx-raycast-lidar")
-        lidar.GetPrim().SetCustomDataByKey(
-            "sitegitReferencePrim", placement.get("reference_prim_path", "")
+        mount.GetPrim().SetCustomDataByKey("sitegitLidarConfigured", True)
+        mount.GetPrim().SetCustomDataByKey(
+            "sitegitLidarRuntimeEnabled", self.config.lidar_runtime_enabled
         )
+
+        if self.config.lidar_runtime_enabled:
+            lidar = UsdGeom.Xform.Define(self.stage, Sdf.Path(self.lidar_path))
+            lidar.GetPrim().SetCustomDataByKey(
+                "sitegitSensorType", "physx-raycast-lidar"
+            )
+            lidar.GetPrim().SetCustomDataByKey("sitegitRuntimeEnabled", True)
+            lidar.GetPrim().SetCustomDataByKey(
+                "sitegitReferencePrim", placement.get("reference_prim_path", "")
+            )
+        else:
+            # Keep LiDAR as a declared project capability only.  Remove any
+            # sensor Prim authored by an earlier scan-enabled session.
+            old_lidar = self.stage.GetPrimAtPath(self.lidar_path)
+            if old_lidar.IsValid():
+                self.stage.RemovePrim(Sdf.Path(self.lidar_path))
 
         camera = UsdGeom.Camera.Define(self.stage, Sdf.Path(self.camera_path))
         camera.CreateFocalLengthAttr().Set(self.config.camera_focal_length_mm)
@@ -448,13 +474,21 @@ class EquipmentSensorRig:
             else:
                 self._imu.initialize()
         self._pump_updates(self.config.camera_warmup_frames)
+        # Camera.initialize() subscribes to every rendered frame.  Evidence is
+        # only required immediately before/after work, so keeping several RGB
+        # annotators live throughout a long animation wastes GPU memory and can
+        # make a later render-product hand-off unsafe.  capture_camera() resumes
+        # this subscription on demand.
+        self._camera.pause()
         # A saved working Stage may contain the previous run's green points.
         # Start every runner session with an explicitly empty visualization.
-        self._draw_points([])
+        self.clear_lidar_visualization()
         return {
             "equipment_prim_path": self.equipment_prim_path,
             "mount_prim_path": self.mount_path,
-            "lidar_prim_path": self.lidar_path,
+            "lidar_prim_path": (
+                self.lidar_path if self.config.lidar_runtime_enabled else None
+            ),
             "camera_prim_path": self.camera_path,
             "imu_prim_path": self.imu_path,
             "lidar_points_prim_path": self.lidar_points_path,
@@ -495,6 +529,7 @@ class EquipmentSensorRig:
                 3,
             ),
             "lidar_ray_count": len(self._directions),
+            "lidar_runtime_enabled": self.config.lidar_runtime_enabled,
             "lidar_horizontal_fov_degrees": self.config.lidar_horizontal_fov_degrees,
             "lidar_vertical_fov_degrees": [
                 self.config.lidar_vertical_min_degrees,
@@ -507,9 +542,63 @@ class EquipmentSensorRig:
             "imu_frequency_hz": self.config.imu_frequency_hz,
         }
 
+    def shutdown(self) -> list[str]:
+        """Release runtime camera/IMU resources while keeping authored Prims.
+
+        Isaac Camera instances own an RTX render product and Hydra delegate.
+        Keeping one instance alive for every registered machine can exhaust or
+        destabilize the renderer even when those machines are idle.  The
+        runner therefore retires inactive rigs and recreates them on demand.
+        The USD camera, mount and IMU Prims intentionally remain authored so
+        Stage inventory and saved snapshots keep their sensor declarations.
+        """
+
+        warnings: list[str] = []
+        if self._camera is not None:
+            try:
+                self._camera.pause()
+            except Exception as error:
+                warnings.append(f"camera pause failed: {error}")
+            # Drain any NEW_FRAME event that was already queued while every
+            # annotator and render product is still valid.  Pumping *after*
+            # Camera.destroy() can run a stale Replicator callback and crash in
+            # annotator_utils._get_data_from_ptr (native NumPy memcpy).
+            try:
+                self._pump_updates(2)
+            except Exception as error:
+                warnings.append(f"camera callback drain failed: {error}")
+            try:
+                self._camera.destroy()
+            except Exception as error:
+                warnings.append(f"camera destroy failed: {error}")
+            self._camera = None
+
+        if self._imu is not None:
+            try:
+                self._imu.pause()
+            except Exception as error:
+                warnings.append(f"IMU pause failed: {error}")
+            if self.physics_world is not None:
+                try:
+                    imu_name = str(self._imu.name)
+                    if self.physics_world.scene.object_exists(imu_name):
+                        self.physics_world.scene.remove_object(
+                            imu_name,
+                            registry_only=True,
+                        )
+                except Exception as error:
+                    warnings.append(f"IMU registry cleanup failed: {error}")
+            self._imu = None
+
+        self._camera_transform_op = None
+        return warnings
+
     def clear_lidar_visualization(self) -> None:
         """Remove the previous scan before taking a clean RGB evidence frame."""
 
+        if not self.config.lidar_runtime_enabled:
+            self._remove_lidar_visualization()
+            return
         self._draw_points([])
 
     def _resolve_mount_position(
@@ -645,6 +734,13 @@ class EquipmentSensorRig:
         except Exception as error:
             return {"available": False, "reason": f"equipment camera capture failed: {error}"}
         finally:
+            # Do not collect 960x540 RGB frames throughout the work animation.
+            # The next evidence capture will resume and warm up the camera.
+            if self._camera is not None:
+                try:
+                    self._camera.pause()
+                except Exception:
+                    pass
             if point_imageable is not None:
                 from pxr import UsdGeom
 
@@ -656,6 +752,8 @@ class EquipmentSensorRig:
     def capture_lidar(self, exporter: Any, storage_key: str) -> dict[str, Any]:
         """Cast one full 3D scan from the current moving mount pose."""
 
+        if not self.config.lidar_runtime_enabled:
+            return self._declared_lidar_evidence()
         try:
             import omni.physx
             from pxr import Gf, Usd, UsdGeom
@@ -721,6 +819,54 @@ class EquipmentSensorRig:
         except Exception as error:
             return {"available": False, "reason": f"equipment LiDAR scan failed: {error}"}
 
+    def _declared_lidar_evidence(self) -> dict[str, Any]:
+        """Describe the mounted LiDAR without running raycasts in the Stage."""
+
+        try:
+            from pxr import Usd, UsdGeom
+
+            lidar = self.stage.GetPrimAtPath(self.mount_path)
+            origin_m = None
+            if lidar.IsValid():
+                world = UsdGeom.Xformable(lidar).ComputeLocalToWorldTransform(
+                    Usd.TimeCode.Default()
+                )
+                origin = world.ExtractTranslation()
+                origin_m = [float(origin[index]) for index in range(3)]
+            return {
+                "available": True,
+                "configured": True,
+                "capture_mode": "declared-only",
+                "runtime_enabled": False,
+                "source": "equipment-lidar-capability",
+                "sensor_prim_path": None,
+                "configured_on_equipment": self.equipment_prim_path,
+                "mount_prim_path": self.mount_path,
+                "point_count": None,
+                "ray_count": 0,
+                "hit_ratio": None,
+                "origin_m": origin_m,
+                "horizontal_fov_degrees": self.config.lidar_horizontal_fov_degrees,
+                "vertical_fov_degrees": [
+                    self.config.lidar_vertical_min_degrees,
+                    self.config.lidar_vertical_max_degrees,
+                ],
+                "range_m": [self.config.lidar_min_range_m, self.config.lidar_max_range_m],
+                "note": "Runtime scan omitted for the presentation performance profile.",
+            }
+        except Exception as error:
+            return {
+                "available": True,
+                "configured": True,
+                "capture_mode": "declared-only",
+                "runtime_enabled": False,
+                "source": "equipment-lidar-capability",
+                "point_count": None,
+                "ray_count": 0,
+                "hit_ratio": None,
+                "note": f"Runtime scan omitted; pose metadata unavailable: {error}",
+            }
+
     def capture_imu(self, exporter: Any, storage_key: str) -> dict[str, Any]:
         """Capture one real PhysX IMU sample for before/after evidence."""
 
@@ -759,6 +905,8 @@ class EquipmentSensorRig:
             }
 
     def _draw_points(self, points: list[tuple[float, float, float]]) -> None:
+        if not self.config.lidar_runtime_enabled:
+            return
         from pxr import Gf, Sdf, UsdGeom
 
         UsdGeom.Scope.Define(self.stage, Sdf.Path("/World/SiteGitSensors"))
@@ -789,6 +937,15 @@ class EquipmentSensorRig:
         point_prim.GetPrim().SetCustomDataByKey("sitegitScanSequence", self._scan_sequence)
         imageable.MakeVisible()
         self._pump_updates(2)
+
+    def _remove_lidar_visualization(self) -> None:
+        """Remove a point Prim left by an older scan-enabled session."""
+
+        from pxr import Sdf
+
+        point_prim = self.stage.GetPrimAtPath(self.lidar_points_path)
+        if point_prim.IsValid():
+            self.stage.RemovePrim(Sdf.Path(self.lidar_points_path))
 
     def _level_camera_horizon(self) -> None:
         """Keep the mounted camera's horizon level while following equipment yaw."""

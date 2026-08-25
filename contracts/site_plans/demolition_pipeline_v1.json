@@ -131,7 +131,7 @@
       "target_amount": 79.2,
       "target_unit": "m",
       "estimated_hours": 7.9,
-      "equipment": ["PIPE-CREW-01", "LIFT-001"],
+      "equipment": ["EXC-001", "EXC-002", "EXC-003"],
       "depends_on": ["excavation"],
       "acceptance_criteria": [
         "관 중심선 수평 편차 ±100mm",
@@ -149,7 +149,7 @@
       "target_amount": 1737.4,
       "target_unit": "m3",
       "estimated_hours": 9.7,
-      "equipment": ["EXC-001", "DOZER-001", "ROLLER-001"],
+      "equipment": ["EXC-001", "EXC-002", "EXC-003"],
       "depends_on": ["pipe_installation"],
       "acceptance_criteria": [
         "층별 다짐도 90% 이상",

@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 import sys
 import traceback
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 
@@ -215,9 +215,19 @@ def _apply_cycle_geometry(
 ) -> None:
     """Consume spoil and restore trench sections at a shared progress ratio."""
 
-    from pipeline_backfill import blend_backfill_points, shrink_spoil_points
+    _restore_target_geometry(target_groups, progress)
+    _consume_spoil_geometry(spoil_groups, progress)
 
-    for targets, spoils in zip(target_groups, spoil_groups):
+
+def _restore_target_geometry(
+    target_groups: list[list[dict[str, Any]]],
+    progress: float,
+) -> None:
+    """Raise the trench fill to the requested synchronized progress."""
+
+    from pipeline_backfill import blend_backfill_points
+
+    for targets in target_groups:
         for record in targets:
             _set_mesh_points(
                 record["prim"],
@@ -227,11 +237,88 @@ def _apply_cycle_geometry(
                     progress,
                 ),
             )
+
+
+def _consume_spoil_geometry(
+    spoil_groups: list[list[dict[str, Any]]],
+    progress: float,
+) -> None:
+    """Collapse the side spoil banks after the buckets visually pick up soil."""
+
+    from pipeline_backfill import shrink_spoil_points
+
+    for spoils in spoil_groups:
         for record in spoils:
             _set_mesh_points(
                 record["prim"],
                 shrink_spoil_points(record["original_points"], progress),
             )
+
+
+def _play_backfill_motion_cycle(
+    bridge: Any,
+    equipment_prims: list[Any],
+    *,
+    swing_seconds: float,
+    reach_seconds: float,
+    dig_seconds: float,
+    lift_seconds: float,
+    dump_seconds: float,
+    pickup_callback: Callable[[], None] | None = None,
+    dump_callback: Callable[[], None] | None = None,
+) -> list[str]:
+    """Play one explicit spoil-pickup and trench-dump state cycle.
+
+    The carriers are aligned toward the trench before this function is called.
+    ``Rotate90`` therefore always means "look at the excavation spoil bank" and
+    its reverse always means "look at the pipeline trench". The arm clips run
+    forward while the rotator pose is held at the spoil side, avoiding the
+    ambiguous full-skeleton reverse playback used by the earlier demo.
+    """
+
+    animation_paths: list[str] = []
+    animation_paths.extend(
+        bridge.play_skeletal_animations_parallel(
+            equipment_prims,
+            "Rotate90",
+            duration_seconds=swing_seconds,
+        )
+    )
+    for animation_name, duration in (
+        ("ArmOut", reach_seconds),
+        ("ArmDig", dig_seconds),
+        ("ArmInDig", lift_seconds),
+    ):
+        animation_paths.extend(
+            bridge.play_skeletal_animations_parallel(
+                equipment_prims,
+                animation_name,
+                duration_seconds=duration,
+                pose_overlay_animation_name="Rotate90",
+                pose_overlay_joint_suffixes=("/Rotator",),
+            )
+        )
+    if pickup_callback is not None:
+        pickup_callback()
+
+    animation_paths.extend(
+        bridge.play_skeletal_animations_parallel(
+            equipment_prims,
+            "Rotate90",
+            duration_seconds=swing_seconds,
+            reverse=True,
+        )
+    )
+    animation_paths.extend(
+        bridge.play_skeletal_animations_parallel(
+            equipment_prims,
+            "ArmDump",
+            duration_seconds=dump_seconds,
+        )
+    )
+    if dump_callback is not None:
+        dump_callback()
+    return animation_paths
 
 
 def main() -> None:
@@ -420,6 +507,12 @@ def main() -> None:
                 [float(pose["x"]), float(pose["y"])],
                 requested_seconds=0.5,
             )
+            # Forward is always the assigned pipeline section. The excavation
+            # phase placed every spoil bank at the matching Rotate90 side.
+            bridge.face_equipment_toward(
+                workfront.equipment_prim_path,
+                list(workfront.target_center_xy),
+            )
             equipment_prims.append(stage.GetPrimAtPath(workfront.equipment_prim_path))
 
         # Backfill is a stationary upper-structure operation. Pin the physical
@@ -479,93 +572,31 @@ def main() -> None:
                 "EXC-001 + EXC-002 + EXC-003",
                 flush=True,
             )
-            # Exact inverse of the proven excavation cycle:
-            #
-            #   excavation
-            #     ArmOut -> ArmDig -> ArmInDig -> Rotate90 -> ArmDump
-            #     -> reverse Rotate90
-            #
-            #   backfill
-            #     Rotate90 -> reverse ArmDump -> reverse Rotate90
-            #     -> reverse ArmInDig -> reverse ArmDig -> reverse ArmOut
-            #
-            # Do not freeze or rebuild selected joint branches here.  Playing
-            # the same complete imported clips in reverse keeps the source
-            # rig intact and avoids the separated/flipped excavator seen with
-            # the earlier custom backfill pose composition.
-            animation_paths.extend(
-                bridge.play_skeletal_animations_parallel(
-                    equipment_prims,
-                    "Rotate90",
-                    duration_seconds=swing_seconds,
-                )
-            )
-            animation_paths.extend(
-                bridge.play_skeletal_animations_parallel(
-                    equipment_prims,
-                    "ArmDump",
-                    duration_seconds=dump_seconds,
-                    reverse=True,
-                    pose_overlay_animation_name="Rotate90",
-                    pose_overlay_joint_suffixes=("/Rotator",),
-                )
-            )
+            def consume_spoil() -> None:
+                _consume_spoil_geometry(spoil_groups, progress)
+                for _ in range(12):
+                    world.step(render=not args.headless)
 
-            # Reverse ArmDump closes/lifts the bucket at the spoil bank.  Only
-            # after that visual pickup do the corresponding spoil meshes shrink.
-            from pipeline_backfill import shrink_spoil_points
-
-            for group in spoil_groups:
-                for record in group:
-                    _set_mesh_points(
-                        record["prim"],
-                        shrink_spoil_points(record["original_points"], progress),
-                    )
-            for _ in range(12):
-                world.step(render=not args.headless)
+            def restore_trench() -> None:
+                # All three buckets release together. The final cycle restores
+                # the exact approved surface vertices, not an approximate mound.
+                _restore_target_geometry(target_groups, progress)
+                for _ in range(18):
+                    world.step(render=not args.headless)
 
             animation_paths.extend(
-                bridge.play_skeletal_animations_parallel(
+                _play_backfill_motion_cycle(
+                    bridge,
                     equipment_prims,
-                    "Rotate90",
-                    duration_seconds=swing_seconds,
-                    reverse=True,
+                    swing_seconds=swing_seconds,
+                    reach_seconds=reach_seconds,
+                    dig_seconds=dig_seconds,
+                    lift_seconds=lift_seconds,
+                    dump_seconds=dump_seconds,
+                    pickup_callback=consume_spoil,
+                    dump_callback=restore_trench,
                 )
             )
-
-            # These are the first three excavation clips in the exact reverse
-            # order and direction.  Their final state visually lowers/releases
-            # the carried soil into the trench.
-            for name, duration in (
-                ("ArmInDig", lift_seconds),
-                ("ArmDig", dig_seconds),
-                ("ArmOut", reach_seconds),
-            ):
-                animation_paths.extend(
-                    bridge.play_skeletal_animations_parallel(
-                        equipment_prims,
-                        name,
-                        duration_seconds=duration,
-                        reverse=True,
-                    )
-                )
-
-            # All three dumps land together. The final cycle reproduces the
-            # exact approved surface vertices, not an approximate mound.
-            from pipeline_backfill import blend_backfill_points
-
-            for targets in target_groups:
-                for record in targets:
-                    _set_mesh_points(
-                        record["prim"],
-                        blend_backfill_points(
-                            record["final_points"],
-                            record["top_vertex_count"],
-                            progress,
-                        ),
-                    )
-            for _ in range(18):
-                world.step(render=not args.headless)
 
         for group in spoil_groups:
             for record in group:
