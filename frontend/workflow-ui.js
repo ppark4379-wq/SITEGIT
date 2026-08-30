@@ -136,6 +136,7 @@ function wfOpenReadyScenarioPhasePlan(scenarioRunId=''){
   const phase=(design.phases||[]).find(item=>item.id===instruction.params?.scenario_phase_id);
   if(!phase)return false;
   const nextPhase=(design.phases||[]).find(item=>Number(item.order)===Number(phase.order)+1);
+  const editableDesign={...design,phases:(design.phases||[]).map(item=>({...item,acceptance_criteria:[...(item.acceptance_criteria||[])]}))};
   workflowUI.draft={
     sourceText:instruction.params?.source_text||`${design.title} ${phase.title}`,
     summary:`Zone ${wfScenarioZoneId(design)} 관로 공사의 ${wfPhaseBadge(phase)} ${phase.title} 계획이 열렸습니다. 선행 공정 Evidence 승인 결과를 기준으로 장비·작업량·판정 기준을 확인한 뒤 하달합니다.`,
@@ -148,7 +149,7 @@ function wfOpenReadyScenarioPhasePlan(scenarioRunId=''){
     equipment:(phase.equipment||[]).join(' + '),
     successor:nextPhase?.title||'관로 공사 완료',
     scenarioRunId:instruction.params?.scenario_run_id||'',
-    design,
+    design:editableDesign,
   };
   workflowUI.mode='form';
   workflowUI.planView='drawing';
@@ -158,13 +159,51 @@ function wfOpenReadyScenarioPhasePlan(scenarioRunId=''){
   window.scrollTo({top:0,behavior:'smooth'});
   return true;
 }
+function wfCriterionParts(criterion){
+  const text=String(criterion||'');
+  const match=text.match(/-?\d+(?:\.\d+)?/);
+  if(!match)return {prefix:text,value:'',suffix:'',editable:false};
+  const index=match.index??0;
+  return {prefix:text.slice(0,index),value:match[0],suffix:text.slice(index+match[0].length),editable:true};
+}
+function wfSetPhaseCriterionValue(input,{strict=false}={}){
+  const phaseId=input?.dataset?.criteriaPhase;
+  const criterionIndex=Number(input?.dataset?.criteriaIndex);
+  const phase=workflowUI.draft?.design?.phases?.find(item=>item.id===phaseId);
+  const current=phase?.acceptance_criteria?.[criterionIndex];
+  if(current==null)return false;
+  if(input.value===''||!input.checkValidity()||!Number.isFinite(Number(input.value))){
+    if(strict){input.focus();input.reportValidity();throw new Error('판정 기준 수치를 확인해 주세요.');}
+    return false;
+  }
+  const parts=wfCriterionParts(current);
+  if(!parts.editable)return false;
+  phase.acceptance_criteria[criterionIndex]=`${parts.prefix}${input.value}${parts.suffix}`;
+  return true;
+}
+function wfCurrentAcceptanceCriteria(){
+  document.querySelectorAll('[data-criteria-value]').forEach(input=>wfSetPhaseCriterionValue(input,{strict:true}));
+  const phase=workflowUI.draft?.design?.phases?.find(item=>item.id===wfCurrentPhaseId(workflowUI.draft));
+  const criteria=(phase?.acceptance_criteria||[]).map(value=>String(value).trim()).filter(Boolean);
+  if(!criteria.length)throw new Error('완료·승인 판정 기준을 한 개 이상 입력해 주세요.');
+  return criteria;
+}
 function wfPhaseCriteriaPanel(phases,draft=workflowUI.draft){
   const selected=phases.find(phase=>phase.id===wfCurrentPhaseId(draft))||phases[0];
   if(!selected)return '';
   const zoneLabel=draft?.design?.zone_assignment_mode==='create_on_approval'
     ?`승인 후 생성될 Zone ${wfScenarioZoneId(draft?.design)}`
     :`Zone ${wfScenarioZoneId(draft?.design)}`;
-  return `<div class="form-section phase-criteria-section"><div class="section-title-row"><div><h3>${wfPhaseBadge(selected)} ${esc(selected.title)} 완료·승인 판정 기준</h3><p>${esc(zoneLabel)}에 현재 하달할 공정의 도면 검측 기준만 적용됩니다.</p></div><span>현재 공정</span></div><div class="phase-criteria-list">${(selected.acceptance_criteria||[]).map((criterion,index)=>`<div><i>${index+1}</i><span>${esc(criterion)}</span><b>${index===selected.acceptance_criteria.length-1?'Evidence':'검측'}</b></div>`).join('')}</div></div>`;
+  const criteria=(selected.acceptance_criteria||[]).map((criterion,index)=>{
+    const parts=wfCriterionParts(criterion);
+    const isPercent=parts.suffix.includes('%');
+    const step=parts.value.includes('.')?'0.1':'1';
+    const content=parts.editable
+      ?`<label class="phase-criterion-editor"><span>${esc(parts.prefix)}</span><input type="number" data-criteria-value data-criteria-phase="${esc(selected.id)}" data-criteria-index="${index}" value="${esc(parts.value)}" min="0" ${isPercent?'max="100"':''} step="${step}" aria-label="${esc(selected.title)} 기준 ${index+1} 수치"><span>${esc(parts.suffix)}</span><small>LLM·도면 추천값 · 관리자 수정 가능</small></label>`
+      :`<span class="phase-criterion-static">${esc(criterion)}</span>`;
+    return `<div class="phase-criterion-card"><i>${index+1}</i>${content}<b>${index===selected.acceptance_criteria.length-1?'Evidence':'검측'}</b></div>`;
+  }).join('');
+  return `<div class="form-section phase-criteria-section"><div class="section-title-row"><div><h3>${wfPhaseBadge(selected)} ${esc(selected.title)} 완료·승인 판정 기준</h3><p>${esc(zoneLabel)}에 현재 하달할 공정의 추천 기준입니다. 관리자가 수치를 수정한 뒤 승인할 수 있습니다.</p></div><span>현재 공정</span></div><div class="phase-criteria-list">${criteria}</div></div>`;
 }
 function wfSoilRelocationDrawing(design){
   const move=design?.relocation||{};
@@ -349,9 +388,12 @@ function wfExecutionInstruction(display){
 async function publishDrawingScenario(){
   if(workflowUI.publishing||!workflowUI.draft?.design)return;
   const draft=workflowUI.draft;const design=draft.design;
+  let acceptanceCriteria;
+  try{acceptanceCriteria=wfCurrentAcceptanceCriteria();}
+  catch(error){toast('판정 기준 확인 필요',String(error.message||error),'warning');return;}
   workflowUI.publishing=true;renderWorkPackages();
   try{
-    const response=await apiFetch('/work-packages/ai/planning/dispatch',{method:'POST',body:JSON.stringify({project_id:PROJECT_ID,source_text:draft.sourceText,plan_id:design.plan_id,phase_id:wfCurrentPhaseId(draft)})});
+    const response=await apiFetch('/work-packages/ai/planning/dispatch',{method:'POST',body:JSON.stringify({project_id:PROJECT_ID,source_text:draft.sourceText,plan_id:design.plan_id,phase_id:wfCurrentPhaseId(draft),acceptance_criteria:acceptanceCriteria})});
     const payload=await response.json().catch(()=>({}));
     if(!response.ok)throw new Error(payload.detail?.message||payload.detail||`SCENARIO_${response.status}`);
     const pending=(payload.work_packages||[]).filter(item=>item.status==='pending').length;
@@ -399,6 +441,7 @@ async function publishWorkflowInstruction(){
 }
 document.addEventListener('submit',async e=>{if(e.target.id!=='workflowPrompt')return;e.preventDefault();const input=$('#workflowPromptText');const text=input.value.trim();if(!text)return;const submit=e.target.querySelector('button[type="submit"]');submit.disabled=true;submit.textContent='도면·계획 해석 중…';workflowUI.messages.push({role:'user',text});try{const response=await apiFetch('/work-packages/ai/planning/interpret',{method:'POST',body:JSON.stringify({project_id:PROJECT_ID,message:text})});const payload=await response.json();if(!response.ok)throw new Error(payload?.detail?.message||'작업지시 해석에 실패했습니다.');const p=payload.plan;if(!p.ready){workflowUI.messages.push({role:'assistant',text:p.clarification_question||'작업 구역과 목표량을 조금 더 구체적으로 알려주세요.'});renderWorkPackages();return;}workflowUI.messages.push({role:'assistant',text:p.summary});workflowUI.draft={sourceText:payload.source_text||text,summary:p.summary,zone:payload.design?.work_area_label||`Zone ${p.zone_id}`,task:p.work_type,title:p.title,target:p.target_amount,unit:p.target_unit==='m3'?'㎥':p.target_unit==='ea'?'대':'m',segment:p.segment,equipment:p.equipment_hint,successor:p.successor_title,design:payload.design||null};workflowUI.planView=payload.design?'drawing':'map';setIsaacPlanningOverlay(payload.design||null);workflowUI.mode='form';renderWorkPackages();}catch(error){workflowUI.messages.push({role:'assistant',text:`LLM에 연결하지 못했습니다. ${error.message}`});renderWorkPackages();toast('작업지시 초안 생성 실패',error.message,'warning');}finally{if(submit?.isConnected){submit.disabled=false;submit.textContent='초안 만들기';}}});
 document.addEventListener('input',e=>{
+  if(e.target.matches('[data-criteria-value]')){wfSetPhaseCriterionValue(e.target);return;}
   if(!e.target.matches('[data-equipment-search]'))return;
   workflowUI.equipmentQuery=e.target.value;
   const query=workflowUI.equipmentQuery.trim().toLowerCase();
@@ -603,8 +646,12 @@ function wfScenarioPhasesForRun(run){
   const first=instructions[0]||{};
   const planId=String(first.params?.scenario_plan_id||'');
   const savedPlan=(sitePlans||[]).find(item=>String(item?.design?.plan_id||'')===planId);
-  if(Array.isArray(savedPlan?.design?.phases)&&savedPlan.design.phases.length)return savedPlan.design.phases;
-  if(String(approvedSitePlan?.design?.plan_id||'')===planId&&Array.isArray(approvedSitePlan?.design?.phases))return approvedSitePlan.design.phases;
+  const withManagerCriteria=phases=>phases.map(phase=>{
+    const member=instructions.find(item=>item.params?.scenario_phase_id===phase.id&&Array.isArray(item.params?.acceptance_criteria)&&item.params.acceptance_criteria.length);
+    return {...phase,acceptance_criteria:member?[...member.params.acceptance_criteria]:[...(phase.acceptance_criteria||[])]};
+  });
+  if(Array.isArray(savedPlan?.design?.phases)&&savedPlan.design.phases.length)return withManagerCriteria(savedPlan.design.phases);
+  if(String(approvedSitePlan?.design?.plan_id||'')===planId&&Array.isArray(approvedSitePlan?.design?.phases))return withManagerCriteria(approvedSitePlan.design.phases);
   const ids=[...new Set(instructions.map(item=>item.params?.scenario_phase_id).filter(Boolean))]
     .sort((left,right)=>{
       const leftOrder=Number(instructions.find(item=>item.params?.scenario_phase_id===left)?.params?.scenario_phase_order||999);
@@ -627,7 +674,7 @@ function wfScenarioPhasesForRun(run){
       title:meta.title,description:params.summary||meta.title,
       target_amount:Number(quantity.value||0),target_unit:quantity.unit||meta.target_unit,
       estimated_hours:0,equipment:[...new Set(members.map(item=>item.params?.equipment_name).filter(Boolean))],
-      acceptance_criteria:meta.acceptance_criteria,
+      acceptance_criteria:Array.isArray(params.acceptance_criteria)&&params.acceptance_criteria.length?params.acceptance_criteria:meta.acceptance_criteria,
     };
   });
 }

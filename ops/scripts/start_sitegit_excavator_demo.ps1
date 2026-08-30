@@ -7,7 +7,7 @@ param(
     [switch]$IntentionalDefect,
     [switch]$SkipSensors,
     [ValidateRange(1, 12)]
-    [int]$Scoops = 5,
+    [int]$Scoops = 1,
     [string]$SaveUsd = ""
 )
 

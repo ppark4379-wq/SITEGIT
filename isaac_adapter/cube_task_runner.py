@@ -670,7 +670,7 @@ def run_parallel_excavation_group(
     sensor_rigs: dict[str, Any] | None = None,
     stage_snapshot_callback: Callable[[dict, str], dict[str, Any]] | None = None,
     animation_seconds: float = 3.5,
-    scoop_count: int = 5,
+    scoop_count: int = 1,
     render: bool = True,
 ) -> list[dict[str, Any]]:
     """Execute phase 1 excavation for one drawing-approved Zone A group.
@@ -1226,7 +1226,7 @@ def run_parallel_pipeline_backfill_group(
     sensor_rigs: dict[str, Any] | None = None,
     stage_snapshot_callback: Callable[[dict, str], dict[str, Any]] | None = None,
     animation_seconds: float = 3.0,
-    scoop_count: int = 5,
+    scoop_count: int = 1,
     render: bool = True,
 ) -> list[dict[str, Any]]:
     """Execute, capture, and commit phase 3 backfill inside Zone A."""

@@ -1308,8 +1308,8 @@ document.addEventListener('click',e=>{
   const editW=e.target.closest('[data-edit-wp]'); if(editW){openWpModal(editW.dataset.editWp);return}
   const approveIsaac=e.target.closest('[data-isaac-approve]'); if(approveIsaac){reviewIsaacCommit(approveIsaac.dataset.isaacApprove,'approved');return}
   const rejectIsaac=e.target.closest('[data-isaac-reject]'); if(rejectIsaac){reviewIsaacCommit(rejectIsaac.dataset.isaacReject,'rejected');return}
-  const remediateIsaac=e.target.closest('[data-isaac-remediation]'); if(remediateIsaac){createIsaacRemediation(remediateIsaac.dataset.isaacRemediation);return}
-  const dispatchRemediation=e.target.closest('[data-remediation-dispatch]'); if(dispatchRemediation){dispatchIsaacRemediation(dispatchRemediation.dataset.remediationDispatch);return}
+  const remediateIsaac=e.target.closest('[data-isaac-remediation]'); if(remediateIsaac){createIsaacRemediation(remediateIsaac.dataset.isaacRemediation,remediateIsaac);return}
+  const dispatchRemediation=e.target.closest('[data-remediation-dispatch]'); if(dispatchRemediation){dispatchIsaacRemediation(dispatchRemediation.dataset.remediationDispatch,dispatchRemediation);return}
   const openRemediation=e.target.closest('[data-open-remediation]'); if(openRemediation){loadRemediationPlan(openRemediation.dataset.openRemediation);return}
   const detailIsaac=e.target.closest('[data-isaac-detail]'); if(detailIsaac){openIsaacEvidence(detailIsaac.dataset.isaacDetail,detailIsaac.dataset.isaacCommit);return}
   const detailRealWp=e.target.closest('[data-real-wp-detail]'); if(detailRealWp){openRealWorkPackageDetail(detailRealWp.dataset.realWpDetail);return}
@@ -2160,7 +2160,8 @@ function openIsaacEvidence(instructionId,commitId=''){
   const bindings=instruction.params?.resource_bindings||{};
   const equipmentPath=instruction.params?.equipment_prim_path||bindings.equipment||'-';
   const targetPath=instruction.params?.target_prim_path||bindings.target||result.target_prim_path||'-';
-  const needsRemediation=result.quality_assessment?.status==='needs_remediation';
+  const supplementalReviewOverride=Boolean(evidence.supplemental_review_override);
+  const needsRemediation=result.quality_assessment?.status==='needs_remediation'&&!supplementalReviewOverride;
   const dateLabel=value=>{
     if(!value)return '-';
     const parsed=new Date(value);
@@ -2177,13 +2178,13 @@ function openIsaacEvidence(instructionId,commitId=''){
   const rejectedEvidencePanel=commit.review_status==='rejected'?`<section class="supplemental-evidence-panel" data-rejected-evidence-panel>
       <header>
         <div><span>REJECTED COMMIT · SUPPLEMENTAL EVIDENCE</span><h3>추가 Evidence 제출</h3><p>반려 사유를 보완할 현장 자료와 설명을 추가해 같은 Commit의 재검토를 요청할 수 있습니다.</p></div>
-        <em>UI PREVIEW</em>
+        <em>재검토 가능</em>
       </header>
       <div class="supplemental-evidence-reason"><span>반려 사유</span><strong>${esc(commit.review_note||'관리자 검토 기준을 충족하지 못했습니다.')}</strong></div>
       <div class="supplemental-evidence-form">
         <label class="supplemental-file-field">
           <span>보완 파일</span>
-          <input id="supplementalEvidenceFiles" type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.csv,.json,.ply,.pcd,.las,.laz">
+          <input id="supplementalEvidenceFiles" type="file" multiple>
           <small data-supplemental-file-summary>파일을 선택하세요 · 여러 파일 선택 가능</small>
         </label>
         <label class="supplemental-note-field">
@@ -2192,7 +2193,7 @@ function openIsaacEvidence(instructionId,commitId=''){
         </label>
       </div>
       <div class="supplemental-evidence-types"><span>카메라 이미지</span><span>LiDAR·Point Cloud</span><span>측량 성과</span><span>현장 확인서</span></div>
-      <footer><small>화면 예시입니다. 파일 저장과 재검증 API는 아직 연결되지 않았습니다.</small><button class="secondary-button" type="button" data-supplemental-evidence-submit disabled>추가 Evidence 제출 · 재검토 요청</button></footer>
+      <footer><small>선택한 파일 정보와 보완 설명을 기록하면 이 Commit을 다시 검토할 수 있습니다.</small><button class="secondary-button" type="button" data-supplemental-evidence-submit disabled>추가 Evidence 제출 · 재검토 요청</button></footer>
     </section>`:'';
   openModal({
     eyebrow:'FIELD EXECUTION COMMIT',
@@ -2248,10 +2249,30 @@ function openIsaacEvidence(instructionId,commitId=''){
       :'파일을 선택하세요 · 여러 파일 선택 가능';
     if(supplementalSubmit)supplementalSubmit.disabled=!files.length;
   });
-  supplementalSubmit?.addEventListener('click',()=>{
+  supplementalSubmit?.addEventListener('click',async()=>{
     const files=[...(supplementalFiles?.files||[])];
     if(!files.length){toast('보완 파일 필요','재검토에 사용할 Evidence 파일을 선택하세요.','warning');return}
-    toast('추가 Evidence 준비 완료',`${files.length}개 파일을 선택했습니다. 현재는 UI 예시이며 서버에는 저장되지 않습니다.`,'success');
+    const note=String($('#supplementalEvidenceNote')?.value||'').trim();
+    supplementalSubmit.disabled=true;
+    supplementalSubmit.textContent='Evidence 제출 중…';
+    try{
+      const response=await apiFetch(`/isaac/commits/${encodeURIComponent(commit.id)}/supplemental-evidence`,{
+        method:'POST',
+        body:JSON.stringify({
+          files:files.map(file=>({name:file.name,size_bytes:file.size||0,content_type:file.type||null})),
+          note:note||null,
+        }),
+      });
+      const payload=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(responseDetailMessage(payload,`SUPPLEMENTAL_EVIDENCE_${response.status}`));
+      await loadIsaacInstructions();
+      openIsaacEvidence(instruction.id,commit.id);
+      toast('재검토 요청 완료',`${files.length}개 Evidence가 기록되었습니다. 증거를 확인하고 다시 승인할 수 있습니다.`,'success');
+    }catch(error){
+      if(error.message!=='AUTH_REQUIRED')toast('추가 Evidence 제출 실패',String(error.message||error),'danger');
+      supplementalSubmit.disabled=false;
+      supplementalSubmit.textContent='추가 Evidence 제출 · 재검토 요청';
+    }
   });
 }
 function openRealWorkPackageDetail(instructionId){
@@ -2327,32 +2348,88 @@ async function loadRemediationPlan(instructionId){
     openRemediationPlan(instruction);
   }catch(error){toast('보완 계획을 열지 못했습니다',error.message,'danger')}
 }
-async function createIsaacRemediation(commitId){
+function beginRemediationRequest(button,{title,description,steps}){
+  if(!button||button.dataset.remediationBusy==='true')return null;
+  const modal=button.closest('.modal')||$('#genericModal');
+  const previousHtml=button.innerHTML;
+  const previousDisabled=button.disabled;
+  button.dataset.remediationBusy='true';
+  button.disabled=true;
+  button.setAttribute('aria-busy','true');
+  button.innerHTML='<span class="remediation-button-spinner" aria-hidden="true"></span><span>처리 중…</span>';
+
+  const overlay=document.createElement('div');
+  overlay.className='remediation-request-overlay';
+  overlay.dataset.remediationLoading='true';
+  overlay.setAttribute('role','status');
+  overlay.setAttribute('aria-live','polite');
+  overlay.innerHTML=`<div class="remediation-request-card">
+    <div class="remediation-request-spinner" aria-hidden="true"><i></i><i></i><i></i></div>
+    <span>AI CORRECTIVE WORK PACKAGE</span>
+    <h3>${esc(title)}</h3>
+    <p>${esc(description)}</p>
+    <div class="remediation-request-steps">${steps.map((step,index)=>`<div class="${index===0?'done':index===1?'active':''}"><i>${index===0?'✓':index+1}</i><span>${esc(step)}</span></div>`).join('')}</div>
+    <small>요청을 두 번 전송하지 않도록 이 화면에서 잠시만 기다려 주세요.</small>
+  </div>`;
+  modal?.classList.add('remediation-request-pending');
+  modal?.appendChild(overlay);
+
+  let finished=false;
+  return ()=>{
+    if(finished)return;
+    finished=true;
+    overlay.remove();
+    modal?.classList.remove('remediation-request-pending');
+    if(button.isConnected){
+      button.innerHTML=previousHtml;
+      button.disabled=previousDisabled;
+      button.removeAttribute('aria-busy');
+      delete button.dataset.remediationBusy;
+    }
+  };
+}
+async function createIsaacRemediation(commitId,triggerButton=null){
+  const finishPending=beginRemediationRequest(triggerButton||document.querySelector(`[data-isaac-remediation="${CSS.escape(commitId)}"]`),{
+    title:'부족량을 분석하고 보완 계획을 만드는 중입니다',
+    description:'원 Commit의 센서 실측값을 기준으로 부족 굴착량과 보완 대상 장비를 고정합니다.',
+    steps:['부족량 Evidence 확인','장비·대상 Prim 고정','보완 Work Package 초안 생성'],
+  });
+  if(!finishPending)return;
   try{
     const response=await apiFetch(`/isaac/commits/${encodeURIComponent(commitId)}/remediation`,{method:'POST',body:'{}'});
     const payload=await response.json().catch(()=>({}));
     if(!response.ok)throw new Error(responseDetailMessage(payload,`REMEDIATION_${response.status}`));
     await loadIsaacInstructions();
+    finishPending();
     openRemediationPlan(payload);
   }catch(error){
     if(error.message!=='AUTH_REQUIRED')toast('보완 계획 생성 실패',String(error.message||error),'danger');
+  }finally{
+    finishPending();
   }
 }
-async function dispatchIsaacRemediation(instructionId){
-  const button=document.querySelector(`[data-remediation-dispatch="${CSS.escape(instructionId)}"]`);
-  if(button){button.disabled=true;button.textContent='현장 자원 확인 중…';}
+async function dispatchIsaacRemediation(instructionId,triggerButton=null){
+  const button=triggerButton||document.querySelector(`[data-remediation-dispatch="${CSS.escape(instructionId)}"]`);
+  const finishPending=beginRemediationRequest(button,{
+    title:'보완 작업을 하달하기 전에 현장 자원을 확인하고 있습니다',
+    description:'배정 장비와 작업 대상의 현재 상태를 확인한 뒤 보완 Work Package를 전송합니다.',
+    steps:['관리자 승인 계획 고정','장비·대상 자원 확인','보완 Work Package 하달'],
+  });
+  if(!finishPending)return;
   try{
     const response=await apiFetch(`/isaac/instructions/${encodeURIComponent(instructionId)}/dispatch-remediation`,{method:'POST',body:'{}'});
     const payload=await response.json().catch(()=>({}));
     if(!response.ok)throw new Error(responseDetailMessage(payload,`DISPATCH_REMEDIATION_${response.status}`));
     await loadIsaacInstructions();
+    finishPending();
     closeModal();
     addEvent('warning','굴착 보완 작업 하달',`${payload.params?.equipment_name||'지정 굴착기'} 한 대가 부족 구간만 재작업합니다.`);
     toast('보완 작업 하달 완료','EXC-002가 부족 굴착량을 보완한 뒤 새 Evidence Commit을 제출합니다.','success');
     renderAll();
   }catch(error){
-    if(button){button.disabled=false;button.textContent='승인 · 보완 작업 하달';}
     if(error.message!=='AUTH_REQUIRED')toast('보완 작업 하달 실패',String(error.message||error),'danger');
+  }finally{
+    finishPending();
   }
 }
 async function reviewIsaacCommit(commitId,decision){

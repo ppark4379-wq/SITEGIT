@@ -8,10 +8,10 @@
  * notebooks while making full-HD and larger demo screens easier to read.
  */
 :root {
-  --sg-readable-micro: clamp(11px, .64vw, 12px);
-  --sg-readable-small: clamp(12px, .72vw, 13px);
-  --sg-readable-body: clamp(13px, .78vw, 14px);
-  --sg-readable-control: clamp(12px, .74vw, 14px);
+  --sg-readable-micro: clamp(12px, .69vw, 13px);
+  --sg-readable-small: clamp(13px, .76vw, 14px);
+  --sg-readable-body: clamp(14px, .82vw, 15px);
+  --sg-readable-control: clamp(13px, .78vw, 15px);
 }
 
 .app-shell {
@@ -159,10 +159,10 @@
 
 @media (max-width: 1180px) {
   :root {
-    --sg-readable-micro: 11px;
-    --sg-readable-small: 12px;
-    --sg-readable-body: 13px;
-    --sg-readable-control: 12px;
+    --sg-readable-micro: 12px;
+    --sg-readable-small: 13px;
+    --sg-readable-body: 14px;
+    --sg-readable-control: 13px;
   }
 
   .app-shell :where(.construction-run-select, .equipment-filter-panel) {
@@ -176,6 +176,161 @@
   }
 
   .login-shell :where(label, input, .intro, .account-guide, .security-note) {
-    font-size: 13px;
+    font-size: 14px;
   }
+}
+
+/*
+ * Construction job detail
+ *
+ * The feature stylesheet predates this readability layer and gives the dense
+ * scenario view several 7-10px declarations with higher specificity.  Keep
+ * the existing cards, grids and column proportions, but raise the actual text
+ * inside this page to presentation-safe sizes.  Table-like rows continue to
+ * ellipsize long values and become horizontally scrollable at the existing
+ * mobile breakpoint, so the larger type does not widen the application shell.
+ */
+.app-shell .scenario-detail-page .scenario-detail-heading > div > span,
+.app-shell .scenario-detail-page .scenario-current-panel > header > div > span {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-heading p,
+.app-shell .scenario-detail-page .scenario-detail-flow-panel > header p,
+.app-shell .scenario-detail-page .scenario-map-panel > header p,
+.app-shell .scenario-detail-page .scenario-current-panel p {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-heading > em,
+.app-shell .scenario-detail-page .scenario-gate-panel > header > span,
+.app-shell .scenario-detail-page .scenario-detail-flow-panel > header > span {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-kpis small {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-phase > span {
+  font-size: 11px;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-phase b {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-phase small {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-phase > strong {
+  font-size: 14px;
+}
+
+.app-shell .scenario-detail-page .scenario-current-panel h3 {
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.app-shell .scenario-detail-page .scenario-current-panel dt {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.app-shell .scenario-detail-page .scenario-current-panel dd {
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.app-shell .scenario-detail-page .scenario-current-panel .station-basis {
+  font-size: 11px !important;
+  line-height: 1.4;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-workfront-head h4,
+.app-shell .scenario-detail-page .scenario-criteria h4,
+.app-shell .scenario-detail-page .scenario-gate-panel h3,
+.app-shell .scenario-detail-page .scenario-issue-panel h3,
+.app-shell .scenario-detail-page .scenario-activity-panel h3,
+.app-shell .scenario-detail-page .scenario-map-panel h3 {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-workfront-head span,
+.app-shell .scenario-detail-page .scenario-issue-panel > header > span,
+.app-shell .scenario-detail-page .scenario-activity-panel > header > span {
+  font-size: 11px;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-workfront > div > b {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-workfront > div > small,
+.app-shell .scenario-detail-page .scenario-detail-workfront > div > span {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.app-shell .scenario-detail-page .scenario-detail-workfront > em,
+.app-shell .scenario-detail-page .scenario-workfront-note {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.app-shell .scenario-detail-page .scenario-criteria span {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.app-shell .scenario-detail-page .scenario-criteria i {
+  font-size: 10px;
+}
+
+.app-shell .scenario-detail-page .scenario-gate-summary span,
+.app-shell .scenario-detail-page .scenario-issue span,
+.app-shell .scenario-detail-page .scenario-activity span {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.app-shell .scenario-detail-page .scenario-gate-summary b,
+.app-shell .scenario-detail-page .scenario-issue b,
+.app-shell .scenario-detail-page .scenario-activity b {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* The completed version of the same screen should retain the same hierarchy. */
+.app-shell .scenario-detail-page .scenario-completion-hero span,
+.app-shell .scenario-detail-page .scenario-completion-summary-grid span,
+.app-shell .scenario-detail-page .scenario-completion-summary-grid small,
+.app-shell .scenario-detail-page .scenario-completion-phase-list > header span,
+.app-shell .scenario-detail-page .scenario-completion-phase b,
+.app-shell .scenario-detail-page .scenario-completion-phase > em {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.app-shell .scenario-detail-page .scenario-completion-hero p,
+.app-shell .scenario-detail-page .scenario-completion-phase span {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.app-shell .scenario-detail-page .scenario-completion-summary-grid b {
+  font-size: 16px;
+}
+
+.app-shell .scenario-detail-page .scenario-completion-phase-list h4 {
+  font-size: 14px;
 }

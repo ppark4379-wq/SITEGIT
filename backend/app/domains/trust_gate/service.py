@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from ...models.audit_log import AuditLog
 from ...models.isaac import (
     INSTRUCTION_APPROVED,
+    INSTRUCTION_COMMITTED,
     INSTRUCTION_REJECTED,
     REVIEW_APPROVED,
     REVIEW_PENDING,
@@ -47,6 +48,98 @@ class TrustGateService:
         return commit
 
     @staticmethod
+    def submit_supplemental_evidence(
+        db: Session,
+        *,
+        commit: ExecutionCommit,
+        files: list[dict],
+        note: str | None,
+        user: User,
+    ) -> ExecutionCommit:
+        """Record demo Evidence metadata and reopen a rejected Commit.
+
+        The browser intentionally sends file metadata only.  Binary evidence
+        storage can be added later without changing the review state machine.
+        For the current judge demo, selecting any file is sufficient to make
+        the Commit reviewable again.
+        """
+
+        if commit.review_status != REVIEW_REJECTED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Only a rejected Commit can receive supplemental Evidence",
+                    "review_status": commit.review_status,
+                },
+            )
+        if not files:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="At least one supplemental Evidence file is required",
+            )
+
+        submitted_at = datetime.now(timezone.utc)
+        evidence = dict(commit.evidence or {})
+        review_history = list(evidence.get("review_history") or [])
+        review_history.append(
+            {
+                "decision": "rejected",
+                "note": commit.review_note,
+                "reviewed_by": commit.reviewed_by,
+                "reviewed_at": (
+                    commit.reviewed_at.isoformat() if commit.reviewed_at else None
+                ),
+            }
+        )
+        submissions = list(evidence.get("supplemental_evidence") or [])
+        submissions.append(
+            {
+                "submitted_at": submitted_at.isoformat(),
+                "submitted_by": user.username,
+                "note": note,
+                "files": files,
+            }
+        )
+        commit.evidence = {
+            **evidence,
+            "review_history": review_history,
+            "supplemental_evidence": submissions,
+            # Explicit demo gate: supplemental metadata lets the manager make
+            # a new human decision even when the original automated metric
+            # still says remediation is required.
+            "supplemental_review_override": True,
+        }
+
+        result = dict(commit.result or {})
+        stage_snapshot = result.get("stage_snapshot")
+        if isinstance(stage_snapshot, dict):
+            result["stage_snapshot"] = {**stage_snapshot, "status": "pending"}
+            commit.result = result
+
+        commit.review_status = REVIEW_PENDING
+        commit.reviewed_by = None
+        commit.reviewed_at = None
+        commit.review_note = "추가 Evidence 제출 · 관리자 재검토 대기"
+        commit.instruction.status = INSTRUCTION_COMMITTED
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                username=user.username,
+                action="ISAAC_SUPPLEMENTAL_EVIDENCE_SUBMITTED",
+                target_type="execution_commit",
+                target_id=commit.id,
+                details={
+                    "instruction_id": commit.instruction_id,
+                    "file_names": [str(item.get("name") or "") for item in files],
+                    "note": note,
+                },
+            )
+        )
+        db.commit()
+        db.refresh(commit)
+        return commit
+
+    @staticmethod
     def review(
         db: Session,
         *,
@@ -73,9 +166,13 @@ class TrustGateService:
         generated_operation = (commit.result or {}).get("operation")
         result = commit.result or {}
         quality_assessment = result.get("quality_assessment") or {}
+        supplemental_review_override = bool(
+            (commit.evidence or {}).get("supplemental_review_override")
+        )
         if (
             decision == REVIEW_APPROVED
             and quality_assessment.get("status") == "needs_remediation"
+            and not supplemental_review_override
         ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -170,10 +267,19 @@ class TrustGateService:
                 "stage_snapshot": {**stage_snapshot, "status": "rejected"},
             }
 
+        resolved_note = note
+        if decision == REVIEW_APPROVED and supplemental_review_override and not note:
+            history = (commit.evidence or {}).get("review_history") or []
+            previous_note = str((history[-1] if history else {}).get("note") or "").strip()
+            resolved_note = "추가 Evidence 재검토 승인"
+            if previous_note:
+                resolved_note = f"{resolved_note} · 최초 반려: {previous_note}"
+            resolved_note = resolved_note[:500]
+
         commit.review_status = REVIEW_APPROVED if decision == REVIEW_APPROVED else REVIEW_REJECTED
         commit.reviewed_by = user.username
         commit.reviewed_at = reviewed_at
-        commit.review_note = note
+        commit.review_note = resolved_note
         commit.instruction.status = (
             INSTRUCTION_APPROVED if decision == REVIEW_APPROVED else INSTRUCTION_REJECTED
         )
@@ -191,7 +297,7 @@ class TrustGateService:
                 details={
                     "instruction_id": commit.instruction_id,
                     "attempt": commit.attempt,
-                    "note": note,
+                    "note": resolved_note,
                 },
             )
         )

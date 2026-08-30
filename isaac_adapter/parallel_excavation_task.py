@@ -67,7 +67,7 @@ def execute_parallel_excavation(
     instructions: list[dict[str, Any]],
     *,
     animation_seconds: float = 3.5,
-    scoop_count: int = 5,
+    scoop_count: int = 1,
     render: bool = True,
     prepared_callback: PreparedCallback | None = None,
     progress_callback: ProgressCallback | None = None,

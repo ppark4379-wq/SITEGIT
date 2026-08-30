@@ -89,7 +89,7 @@ def execute_parallel_pipeline_backfill(
     base_color_texture: str | Path | None = None,
     normal_texture: str | Path | None = None,
     animation_seconds: float = 3.0,
-    scoop_count: int = 5,
+    scoop_count: int = 1,
     render: bool = True,
     prepared_callback: PreparedCallback | None = None,
     progress_callback: ProgressCallback | None = None,

@@ -7,9 +7,16 @@ from pathlib import Path
 import pytest
 
 from isaac_adapter.isaac_bridge import (
+    MAX_EXCAVATED_SPOIL_LENGTH_M,
+    MAX_EXCAVATED_SPOIL_HEIGHT_M,
+    MAX_EXCAVATED_SPOIL_VISUAL_HEIGHT_M,
+    MAX_EXCAVATED_SPOIL_VISUAL_VOLUME_M3,
+    MAX_EXCAVATED_SPOIL_WIDTH_M,
+    excavated_spoil_visual_profile,
     moved_soil_dump_position,
     per_scoop_cut_ratio,
     projected_mesh_volume,
+    reshape_mound_points_for_volume,
     sculpt_soil_mesh_points,
 )
 from isaac_adapter.three_excavator_demo import (
@@ -77,6 +84,48 @@ def test_lower_cut_ratio_removes_less_soil_volume() -> None:
     normal_removed = before - projected_mesh_volume(normal, counts, indices)
     assert shallow_removed > 0.0
     assert normal_removed > shallow_removed
+
+
+def test_large_spoil_volume_expands_footprint_instead_of_becoming_a_spike() -> None:
+    points = [
+        (0.0, 0.0, 3.0),
+        (-2.0, -2.0, 0.0),
+        (2.0, -2.0, 0.0),
+        (2.0, 2.0, 0.0),
+        (-2.0, 2.0, 0.0),
+    ]
+    counts = [3, 3, 3, 3]
+    indices = [0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1]
+    initial_volume = projected_mesh_volume(points, counts, indices)
+    desired_volume = initial_volume * 20.0
+
+    reshaped = reshape_mound_points_for_volume(
+        points,
+        counts,
+        indices,
+        desired_volume,
+    )
+
+    assert max(point[2] for point in reshaped) == pytest.approx(
+        MAX_EXCAVATED_SPOIL_HEIGHT_M
+    )
+    assert max(point[0] for point in reshaped) > max(point[0] for point in points)
+    assert projected_mesh_volume(reshaped, counts, indices) == pytest.approx(
+        desired_volume
+    )
+
+
+def test_excavation_renders_one_bounded_five_pass_stockpile() -> None:
+    visual_size, visual_volume = excavated_spoil_visual_profile(
+        {"x": 45.0, "y": 30.0, "z": 7.0},
+        removed_volume_m3=981.0,
+    )
+
+    assert visual_size == pytest.approx((10.0, 8.0, 3.15))
+    assert visual_size[0] <= MAX_EXCAVATED_SPOIL_LENGTH_M
+    assert visual_size[1] <= MAX_EXCAVATED_SPOIL_WIDTH_M
+    assert visual_size[2] <= MAX_EXCAVATED_SPOIL_VISUAL_HEIGHT_M
+    assert visual_volume == pytest.approx(MAX_EXCAVATED_SPOIL_VISUAL_VOLUME_M3)
 
 
 def test_incremental_scoops_converge_on_requested_total_cut() -> None:
@@ -176,7 +225,7 @@ def test_demo_launcher_is_explicitly_sim_only() -> None:
     batch = (REPO_ROOT / "start_sitegit_excavator_demo.bat").read_text(encoding="utf-8")
 
     assert "three_excavator_demo.py" in powershell
-    assert "[int]$Scoops = 5" in powershell
+    assert "[int]$Scoops = 1" in powershell
     assert '"--intentional-defect"' in powershell
     assert "Test-SiteGitApi" not in powershell
     assert "Backend and web services are not used" in batch

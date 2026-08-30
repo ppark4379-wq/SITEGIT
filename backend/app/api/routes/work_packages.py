@@ -123,6 +123,27 @@ def _scenario_coordinated_code() -> str:
     return code
 
 
+def _phase_acceptance_criteria(
+    phase: dict,
+    override: list[str] | None = None,
+) -> list[str]:
+    """Return validated manager criteria, falling back to drawing recommendations."""
+
+    values = override if override is not None else phase.get("acceptance_criteria", [])
+    criteria = [str(value).strip() for value in values if str(value).strip()]
+    if not criteria:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="완료·승인 판정 기준을 한 개 이상 입력해 주세요.",
+        )
+    if any(len(value) > 200 for value in criteria):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="각 완료·승인 판정 기준은 200자 이하여야 합니다.",
+        )
+    return criteria
+
+
 def _dispatch_soil_relocation_phase(
     db: Session,
     *,
@@ -141,6 +162,9 @@ def _dispatch_soil_relocation_phase(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"도면에 없는 공정입니다: {payload.phase_id}",
         )
+    acceptance_criteria = _phase_acceptance_criteria(
+        phase, payload.acceptance_criteria
+    )
 
     work_area = raw_plan["work_area"]
     relocation = work_area["relocation"]
@@ -189,6 +213,7 @@ def _dispatch_soil_relocation_phase(
             "execution_group_size": 1,
             "execution_group_mode": "stationary_soil_relocation",
             "summary": "Zone B · 굴착기 궤도 고정 토사 이동",
+            "acceptance_criteria": acceptance_criteria,
             "zone_id": str(phase["zone_id"]),
             "source_text": payload.source_text,
             "generated_code": generated_code,
@@ -269,6 +294,9 @@ def _approve_registered_scenario_phase(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"도면에 없는 공정입니다: {payload.phase_id}",
         )
+    acceptance_criteria = _phase_acceptance_criteria(
+        phase, payload.acceptance_criteria
+    )
 
     candidates = [
         item
@@ -332,6 +360,7 @@ def _approve_registered_scenario_phase(
         params["phase_plan_status"] = "approved"
         params["phase_plan_approved_at"] = approved_at
         params["phase_plan_approved_by"] = user.username
+        params["acceptance_criteria"] = acceptance_criteria
         checks = []
         for check in params.get("checks") or []:
             if check.get("code") == "predecessor":
@@ -453,6 +482,9 @@ async def dispatch_planning_scenario(
     phase = next(
         item for item in raw_plan["workflow"] if item["id"] == payload.phase_id
     )
+    acceptance_criteria = _phase_acceptance_criteria(
+        phase, payload.acceptance_criteria
+    )
     phase_zone_id = str(phase["zone_id"])
     records: list[PlanningScenarioWorkPackageRecord] = []
     instructions: list[InstructionResponse] = []
@@ -495,6 +527,7 @@ async def dispatch_planning_scenario(
                 "execution_group_size": execution_group_size,
                 "execution_group_mode": "parallel_incremental_scoops",
                 "summary": f"Zone {phase_zone_id} 관로 공사 · 1단계 {front['label']}",
+                "acceptance_criteria": acceptance_criteria,
                 "zone_id": phase_zone_id,
                 "source_text": payload.source_text,
                 "generated_code": generated_code,
@@ -564,6 +597,9 @@ async def dispatch_planning_scenario(
     installation_phase = next(
         item for item in raw_plan["workflow"] if item["id"] == "pipe_installation"
     )
+    installation_acceptance_criteria = _phase_acceptance_criteria(
+        installation_phase
+    )
     installation_zone_id = str(installation_phase["zone_id"])
     installation_group_id = (
         f"EXG-{payload.plan_id}-pipe_installation-{uuid4().hex[:10]}"
@@ -600,6 +636,7 @@ async def dispatch_planning_scenario(
                 "execution_group_mode": "parallel_pipe_installation",
                 "predecessor_execution_group_id": execution_group_id,
                 "summary": f"Zone {installation_zone_id} 관로 공사 · 2단계 관로 설치 · {front['label']}",
+                "acceptance_criteria": installation_acceptance_criteria,
                 "zone_id": installation_zone_id,
                 "source_text": payload.source_text,
                 "generated_code": coordinated_code,
@@ -665,6 +702,7 @@ async def dispatch_planning_scenario(
     backfill_phase = next(
         item for item in raw_plan["workflow"] if item["id"] == "backfill"
     )
+    backfill_acceptance_criteria = _phase_acceptance_criteria(backfill_phase)
     backfill_zone_id = str(backfill_phase["zone_id"])
     backfill_group_id = f"EXG-{payload.plan_id}-backfill-{uuid4().hex[:10]}"
     backfill_group_size = len(work_area["workfronts"])
@@ -696,6 +734,7 @@ async def dispatch_planning_scenario(
                 "execution_group_mode": "parallel_pipeline_backfill",
                 "predecessor_execution_group_id": installation_group_id,
                 "summary": f"Zone {backfill_zone_id} 관로 공사 · 3단계 되메우기 · {front['label']}",
+                "acceptance_criteria": backfill_acceptance_criteria,
                 "zone_id": backfill_zone_id,
                 "source_text": payload.source_text,
                 "generated_code": coordinated_code,

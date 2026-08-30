@@ -112,6 +112,11 @@ def test_approval_creates_zone_b_and_uses_exact_drawing_resources(manager_client
     )
     assert inventory.status_code == 200, inventory.text
 
+    acceptance_criteria = [
+        "이동 토사량 목표 대비 97% 이상",
+        "최종 적치 중심 위치 오차 0.3m 이하",
+        "센서 Evidence 완전성 95% 이상",
+    ]
     response = manager_client.post(
         "/api/v1/work-packages/ai/planning/dispatch",
         json={
@@ -119,6 +124,7 @@ def test_approval_creates_zone_b_and_uses_exact_drawing_resources(manager_client
             "source_text": "오른쪽 흙더미를 바로 옆으로 옮겨줘",
             "plan_id": "DEMOLITION-SOIL-RELOCATION-V1",
             "phase_id": "soil_relocation",
+            "acceptance_criteria": acceptance_criteria,
         },
     )
     assert response.status_code == 201, response.text
@@ -129,6 +135,7 @@ def test_approval_creates_zone_b_and_uses_exact_drawing_resources(manager_client
     assert payload["work_packages"][0]["status"] == "pending"
 
     params = payload["instructions"][0]["params"]
+    assert params["acceptance_criteria"] == acceptance_criteria
     assert params["execution_group_mode"] == "stationary_soil_relocation"
     assert params["tracks_stationary"] is True
     assert params["zone_assignment_mode"] == "create_on_approval"

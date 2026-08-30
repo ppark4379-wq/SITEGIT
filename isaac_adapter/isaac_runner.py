@@ -107,6 +107,29 @@ def _float_tuple(raw: str, *, count: int, setting_name: str) -> tuple[float, ...
     return values
 
 
+def _can_adopt_retained_stage_head(
+    *,
+    remote_head_id: str | None,
+    retained_rejected_commit_id: str | None,
+    review_status: str | None,
+) -> bool:
+    """Return whether a newly approved HEAD already matches the live Stage.
+
+    A rejected Commit deliberately leaves its candidate Stage open so a
+    manager can either issue remediation or attach supplemental Evidence. If
+    supplemental Evidence reopens and approves that same Commit, promoting it
+    changes the Branch HEAD but does not change the Stage currently loaded by
+    the runner. Restarting Isaac in that case interrupts the live session.
+    """
+
+    return bool(
+        remote_head_id
+        and retained_rejected_commit_id
+        and remote_head_id == retained_rejected_commit_id
+        and review_status == "approved"
+    )
+
+
 def main() -> None:
     args = parse_args()
 
@@ -770,6 +793,7 @@ def main() -> None:
         inventory_elapsed = 0.0
         frame_seconds = 1.0 / 60.0
         waiting_commit_id: str | None = None
+        retained_rejected_commit_id: str | None = None
         waiting_notice_printed = False
         while simulation_app.is_running():
             simulation_app.update()
@@ -802,6 +826,7 @@ def main() -> None:
                     continue
                 if review_status == "approved":
                     loaded_head_commit_id = waiting_commit_id
+                    retained_rejected_commit_id = None
                     print(
                         f"  [merged] Commit {waiting_commit_id[:8]} → {branch_name} HEAD",
                         flush=True,
@@ -809,6 +834,7 @@ def main() -> None:
                     waiting_commit_id = None
                     waiting_notice_printed = False
                 elif review_status == "rejected":
+                    retained_rejected_commit_id = waiting_commit_id
                     print(
                         f"  [rejected] Commit {waiting_commit_id[:8]} · "
                         "반려된 현장 Stage를 유지하고 보완 Work Package를 기다립니다.",
@@ -858,13 +884,31 @@ def main() -> None:
                 remote_head = client.get_branch_head(PROJECT_ID, branch_name)
                 remote_head_id = remote_head.get("commit_id") if remote_head else None
                 if remote_head_id != loaded_head_commit_id:
-                    print(
-                        "  [head changed] 승인 Branch HEAD가 변경되었습니다. "
-                        "최신 Stage를 복원하기 위해 Isaac Runner를 종료합니다. "
-                        "같은 명령으로 다시 실행하세요.",
-                        flush=True,
-                    )
-                    break
+                    retained_review_status = None
+                    if remote_head_id == retained_rejected_commit_id:
+                        retained_commit = client.get_commit(remote_head_id)
+                        retained_review_status = retained_commit.get("review_status")
+                    if _can_adopt_retained_stage_head(
+                        remote_head_id=remote_head_id,
+                        retained_rejected_commit_id=retained_rejected_commit_id,
+                        review_status=retained_review_status,
+                    ):
+                        loaded_head_commit_id = remote_head_id
+                        retained_rejected_commit_id = None
+                        print(
+                            f"  [head adopted] 추가 Evidence로 재승인된 Commit "
+                            f"{remote_head_id[:8]}은 현재 Stage와 동일합니다. "
+                            "Runner를 유지합니다.",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            "  [head changed] 승인 Branch HEAD가 변경되었습니다. "
+                            "최신 Stage를 복원하기 위해 Isaac Runner를 종료합니다. "
+                            "같은 명령으로 다시 실행하세요.",
+                            flush=True,
+                        )
+                        break
                 waiting_notice_printed = False
             except Exception as error:
                 print(f"  [warning] Branch 실행 가능 상태 확인 실패: {error}")
@@ -881,6 +925,10 @@ def main() -> None:
                 continue
 
             if instructions:
+                # From this point the live Stage may diverge from a previously
+                # rejected candidate. A later approval of that older Commit
+                # must therefore keep the normal restart protection.
+                retained_rejected_commit_id = None
                 print(f"지시 {len(instructions)}건 수신")
                 group_ids = {
                     str((instruction.get("params") or {}).get("execution_group_id") or "")
@@ -999,7 +1047,7 @@ def main() -> None:
                             os.getenv("SITEGIT_GROUP_EXCAVATION_ANIMATION_SECONDS", "3.5")
                         ),
                         scoop_count=int(
-                            os.getenv("SITEGIT_GROUP_EXCAVATION_SCOOPS", "5")
+                            os.getenv("SITEGIT_GROUP_EXCAVATION_SCOOPS", "1")
                         ),
                         render=not args.headless,
                     )
@@ -1090,7 +1138,7 @@ def main() -> None:
                             )
                         ),
                         scoop_count=int(
-                            os.getenv("SITEGIT_GROUP_PIPELINE_BACKFILL_SCOOPS", "5")
+                            os.getenv("SITEGIT_GROUP_PIPELINE_BACKFILL_SCOOPS", "1")
                         ),
                         render=not args.headless,
                     )

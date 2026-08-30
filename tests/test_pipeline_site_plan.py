@@ -162,6 +162,11 @@ def test_manager_approval_issues_three_deterministic_excavation_fronts(
     )
     assert inventory.status_code == 200, inventory.text
 
+    excavation_acceptance_criteria = [
+        "설계 굴착 저면 대비 ±35mm",
+        "미굴착 토사 체적 1.5% 이하",
+        "카메라·LiDAR·IMU Evidence 완전성 95% 이상",
+    ]
     response = manager_client.post(
         "/api/v1/work-packages/ai/planning/dispatch",
         json={
@@ -169,6 +174,7 @@ def test_manager_approval_issues_three_deterministic_excavation_fronts(
             "source_text": "이 구역 관로 공사 진행하자",
             "plan_id": "SASANG-PIPE-DEMO-V1",
             "phase_id": "excavation",
+            "acceptance_criteria": excavation_acceptance_criteria,
         },
     )
     assert response.status_code == 201, response.text
@@ -238,6 +244,10 @@ def test_manager_approval_issues_three_deterministic_excavation_fronts(
         assert instruction["params"]["scenario_phase_id"] == "excavation"
         assert instruction["params"]["zone_id"] == "A"
         assert instruction["params"]["execution_group_size"] == 3
+        assert (
+            instruction["params"]["acceptance_criteria"]
+            == excavation_acceptance_criteria
+        )
         assert (
             instruction["params"]["execution_group_mode"]
             == "parallel_incremental_scoops"
@@ -505,6 +515,11 @@ def test_manager_approval_issues_three_deterministic_excavation_fronts(
         item["params"].get("phase_plan_status") for item in ready_installation
     } == {"approval_ready"}
 
+    installation_acceptance_criteria = [
+        "관 중심선 수평 편차 ±80mm",
+        "관저고 설계 대비 ±30mm",
+        "카메라·LiDAR·IMU Evidence 완전성 96% 이상",
+    ]
     phase_approval = manager_client.post(
         "/api/v1/work-packages/ai/planning/dispatch",
         json={
@@ -512,12 +527,17 @@ def test_manager_approval_issues_three_deterministic_excavation_fronts(
             "source_text": "Zone A 2단계 관로 설치 계획 승인",
             "plan_id": "SASANG-PIPE-DEMO-V1",
             "phase_id": "pipe_installation",
+            "acceptance_criteria": installation_acceptance_criteria,
         },
     )
     assert phase_approval.status_code == 201, phase_approval.text
     assert {item["status"] for item in phase_approval.json()["work_packages"]} == {
         "pending"
     }
+    assert {
+        tuple(item["params"]["acceptance_criteria"])
+        for item in phase_approval.json()["instructions"]
+    } == {tuple(installation_acceptance_criteria)}
 
     installation_claim = manager_client.post(
         "/api/v1/isaac/instructions/claim",

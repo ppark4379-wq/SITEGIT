@@ -44,7 +44,7 @@ DEFAULT_DUMP_SIDES = (1, 1, 1)
 # off the pipeline corridor. The centre and northern placements already have
 # safe clearances and must remain unchanged.
 DEFAULT_DUMP_BANK_INSETS_M = (3.0, 0.0, 0.0)
-DEFAULT_SCOOP_COUNT = 5
+DEFAULT_SCOOP_COUNT = 1
 
 load_dotenv(REPO_ROOT / ".env")
 load_dotenv(ADAPTER_DIR / ".env", override=True)

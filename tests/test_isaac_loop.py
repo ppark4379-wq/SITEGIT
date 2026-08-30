@@ -91,6 +91,81 @@ def test_rejected_commit_never_reaches_the_map(manager_client):
     assert "반려 큐브" not in _labels(manager_client)
 
 
+def test_supplemental_evidence_reopens_rejected_commit_for_approval(manager_client):
+    """Any selected demo file reopens a rejected Commit for human approval."""
+    instruction = _create_instruction(manager_client, label="추가 증거 큐브")
+    commit = _commit(manager_client, instruction)
+
+    rejected = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/review",
+        json={"decision": "rejected", "note": "추가 현장 자료 필요"},
+    )
+    assert rejected.status_code == 200, rejected.text
+
+    reopened = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/supplemental-evidence",
+        json={
+            "files": [
+                {
+                    "name": "demo-any-file.txt",
+                    "size_bytes": 17,
+                    "content_type": "text/plain",
+                }
+            ],
+            "note": "현장 확인 자료를 추가합니다.",
+        },
+    )
+    assert reopened.status_code == 200, reopened.text
+    reopened_payload = reopened.json()
+    assert reopened_payload["review_status"] == "pending"
+    assert reopened_payload["evidence"]["supplemental_review_override"] is True
+    assert reopened_payload["evidence"]["supplemental_evidence"][-1]["files"][0][
+        "name"
+    ] == "demo-any-file.txt"
+
+    approved = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/review",
+        json={"decision": "approved"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["review_status"] == "approved"
+    assert approved.json()["review_note"].startswith("추가 Evidence 재검토 승인")
+    assert "추가 증거 큐브" in _labels(manager_client)
+
+
+def test_supplemental_evidence_allows_demo_quality_override(manager_client):
+    """Supplemental demo Evidence permits a new decision on an auto-failed result."""
+    instruction = _create_instruction(manager_client, label="데모 품질 예외 큐브")
+    commit = _commit(
+        manager_client,
+        instruction,
+        result={
+            "placed_position": instruction["params"]["position"],
+            "placed_size": instruction["params"]["size"],
+            "prim_path": "/World/SiteGit/demo_quality_override",
+            "quality_assessment": {"status": "needs_remediation"},
+        },
+    )
+    rejected = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/review",
+        json={"decision": "rejected", "note": "자동 판정 미달"},
+    )
+    assert rejected.status_code == 200, rejected.text
+
+    reopened = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/supplemental-evidence",
+        json={"files": [{"name": "manager-check.bin", "size_bytes": 1}]},
+    )
+    assert reopened.status_code == 200, reopened.text
+
+    approved = manager_client.post(
+        f"/api/v1/isaac/commits/{commit['id']}/review",
+        json={"decision": "approved"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["review_status"] == "approved"
+
+
 def test_new_stage_scenario_replaces_the_published_map_baseline(manager_client):
     project_id = "SCENARIO-BASELINE-CUTOVER"
 

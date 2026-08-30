@@ -39,6 +39,7 @@ from ...schemas.isaac import (
     InstructionResponse,
     MapObjectsResponse,
     ReviewDecision,
+    SupplementalEvidenceSubmission,
     StageInventoryResponse,
     StageInventoryUpdate,
     StageBranchHeadResponse,
@@ -479,6 +480,35 @@ async def review_commit(
             phase_id=(released[0].params or {}).get("scenario_phase_id"),
         )
     return CommitResponse.model_validate(reviewed, from_attributes=True)
+
+
+@router.post(
+    "/commits/{commit_id}/supplemental-evidence",
+    response_model=CommitResponse,
+)
+async def submit_supplemental_evidence(
+    commit_id: str,
+    payload: SupplementalEvidenceSubmission,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*OPERATOR_ROLES)),
+) -> CommitResponse:
+    """Attach demo Evidence metadata and reopen a rejected Commit."""
+
+    commit = TrustGateService.get_commit(db, commit_id)
+    reopened = TrustGateService.submit_supplemental_evidence(
+        db,
+        commit=commit,
+        files=[item.model_dump() for item in payload.files],
+        note=payload.note,
+        user=user,
+    )
+    await _broadcast_map_changed(
+        reopened.instruction.project_id,
+        "review.supplemental_evidence_submitted",
+        instruction_id=reopened.instruction_id,
+        commit_id=reopened.id,
+    )
+    return CommitResponse.model_validate(reopened, from_attributes=True)
 
 
 @router.get("/commits/{commit_id}", response_model=CommitResponse)

@@ -14,6 +14,18 @@ from typing import Any, Callable
 # Isaac Stage에서 SiteGit이 만든 오브젝트가 모이는 위치.
 SITEGIT_ROOT_PATH = "/World/SiteGit"
 
+# One shortened demo cycle represents the previous five-pass excavation. Keep
+# the complete measured quantity in the evidence payload, while rendering one
+# bounded five-pass stockpile that is large enough to read clearly but cannot
+# spread across the trench or nearby site geometry.
+MAX_EXCAVATED_SPOIL_LENGTH_M = 10.0
+MAX_EXCAVATED_SPOIL_WIDTH_M = 8.0
+# General volume matching is also used by the separate soil-relocation demo.
+# Keep its existing limit and use the tighter visual limit only for excavation.
+MAX_EXCAVATED_SPOIL_HEIGHT_M = 2.5
+MAX_EXCAVATED_SPOIL_VISUAL_HEIGHT_M = 3.2
+MAX_EXCAVATED_SPOIL_VISUAL_VOLUME_M3 = 75.0
+
 
 def grounded_equipment_center_z(
     surface_z: float,
@@ -239,6 +251,103 @@ def projected_mesh_volume(
             ) / 3.0
             volume += 0.5 * twice_area * average_height
     return float(volume)
+
+
+def reshape_mound_points_for_volume(
+    points: list[tuple[float, float, float]],
+    face_vertex_counts: list[int],
+    face_vertex_indices: list[int],
+    desired_volume_m3: float,
+    *,
+    max_height_m: float = MAX_EXCAVATED_SPOIL_HEIGHT_M,
+) -> list[tuple[float, float, float]]:
+    """Resize a mound to one volume while keeping it broad and low.
+
+    Scaling only vertex Z made a large excavation volume look like a tall
+    needle.  This keeps the mound below ``max_height_m`` and distributes any
+    remaining volume over X/Y, preserving the represented soil volume.
+    """
+
+    if not points:
+        return []
+    if desired_volume_m3 <= 0.0:
+        raise ValueError("desired mound volume must be positive")
+    if max_height_m <= 0.0:
+        raise ValueError("maximum mound height must be positive")
+
+    current_volume = projected_mesh_volume(
+        points,
+        face_vertex_counts,
+        face_vertex_indices,
+    )
+    if current_volume <= 1e-9:
+        return list(points)
+
+    minimum_z = min(point[2] for point in points)
+    maximum_z = max(point[2] for point in points)
+    current_height = maximum_z - minimum_z
+    if current_height <= 1e-9:
+        return list(points)
+
+    minimum_x = min(point[0] for point in points)
+    maximum_x = max(point[0] for point in points)
+    minimum_y = min(point[1] for point in points)
+    maximum_y = max(point[1] for point in points)
+    center_x = (minimum_x + maximum_x) * 0.5
+    center_y = (minimum_y + maximum_y) * 0.5
+
+    volume_ratio = float(desired_volume_m3) / current_volume
+    isotropic_scale = volume_ratio ** (1.0 / 3.0)
+    target_height = min(
+        float(max_height_m),
+        current_height * isotropic_scale,
+    )
+    vertical_scale = target_height / current_height
+    horizontal_scale = (volume_ratio / vertical_scale) ** 0.5
+
+    return [
+        (
+            center_x + (x - center_x) * horizontal_scale,
+            center_y + (y - center_y) * horizontal_scale,
+            minimum_z + (z - minimum_z) * vertical_scale,
+        )
+        for x, y, z in points
+    ]
+
+
+def excavated_spoil_visual_profile(
+    target_size: dict[str, float],
+    removed_volume_m3: float,
+) -> tuple[tuple[float, float, float], float]:
+    """Return a bounded five-pass visual profile for excavated spoil.
+
+    ``removed_volume_m3`` is the measured work quantity and may describe a
+    whole work front. It must not be converted directly into one unbounded
+    mound. The 75 m3 visual cap reproduces the combined footprint of the
+    previous five visible bucket passes in one low stockpile; evidence and
+    quantity accounting retain the full measured volume.
+    """
+
+    if removed_volume_m3 <= 0.0:
+        raise ValueError("removed soil volume must be positive")
+
+    length = min(
+        MAX_EXCAVATED_SPOIL_LENGTH_M,
+        max(7.5, float(target_size["x"]) * 0.32),
+    )
+    width = min(
+        MAX_EXCAVATED_SPOIL_WIDTH_M,
+        max(6.0, float(target_size["y"]) * 0.32),
+    )
+    height = min(
+        MAX_EXCAVATED_SPOIL_VISUAL_HEIGHT_M,
+        max(2.4, float(target_size["z"]) * 0.45),
+    )
+    visual_volume = min(
+        float(removed_volume_m3),
+        MAX_EXCAVATED_SPOIL_VISUAL_VOLUME_M3,
+    )
+    return (length, width, height), visual_volume
 
 
 def sculpt_soil_mesh_points(
@@ -612,15 +721,9 @@ class IsaacBridge:
         if removed_volume_m3 <= 1e-6:
             return None
         direction = approach_plan.get("approach_direction_xy") or [0.0, -1.0]
-        source_volume = max(
-            1e-6,
-            float(target_size["x"]) * float(target_size["y"]) * float(target_size["z"]) * 0.45,
-        )
-        scale = max(0.3, min(0.9, (removed_volume_m3 / source_volume) ** (1.0 / 3.0)))
-        moved_size = (
-            max(1.0, float(target_size["x"]) * scale),
-            max(1.0, float(target_size["y"]) * scale),
-            max(0.35, float(target_size["z"]) * scale),
+        moved_size, visual_target_volume = excavated_spoil_visual_profile(
+            target_size,
+            removed_volume_m3,
         )
         placement = moved_soil_dump_position(
             equipment_position,
@@ -654,7 +757,19 @@ class IsaacBridge:
             for _ in range(10):
                 self._update_callback()
         moved_prim = self.stage.GetPrimAtPath(prim_path)
-        moved_volume = self._match_mesh_volume(moved_prim, removed_volume_m3)
+        visualized_volume = self._match_mesh_volume(
+            moved_prim,
+            visual_target_volume,
+            max_height_m=MAX_EXCAVATED_SPOIL_VISUAL_HEIGHT_M,
+        )
+        moved_prim.SetCustomDataByKey(
+            "sitegitRepresentedVolumeM3",
+            float(removed_volume_m3),
+        )
+        moved_prim.SetCustomDataByKey(
+            "sitegitVisualizedVolumeM3",
+            float(visualized_volume),
+        )
         position, size = self._world_bounds(moved_prim)
         return {
             **info,
@@ -662,7 +777,10 @@ class IsaacBridge:
             "size": size,
             "geometry": self._mesh_geometry_snapshot(moved_prim),
             "source_removed_volume_m3": float(removed_volume_m3),
-            "deposited_volume_m3": float(moved_volume),
+            # Quantity conservation is an evidence/accounting concern. The
+            # rendered mound is deliberately a bounded five-pass proxy.
+            "deposited_volume_m3": float(removed_volume_m3),
+            "visualized_volume_m3": float(visualized_volume),
             "dump_side": placement["dump_side"],
             "dump_sequence_index": max(0, int(dump_sequence_index)),
             "lateral_offset_m": placement["lateral_offset_m"],
@@ -670,8 +788,14 @@ class IsaacBridge:
             "sequence_spacing_m": placement["sequence_spacing_m"],
         }
 
-    def _match_mesh_volume(self, prim: Any, desired_volume_m3: float) -> float:
-        """Scale mound vertex heights so deposited volume matches excavation."""
+    def _match_mesh_volume(
+        self,
+        prim: Any,
+        desired_volume_m3: float,
+        *,
+        max_height_m: float = MAX_EXCAVATED_SPOIL_HEIGHT_M,
+    ) -> float:
+        """Resize a low, broad mound so deposited volume matches excavation."""
 
         from pxr import Gf, UsdGeom, UsdPhysics
 
@@ -685,11 +809,13 @@ class IsaacBridge:
         current_volume = projected_mesh_volume(points, counts, indices)
         if current_volume <= 1e-9 or desired_volume_m3 <= 1e-9:
             return current_volume
-        base_z = min(point[2] for point in points)
-        factor = float(desired_volume_m3) / current_volume
-        adjusted = [
-            (x, y, base_z + max(0.0, z - base_z) * factor) for x, y, z in points
-        ]
+        adjusted = reshape_mound_points_for_volume(
+            points,
+            counts,
+            indices,
+            desired_volume_m3,
+            max_height_m=max_height_m,
+        )
         mesh.GetPointsAttr().Set([Gf.Vec3f(*point) for point in adjusted])
         mesh.GetExtentAttr().Set(
             UsdGeom.PointBased.ComputeExtent([Gf.Vec3f(*point) for point in adjusted])
@@ -704,6 +830,10 @@ class IsaacBridge:
         if self._update_callback:
             for _ in range(6):
                 self._update_callback()
+        prim.SetCustomDataByKey(
+            "sitegitSpoilHeightLimitM",
+            float(max_height_m),
+        )
         return projected_mesh_volume(adjusted, counts, indices)
 
     def stage_inventory(

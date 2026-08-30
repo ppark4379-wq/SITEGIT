@@ -179,6 +179,7 @@ class PlanningScenarioDispatchRequest(BaseModel):
     source_text: str = Field(min_length=3, max_length=1500)
     plan_id: str = Field(min_length=1, max_length=120)
     phase_id: str = Field(default="excavation", min_length=1, max_length=80)
+    acceptance_criteria: list[str] | None = Field(default=None, max_length=20)
 
 
 class PlanningScenarioWorkPackageRecord(BaseModel):

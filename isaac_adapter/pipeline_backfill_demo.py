@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--equipment", default=None, help="animated excavator USD path")
     parser.add_argument("--plan", default=str(DEFAULT_PLAN_PATH))
     parser.add_argument("--installed-stage", default=None)
-    parser.add_argument("--scoops", type=int, default=5)
+    parser.add_argument("--scoops", type=int, default=1)
     parser.add_argument("--animation-seconds", type=float, default=3.0)
     parser.add_argument("--save-usd", default=None)
     return parser.parse_args()

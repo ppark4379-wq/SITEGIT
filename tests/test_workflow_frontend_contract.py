@@ -144,12 +144,19 @@ def test_pipeline_drawing_plan_has_flow_preview_and_map_overlay() -> None:
 
 def test_pipeline_plan_only_shows_criteria_for_the_current_phase() -> None:
     workflow = (ROOT / "frontend" / "workflow-ui.js").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
 
     assert "wfCurrentPhaseId" in workflow
-    assert "현재 하달할 공정의 도면 검측 기준만 적용됩니다." in workflow
-    assert "data-criteria-phase" not in workflow
+    assert "현재 하달할 공정의 추천 기준입니다. 관리자가 수치를 수정한 뒤 승인할 수 있습니다." in workflow
+    assert "data-criteria-phase" in workflow
     assert "set-criteria-phase" not in workflow
     assert "phase_id:wfCurrentPhaseId(draft)" in workflow
+    assert "wfCurrentAcceptanceCriteria" in workflow
+    assert 'data-criteria-value' in workflow
+    assert "LLM·도면 추천값 · 관리자 수정 가능" in workflow
+    assert "acceptance_criteria:acceptanceCriteria" in workflow
+    assert "params.acceptance_criteria" in workflow
+    assert ".phase-criterion-editor input" in styles
 
 
 def test_pipeline_execution_is_grouped_and_next_phase_needs_plan_approval() -> None:
@@ -215,11 +222,18 @@ def test_under_excavation_uses_a_manager_gated_remediation_flow() -> None:
     assert "/dispatch-remediation`" in app
     assert "AI 보완 작업 초안" in app
     assert "장비·대상 Prim·부족 작업량" in app
+    assert "createIsaacRemediation(remediateIsaac.dataset.isaacRemediation,remediateIsaac)" in app
+    assert "function beginRemediationRequest" in app
+    assert "overlay.dataset.remediationLoading='true'" in app
+    assert "부족량을 분석하고 보완 계획을 만드는 중입니다" in app
+    assert "finally{\n    finishPending();" in app
     assert "목표량 미달 · 검토 필요" in workflow
     assert "data-open-remediation" in workflow
     assert "부족량 Evidence 검토" in workflow
     assert ".excavation-quality-panel" in styles
     assert ".remediation-plan-modal" in styles
+    assert ".remediation-request-overlay" in styles
+    assert ".remediation-button-spinner" in styles
 
 
 def test_evidence_exposes_demo_sensor_fusion_depth_option() -> None:
@@ -482,14 +496,24 @@ def test_frontend_loads_the_responsive_readability_layer_last() -> None:
 
     assert index.index("dashboard-progress.css") < index.index("readability.css")
     assert login.index("login.css") < login.index("readability.css")
-    assert "--sg-readable-micro: clamp(11px" in readability
-    assert "--sg-readable-body: clamp(13px" in readability
+    assert "--sg-readable-micro: clamp(12px" in readability
+    assert "--sg-readable-body: clamp(14px" in readability
     assert "@media (max-width: 1180px)" in readability
     assert 'span:not([class*="icon"])' in readability
     assert "overflow-wrap: anywhere" in readability
 
 
-def test_rejected_commit_detail_exposes_supplemental_evidence_ui_preview() -> None:
+def test_scenario_detail_raises_micro_text_without_resizing_the_layout() -> None:
+    readability = (ROOT / "frontend" / "readability.css").read_text(encoding="utf-8")
+
+    assert ".app-shell .scenario-detail-page .scenario-current-panel dt {\n  font-size: 11px;" in readability
+    assert ".app-shell .scenario-detail-page .scenario-current-panel dd {\n  font-size: 16px;" in readability
+    assert ".app-shell .scenario-detail-page .scenario-detail-workfront > div > b {\n  font-size: 13px;" in readability
+    assert ".app-shell .scenario-detail-page .scenario-criteria span {\n  font-size: 12px;" in readability
+    assert ".app-shell .scenario-detail-page .scenario-activity b {\n  font-size: 13px;" in readability
+
+
+def test_rejected_commit_detail_submits_supplemental_evidence_for_review() -> None:
     app = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
 
@@ -497,7 +521,11 @@ def test_rejected_commit_detail_exposes_supplemental_evidence_ui_preview() -> No
     assert 'data-rejected-evidence-panel' in app
     assert 'id="supplementalEvidenceFiles" type="file" multiple' in app
     assert '추가 Evidence 제출 · 재검토 요청' in app
-    assert '파일 저장과 재검증 API는 아직 연결되지 않았습니다.' in app
-    assert '서버에는 저장되지 않습니다.' in app
+    assert '/supplemental-evidence`' in app
+    assert 'supplemental_review_override' in app
+    assert 'Evidence 제출 중…' in app
+    assert '다시 승인할 수 있습니다.' in app
+    assert 'UI PREVIEW' not in app
+    assert '서버에는 저장되지 않습니다.' not in app
     assert '.supplemental-evidence-panel' in styles
     assert '.supplemental-evidence-form' in styles

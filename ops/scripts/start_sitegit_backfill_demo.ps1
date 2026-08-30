@@ -5,7 +5,7 @@ param(
     [switch]$CloseOnFinish,
     [switch]$Fast,
     [ValidateRange(1, 10)]
-    [int]$Scoops = 5,
+    [int]$Scoops = 1,
     [string]$InstalledStage = "",
     [string]$SaveUsd = ""
 )

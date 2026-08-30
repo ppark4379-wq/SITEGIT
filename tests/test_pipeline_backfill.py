@@ -77,7 +77,7 @@ def test_backfill_demo_has_a_separate_portable_launcher() -> None:
 
     assert "pipeline_backfill_demo.py" in powershell
     assert "pipeline-installed-stage.usda" in powershell
-    assert "[int]$Scoops = 5" in powershell
+    assert "[int]$Scoops = 1" in powershell
     assert "Backend and web services are not used" in batch
 
 

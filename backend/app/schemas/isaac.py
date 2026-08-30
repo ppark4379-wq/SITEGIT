@@ -245,6 +245,21 @@ class ReviewDecision(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class SupplementalEvidenceFile(BaseModel):
+    """Metadata for one manager-selected supplemental Evidence file."""
+
+    name: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(default=0, ge=0, le=2_000_000_000)
+    content_type: str | None = Field(default=None, max_length=120)
+
+
+class SupplementalEvidenceSubmission(BaseModel):
+    """Demo submission used to reopen a rejected Commit for review."""
+
+    files: list[SupplementalEvidenceFile] = Field(min_length=1, max_length=20)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class InstructionProgressUpdate(BaseModel):
     """Live progress reported by the Isaac Adapter during one work front."""
 
